@@ -1,4 +1,4 @@
-from Functions import process_database, prep_smarts_key
+from src.Functions import process_database, prep_smarts_key
 from collections import OrderedDict
 import pathlib
 import re
