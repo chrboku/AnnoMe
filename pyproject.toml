@@ -1,0 +1,14 @@
+[project]
+name = "annome"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "ipython>=9.3.0",
+    "natsort>=8.4.0",
+    "openpyxl>=3.1.5",
+    "plotnine>=0.14.5",
+    "rdkit>=2025.3.3",
+    "tqdm>=4.67.1",
+]
