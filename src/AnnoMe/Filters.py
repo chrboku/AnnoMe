@@ -4,7 +4,7 @@ import tempfile
 import warnings
 import re
 import itertools
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 import time
 
 import numpy as np
@@ -30,6 +30,9 @@ from openpyxl.utils import get_column_letter
 from tqdm import tqdm
 
 import natsort
+
+import colorama
+from colorama import Fore, Style
 
 
 def scale_dimensions_to_fit(original_width, original_height, max_width, max_height):
@@ -274,21 +277,25 @@ def parse_mgf_file(file_path):
         lines = file.readlines()
 
     blocks = []
-    current_block = OrderedDict()
+    current_block_primary = OrderedDict()
+    current_block_secondary = OrderedDict()
 
     required_keys = ["$$spectrumData", "pepmass", "instrument", "name", "adduct", "ionmode", "fragmentation_method", "collision_energy"]
 
+    incomplete_blocks = defaultdict(int)
     for line in lines:
         line = line.strip()
         if line == "BEGIN IONS":
-            current_block = OrderedDict()
+            current_block_primary = OrderedDict()
+            current_block_secondary = OrderedDict()
 
         elif line == "END IONS":
-            missing_keys = [key for key in required_keys if key not in current_block.keys()]
+            missing_keys = natsort.natsorted([key.lower() for key in required_keys if key not in current_block_primary.keys() and key not in current_block_secondary.keys()])
             if len(missing_keys) > 0:
-                print(f"\033[91mIncomplete block detected. Missing keys {str(missing_keys)}.\033[0m")
-            blocks.append(current_block)
-            current_block = OrderedDict()
+                incomplete_blocks[str(missing_keys)] += 1
+            blocks.append(OrderedDict(list(natsort.natsorted(current_block_primary.items(), key=lambda x: x[0].lower())) + list(natsort.natsorted(current_block_secondary.items(), key=lambda x: x[0].lower()))))
+            current_block_primary = OrderedDict()
+            current_block_secondary = OrderedDict()
 
         elif line == "":
             pass
@@ -297,6 +304,7 @@ def parse_mgf_file(file_path):
             key, value = line.split("=", 1)
             key = key.strip().lower()
             value = value.strip()
+            is_primary = False
 
             if key in ["collision_energy", "ms_ionization_energy"]:
                 if re.match(r"^\d+(\.\d+)? *(HCD|CID)$", value, re.IGNORECASE):
@@ -305,7 +313,7 @@ def parse_mgf_file(file_path):
                         value = match.group(1)
                         method_value = match.group(3).upper()
                         value = str(value)
-                        current_block["fragmentation_method"] = method_value
+                        current_block_primary["fragmentation_method"] = method_value
 
                 try:
                     if value.startswith("[") and value.endswith("]"):
@@ -328,10 +336,13 @@ def parse_mgf_file(file_path):
                 except ValueError:
                     # If conversion fails, keep the original value
                     pass
+
                 key = "collision_energy"
+                is_primary = True
 
             elif key in ["fragmentation_mode", "ms_frag_mode", "fragmentation_method", "ms_dissociation_method"]:
                 key = "fragmentation_method"
+                is_primary = True
 
             elif key in ["ionmode", "ion_mode", "ms_ion_mode", "polarity"]:
                 if key == "polarity":
@@ -345,37 +356,76 @@ def parse_mgf_file(file_path):
                 else:
                     raise ValueError(f"Invalid ion mode: {value}")
                 key = "ionmode"
+                is_primary = True
 
             elif key in ["feature_id", "accession"]:
                 key = "feature_id"
 
             elif key in ["precursor_type", "adduct"]:
                 key = "adduct"
+                is_primary = True
 
             elif key in ["precursormz", "precursor_mz", "pepmass", "precursor_mz_value"]:
                 key = "pepmass"
+                is_primary = True
 
             elif key in ["instrument", "instrument_model", "instrument_model_name", "instrument_name", "source_instrument", "ms_mass_analyzer"]:
                 key = "instrument"
+                is_primary = True
 
             elif key in ["name", "compound_name"]:
                 value = value.lower().strip()
                 key = "name"
+                is_primary = True
 
-            current_block[key] = str(value)
+            if is_primary:
+                current_block_primary[key] = str(value)
+            else:
+                current_block_secondary[key] = str(value)
 
         elif line.lower().startswith("num peaks"):
-            if "spectrumData" not in current_block:
-                current_block["$$spectrumData"] = [[], []]
+            if "spectrumData" not in current_block_secondary:
+                current_block_secondary["$$spectrumData"] = [[], []]
 
         else:
-            if "$$spectrumData" not in current_block:
-                current_block["$$spectrumData"] = [[], []]
+            if "$$spectrumData" not in current_block_secondary:
+                current_block_secondary["$$spectrumData"] = [[], []]
             mz, inte = line.split()
-            current_block["$$spectrumData"][0].append(mz)
-            current_block["$$spectrumData"][1].append(inte)
+            current_block_secondary["$$spectrumData"][0].append(mz)
+            current_block_secondary["$$spectrumData"][1].append(inte)
+
+    if len(incomplete_blocks) > 0:
+        print(f"{Fore.RED}")
+        print("   - Warning: Some blocks are missing required keys:")
+        for keys, count in natsort.natsorted(incomplete_blocks.items(), key=lambda x: str(x[0].lower())):
+            print(f"      - {keys}: {count} blocks")
+        print(f"{Style.RESET_ALL}")
 
     return blocks
+
+
+def standardize_blocks(blocks, standards):
+    """Standardizes the blocks by applying standardization functions to specific fields.
+    Args:
+        blocks (list): List of parsed MGF blocks.
+        standards (dict): Dictionary where keys are field names and values are a standardization function or a list of standardization functions.
+    Returns:
+        None: The function modifies the blocks in place.
+    """
+
+    for block in blocks:
+        for key in standards.keys():
+            if key in block.keys():
+                value = block[key]
+
+                if isinstance(standards[key], list):
+                    for standard in standards[key]:
+                        value = standard(value)
+                else:
+                    value = standards[key](value)
+
+                # Update the block with the standardized value
+                block[key] = value
 
 
 def export_mgf_file(blocks, output_file_path):
@@ -397,7 +447,7 @@ def export_mgf_file(blocks, output_file_path):
                 else:
                     file.write(f"{key}={value}\n")
             if "$$spectrumData" in feature_blocks:
-                file.write("Num peaks={}\n".format(len(feature_blocks["$$spectrumData"][0])))
+                # file.write("Num peaks {}\n".format(len(feature_blocks["$$spectrumData"][0])))
                 for mzi in range(len(feature_blocks["$$spectrumData"][0])):
                     file.write(f"{feature_blocks['$$spectrumData'][0][mzi]} {feature_blocks['$$spectrumData'][1][mzi]}\n")
             file.write("END IONS\n\n")
@@ -415,8 +465,8 @@ def show_overview_of_blocks(blocks):
         fields.update(block.keys())
 
     print(f"   - {len(fields)} unique keys found in blocks: ", end="")
-    for field in natsort.natsorted(fields, key=lambda x: x.lower()):
-        print(f", {field}", end="")
+    for i, field in enumerate(natsort.natsorted(fields, key=lambda x: x.lower())):
+        print(f"{', ' if i > 0 else ''}{Fore.YELLOW if i % 2 == 0 else Fore.GREEN}{field}{Style.RESET_ALL}", end="")
     print("")
 
     instrument_counts = {}
@@ -430,8 +480,8 @@ def show_overview_of_blocks(blocks):
     if instrument_counts:
         print("   - Instrument usage counts: ", end="")
         sorted_instruments = sorted(instrument_counts.items(), key=lambda item: item[1], reverse=True)
-        for instrument, count in sorted_instruments:
-            print(f", {instrument}: {count}", end="")
+        for i, (instrument, count) in enumerate(sorted_instruments):
+            print(f"{', ' if i > 0 else ''}{Fore.YELLOW if i % 2 == 0 else Fore.GREEN}{instrument}: {count}{Style.RESET_ALL}", end="")
         print("")
     else:
         print("   - No instrument information found in blocks.")
@@ -447,8 +497,8 @@ def show_overview_of_blocks(blocks):
     if fragmentation_method_counts:
         print("   - Fragmentation method usage counts: ", end="")
         sorted_methods = sorted(fragmentation_method_counts.items(), key=lambda item: item[1], reverse=True)
-        for method, count in sorted_methods:
-            print(f", {method}: {count}", end="")
+        for i, (method, count) in enumerate(sorted_methods):
+            print(f"{', ' if i > 0 else ''}{Fore.YELLOW if i % 2 == 0 else Fore.GREEN}{method}: {count}{Style.RESET_ALL}", end="")
         print()
     else:
         print("   - No fragmentation method information found in blocks.")
@@ -464,8 +514,8 @@ def show_overview_of_blocks(blocks):
     if collision_energy_counts:
         print("   - Collision energy usage counts: ", end="")
         sorted_energies = sorted(collision_energy_counts.items(), key=lambda item: item[1], reverse=True)
-        for energy, count in sorted_energies:
-            print(f", {energy}: {count}", end="")
+        for i, (energy, count) in enumerate(sorted_energies):
+            print(f"{', ' if i > 0 else ''}{Fore.YELLOW if i % 2 == 0 else Fore.GREEN}{energy}: {count}{Style.RESET_ALL}", end="")
         print()
     else:
         print("   - No collision energy information found in blocks.")
@@ -682,32 +732,41 @@ def prep_smarts_key(smart, replace=True):
     return rdkit.Chem.MolFromSmarts(smart)
 
 
-def process_database(database_name, mgf_file, smiles_field, name_field, sf_field, smart_checks, output_folder, filter_fn=None, verbose=False):
+def process_database(database_name, mgf_file, smiles_field, name_field, sf_field, smart_checks, standardize_block_functions, output_folder, filter_fn=None, verbose=False):
     start = time.time()
+
+    # keep track of generated files
+    generated_files = []
 
     # parse MGF file
     spectra = parse_mgf_file(mgf_file)
-    print(f"   - Parsed {len(spectra)} blocks")
-
-    # filter for spectra that have smiles code
-    spectra = [block for block in spectra if smiles_field in block.keys() and block[smiles_field] is not None and block[smiles_field].strip().lower() not in ["", "n/a", "na", "none", "null"]]
-    print(f"   - Filtered to {len(spectra)} blocks with SMILES string, warning, must not be valid smiles")
+    print(f"   1. Parsed {Fore.YELLOW}{len(spectra)}{Style.RESET_ALL} blocks")
 
     # show overview of the spectra
     show_overview_of_blocks(spectra)
 
+    # filter for spectra that have smiles code
+    spectra = [block for block in spectra if smiles_field in block.keys() and block[smiles_field] is not None and block[smiles_field].strip().lower() not in ["", "n/a", "na", "none", "null"]]
     # apply custom filter if provided
     if filter_fn is not None:
         spectra = filter_fn(spectra)
-        print(f"   - Filtered to {len(spectra)} blocks using custom filter")
-        show_overview_of_blocks(spectra)
+    print(f"   2. Filtered to {Fore.YELLOW}{len(spectra)}{Style.RESET_ALL} blocks with SMILES string, warning, must not be valid smiles")
+
+    # show overview of the spectra
+    show_overview_of_blocks(spectra)
+
+    standardize_blocks(spectra, standardize_block_functions)
+    print(f"   3. standardized block information")
+
+    # show overview of the spectra
+    show_overview_of_blocks(spectra)
 
     # generate final data table for review
     table_data = OrderedDict()
 
     # get unique names and smiles from the spectra
     names = set([block[name_field] for block in spectra if name_field in block.keys() and block[name_field]])
-    print(f"   - Found {len(names)} unique names in the MGF file")
+    print(f"   4. Found {Fore.YELLOW}{len(names)}{Style.RESET_ALL} unique compound names in the MGF file")
 
     temp_dir = tempfile.TemporaryDirectory()
 
@@ -737,59 +796,70 @@ def process_database(database_name, mgf_file, smiles_field, name_field, sf_field
             table_data[name]["A_structure"] = "ERROR: could not draw structure"
 
     n_spectra_with_smiles = sum(1 for block in spectra if smiles_field in block.keys() and block[smiles_field])
-    print(f"   - Found {n_spectra_with_smiles} spectra with valid SMILES")
+    print(f"   5. Found {Fore.YELLOW}{n_spectra_with_smiles}{Style.RESET_ALL} spectra with valid SMILES")
 
     unique_smiles_strings = sorted(list(set([block[smiles_field] for block in spectra if smiles_field in block.keys() and smiles_field != ""])))
-    print(f"   - Found {len(unique_smiles_strings)} unique smiles strings")
+    print(f"   6. Found {Fore.YELLOW}{len(unique_smiles_strings)}{Style.RESET_ALL} unique smiles strings")
 
     found_results = {}
     for check_name, check_parameters in smart_checks.items():
         found_results[check_name] = {}
         subs = check_parameters["filter"]
 
-        print("\n\n--------------------------------------------------------------------------")
+        print("\n--------------------------------------------------------------------------")
         print(f"   # Checking for substructure '{check_name}'")
 
         matching_smiles, non_matching_smiles, errored_smiles = filter_smiles(unique_smiles_strings, lambda x: substructure_fn(x, subs))
         found_results[check_name]["matching_smiles"] = matching_smiles
 
-        if len(matching_smiles) > 0:
-            matching_compounds = set()
-            matching_blocks = []
-            for spectrum in spectra:
-                if smiles_field in spectrum.keys() and spectrum[smiles_field] in matching_smiles:
-                    matching_compounds.add(spectrum[name_field])
-                    matching_blocks.append(spectrum)
+        for typ in ["MatchingSmiles", "NonMatchingSmiles"]:
+            smiles_set = matching_smiles if typ == "MatchingSmiles" else non_matching_smiles
 
-            print(f"   - Found {len(matching_compounds)} compounds with matching SMILES for '{check_name}'")
-            for name in natsort.natsorted(matching_compounds, key=lambda x: x.lower()):
-                table_data[name][f"C_{check_name}"] = "detected"
-                if verbose:
-                    print(f"      * {name}")
-            found_results[check_name]["matching_compounds"] = matching_compounds
+            if len(smiles_set) > 0:
+                matching_compounds = set()
+                matching_blocks = []
+                for spectrum in spectra:
+                    if smiles_field in spectrum.keys() and spectrum[smiles_field] in smiles_set:
+                        matching_compounds.add(spectrum[name_field])
+                        matching_blocks.append(spectrum)
 
-            if len(matching_smiles) > 0:
-                try:
-                    img = draw_names(matching_compounds, spectra, name_field, smiles_field, max_draw=500)
-                    open(f"{output_folder}/{database_name}___{check_name}.png", "wb").write(img.data)
-                except Exception as e:
-                    print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
+                print(f"   - Found {Fore.YELLOW}{len(matching_compounds)}{Style.RESET_ALL} compounds with {Fore.YELLOW}{'' if typ == 'MatchingSmiles' else 'non-'}matching{Style.RESET_ALL} SMILES for {Fore.YELLOW}{check_name}{Style.RESET_ALL}")
+                for name in natsort.natsorted(matching_compounds, key=lambda x: x.lower()):
+                    table_data[name][f"C_{check_name}"] = "detected"
+                    if verbose:
+                        print(f"      * {name}")
+                found_results[check_name]["matching_compounds"] = matching_compounds
 
-            write_path = f"{output_folder}/{database_name}___{check_name}.mgf"
-            export_mgf_file(matching_blocks, write_path)
-            print(f"   - Exported spectra to {write_path}")
+                if len(smiles_set) > 0:
+                    try:
+                        img = draw_names(matching_compounds, spectra, name_field, smiles_field, max_draw=500)
+                        out_file = f"{output_folder}/{database_name}___{check_name}__{typ}.png"
+                        open(out_file, "wb").write(img.data)
+                        print(f"   - Exported images for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+                        generated_files.append(out_file)
+                    except Exception as e:
+                        print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
 
-        else:
-            print("   - No matches found")
+                out_file = f"{output_folder}/{database_name}___{check_name}__{typ}.mgf"
+                export_mgf_file(matching_blocks, out_file)
+                print(f"   - Exported spectra to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+                generated_files.append(out_file)
 
-        print("")
+            else:
+                print("   - No matches found")
 
-    list_to_excel_table([v for k, v in table_data.items()], f"{output_folder}/{database_name}___table.xlsx", column_width=40, row_height=40)
+    # get other structures/smiles
+    other_smiles = set(unique_smiles_strings) - set(found_results["StructureOfInterest"]["matching_smiles"])
+
+    # write the table to an Excel file
+    out_file = f"{output_folder}/{database_name}___table.xlsx"
+    list_to_excel_table([v for k, v in table_data.items()], out_file, column_width=40, row_height=40)
+    generated_files.append(out_file)
     temp_dir.cleanup()
 
-    print(f"   - Exported table to {output_folder}/{database_name}___table.xlsx")
+    print(f"   - Exported table to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
     end = time.time()
-    print(f"   - Processed {len(spectra)} spectra in {end - start:.2f} seconds")
+    print(f"   - Processed {Fore.YELLOW}{len(spectra)}{Style.RESET_ALL} spectra in {end - start:.2f} seconds")
     print("--------------------------------------------------------------------------\n")
 
-    return found_results, spectra
+    return found_results, spectra, generated_files

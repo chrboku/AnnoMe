@@ -1,14 +1,24 @@
 [project]
 name = "annome"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.2.0"
+description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
+authors = [
+    { name = "Christoph Bueschl"},
+    { name = "Tomas Rypar"},
+    { name = "Rainer Schuhmacher"}
+]
 requires-python = ">=3.13"
 dependencies = [
     "ipython>=9.3.0",
     "natsort>=8.4.0",
     "openpyxl>=3.1.5",
+    "pip>=25.1.1",
     "plotnine>=0.14.5",
     "rdkit>=2025.3.3",
     "tqdm>=4.67.1",
 ]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
