@@ -8,14 +8,19 @@ authors = [
     { name = "Tomas Rypar"},
     { name = "Rainer Schuhmacher"}
 ]
-requires-python = ">=3.13"
+requires-python = "==3.12.10"
 dependencies = [
+    "bokeh>=3.7.3",
     "ipython>=9.3.0",
+    "ipywidgets>=8.1.7",
+    "matchms>=0.30.2",
+    "ms2deepscore>=2.5.2",
     "natsort>=8.4.0",
     "openpyxl>=3.1.5",
-    "pip>=25.1.1",
-    "plotnine>=0.14.5",
-    "rdkit>=2025.3.3",
+    "plotnine>=0.14.6",
+    "polars>=1.31.0",
+    "pyteomics>=4.7.5",
+    "seaborn>=0.13.2",
     "tqdm>=4.67.1",
 ]
 
