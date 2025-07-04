@@ -1,4 +1,4 @@
-from AnnoMe.Filters import process_database, prep_smarts_key
+from AnnoMe.Filters import process_database, prep_smarts_key, CE_parser
 from collections import OrderedDict
 import pathlib
 import re
@@ -13,29 +13,6 @@ chalcone1_smart = prep_smarts_key("[O,o]=[C,c](-[CH2]-[CH2]-[C,c]@1@[C,c]@[C,c]@
 chalcone2_smart = prep_smarts_key("[O,o]=[C,c](-[CH]=[CH]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2", replace = False)
 chromone_smart = prep_smarts_key("O=C@1@C@C@O@C@2@C@C@C@C@C@12")
 
-def CE_parser(ce_str):
-    """
-    Parses the collision energy string to extract the numeric value.
-    Handles both absolute and relative values.
-    """
-    if isinstance(ce_str, str):
-
-        # Try to match patterns like '70 eV (absolute)', '75eV', '75.0eV', '15V'
-        match = re.search(r"(\d+(?:\.\d+)?)\s*(eV|V)?", ce_str, re.IGNORECASE)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-
-        # Try to match patterns like '[45.0]', '[45]'
-        match = re.match(r"\[(\d+(?:\.\d+)?)\]", ce_str)
-        if match:
-            try:
-                return float(match.group(1))
-            except ValueError:
-                pass
-    return -1
 
 def filter_boku(spectra):
     instrument_regex = re.compile(".*(orbitrap|q-exactive).*", re.IGNORECASE)
@@ -59,13 +36,21 @@ def filter_gnps_library(spectra):
             "collision_energy" in block and 10 <= CE_parser(block["collision_energy"]) <= 90 and 
             "fragmentation_method" in block and block["fragmentation_method"].lower() in ["hcd", "cid"]]
 
+def filter_generic(spectra): 
+    instrument_regex = re.compile(".*(orbitrap|q exactive|q-exactive|qexactive|exploris).*", re.IGNORECASE)
+    return [block for block in spectra if 
+            "instrument" in block and instrument_regex.search(block["instrument"]) and 
+            "fragmentation_method" in block and block["fragmentation_method"].lower() in ["hcd", "cid"] and
+            "collision_energy" in block and 10 <= CE_parser(block["collision_energy"]) <= 90 and 
+            True]
+
+
 data_folderer_path = "../../data"
 input_data = {
     "BOKU_iBAM_MB": {"mgf_file": f"{data_folderer_path}/BOKU_iBAM_new.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_boku},
     #"MB_Riken":     {"mgf_file": f"{data_folderer_path}/MassBank_RIKEN.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_riken},
     "MONA":         {"mgf_file": f"{data_folderer_path}/MoNA-export-All_LC-MS-MS_Orbitrap.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_mona},
     "GNPS":         {"mgf_file": f"{data_folderer_path}/ALL_GNPS_cleaned.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_gnps_library},
-    #"PHENOLICSDB":  {"mgf_file": f"{data_folderer_path}/PHENOLICSDB.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": None}
 }
 
 # Visualize SMARTS with https://smarts.plus/view/1cf72609-6995-4b25-8a16-42eeeb8c09df
@@ -158,4 +143,4 @@ for file in generated_files:
     print(f"   - {file}")
 
 if output_folder_existed:
-    print(f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, excercise with caution.\033[0m")
+    print(f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m")

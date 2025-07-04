@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# demo files
+demo/publicDBs

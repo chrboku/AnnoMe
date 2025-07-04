@@ -6,6 +6,8 @@ import re
 import itertools
 from collections import OrderedDict, defaultdict
 import time
+import requests
+import csv
 
 import numpy as np
 
@@ -33,6 +35,216 @@ import natsort
 
 import colorama
 from colorama import Fore, Style
+
+
+def download_file(url, dest_folder, file_name=None):
+    """
+    Downloads a file from a given URL to a specified destination folder.
+
+    Args:
+        url (str): The URL of the file to download.
+        dest_folder (str): The folder where the downloaded file will be saved.
+
+    Returns:
+        str: The path to the downloaded file.
+    """
+    if not os.path.exists(dest_folder):
+        os.makedirs(dest_folder)
+
+    if file_name is None:
+        filename = os.path.join(dest_folder, url.split("/")[-1])
+    else:
+        filename = os.path.join(dest_folder, file_name)
+
+    response = requests.get(url)
+    with open(filename, "wb") as f:
+        f.write(response.content)
+
+    return filename
+
+
+def tsv_to_mgf(tsv_file_path, mgf_file_path):
+    """
+    Converts a TSV file to an MGF file. Each row becomes a block, with column names as keys.
+
+    Args:
+        tsv_file_path (str): Path to the input TSV file.
+        mgf_file_path (str): Path to the output MGF file.
+    """
+
+    with open(tsv_file_path, "r", encoding="utf-8") as tsvfile, open(mgf_file_path, "w", encoding="utf-8") as mgffile:
+        reader = csv.DictReader(tsvfile, delimiter="\t")
+        for row in reader:
+            mgffile.write("BEGIN IONS\n")
+            for key, value in row.items():
+                if key in ["mzs", "intensities"]:
+                    continue
+                if key == "identifier":
+                    key = "name"
+                if key == "precursor_mz":
+                    key = "pepmass"
+                if value is not None and value != "":
+                    mgffile.write(f"{key}={value}\n")
+            for mz, inte in zip(row["mzs"].split(","), row["intensities"].split(",")):
+                if mz.strip() and inte.strip():
+                    mgffile.write(f"{mz.strip()} {inte.strip()}\n")
+            mgffile.write("END IONS\n\n")
+
+
+def msp_to_mgf(msp_file_path, mgf_file_path):
+    """
+    Converts an MSP file to an MGF file.
+    Each MSP block is converted to an MGF block, with key-value pairs using '=' and no 'Num Peaks' line.
+
+    Args:
+        msp_file_path (str): Path to the input MSP file.
+        mgf_file_path (str): Path to the output MGF file.
+    """
+
+    def parse_block(block_lines):
+        header = []
+        peaks = []
+        for line in block_lines:
+            if not line.strip():
+                continue
+            if ":" in line:
+                key, value = line.split(":", 1)
+                key = key.strip()
+                value = value.strip()
+                if key.lower() == "num peaks":
+                    continue
+                header.append((key, value))
+            else:
+                # Assume it's a peak line (mz intensity)
+                if "\t" in line:
+                    mz, intensity = line.split("\t", 1)
+                elif " " in line:
+                    mz, intensity = line.split(None, 1)
+                else:
+                    continue
+                peaks.append((mz.strip(), intensity.strip()))
+        return header, peaks
+
+    with open(msp_file_path, "r", encoding="utf-8") as infile, open(mgf_file_path, "w", encoding="utf-8") as outfile:
+        block_lines = []
+        for line in infile:
+            if line.strip() == "" and block_lines:
+                header, peaks = parse_block(block_lines)
+                outfile.write("BEGIN IONS\n")
+                for key, value in header:
+                    if key.lower() == "PRECURSORMZ":
+                        key = "pepmass"
+                    if key.lower() == "PRECURSORTYPE":
+                        key = "adduct"
+                    if key.lower() == "RETENTIONTIME":
+                        key = "rtinseconds"
+                    if key.lower() == "PRECURSORMZ":
+                        key = "pepmass"
+                    if key.lower() == "PRECURSORMZ":
+                        key = "pepmass"
+                    outfile.write(f"{key}={value}\n")
+                for mz, intensity in peaks:
+                    outfile.write(f"{mz} {intensity}\n")
+                outfile.write("END IONS\n\n")
+                block_lines = []
+            else:
+                block_lines.append(line)
+        # Write last block if file doesn't end with newline
+        if block_lines:
+            header, peaks = parse_block(block_lines)
+            outfile.write("BEGIN IONS\n")
+            for key, value in header:
+                outfile.write(f"{key}={value}\n")
+            for mz, intensity in peaks:
+                outfile.write(f"{mz} {intensity}\n")
+            outfile.write("END IONS\n\n")
+
+
+
+def fix_massspecgym_nameandid(mgf_file_path):
+    """
+    Fixes the 'name' and 'id' fields in the MassSpecGym MGF file.
+    The 'name' field is set to the 'id' field, and the 'id' field is removed.
+
+    Args:
+        mgf_file_path (str): Path to the MassSpecGym MGF file.
+    """
+    with open(mgf_file_path, "r", encoding="utf-8") as infile:
+        lines = infile.readlines()
+
+    with open(mgf_file_path, "w", encoding="utf-8") as outfile:
+        for line in lines:
+            if line.startswith("name="):
+                # Set name to id
+                outfile.write(line.replace("name=", "massspecgym_id="))
+
+            elif line.startswith("inchikey="):
+                # Set id to name
+                outfile.write(line)
+                outfile.write(line.replace("inchikey=", "name="))
+
+            else:
+                outfile.write(line)
+
+
+def download_common_MSMS_libraries(dest_folder):
+    """
+    Downloads common MS/MS libraries to the specified destination folder.
+
+    Args:
+        dest_folder (str): The folder where the libraries will be downloaded.
+
+    Returns:
+        list: A list of paths to the downloaded library files.
+    """
+
+    print("Downloading GNPS - MONA")
+    #download_file("https://external.gnps2.org/gnpslibrary/MONA.mgf", dest_folder)
+    print("Downloading GNPS - Wine DB Orbitrap")
+    #download_file("https://external.gnps2.org/gnpslibrary/WINE-DB-ORBITRAP.mgf", dest_folder)
+    print("Downloading GNPS - GNPS cleaned")
+    #download_file("https://external.gnps2.org/processed_gnps_data/gnps_cleaned.mgf", dest_folder)
+    print("Downloading MassSpecGym")
+    #download_file("https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/resolve/main/data/MassSpecGym.tsv", dest_folder)
+    print("Processing MassSpecGym file")
+    tsv_to_mgf(os.path.join(dest_folder, "MassSpecGym.tsv"), os.path.join(dest_folder, "MassSpecGym.mgf"))
+    fix_massspecgym_nameandid(os.path.join(dest_folder, "MassSpecGym.mgf"))
+    print("Downloading MassBank Riken")
+    #download_file("https://github.com/MassBank/MassBank-data/releases/download/2025.05.1/MassBank.msp_RIKEN", dest_folder)
+    print("Processing MassBank Riken file")
+    msp_to_mgf(os.path.join(dest_folder, "MassBank.msp_RIKEN"), os.path.join(dest_folder, "MassBank_RIKEN.mgf"))
+
+
+def download_MS2DeepScore_model(dest_folder):
+    """
+    Downloads the MS2DeepScore model to the specified destination folder.
+    """
+    model_url = "https://zenodo.org/records/13897744/files/ms2deepscore_model.pt?download=1"
+    download_file(model_url, dest_folder, file_name="ms2deepscore_model.pt")
+
+
+def CE_parser(ce_str):
+    """
+    Parses the collision energy string to extract the numeric value.
+    Handles both absolute and relative values.
+    """
+    if isinstance(ce_str, str):
+        # Try to match patterns like '70 eV (absolute)', '75eV', '75.0eV', '15V'
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(eV|V)?", ce_str, re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+
+        # Try to match patterns like '[45.0]', '[45]'
+        match = re.match(r"\[(\d+(?:\.\d+)?)\]", ce_str)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+    return -1
 
 
 def scale_dimensions_to_fit(original_width, original_height, max_width, max_height):
@@ -263,6 +475,23 @@ def save_as_pdf_pages(
                 raise TypeError(f"Unsupported type {type(plot)}. Must be ggplot or Figure.")
 
 
+def is_float(value):
+    """
+    Checks if a value can be converted to a float.
+
+    Args:
+        value: The value to check.
+
+    Returns:
+        bool: True if the value can be converted to a float, False otherwise.
+    """
+    try:
+        float(value)
+        return True
+    except (ValueError, TypeError):
+        return False
+
+
 def parse_mgf_file(file_path):
     """
     Parses an MGF file and returns a dictionary containing the parsed data.
@@ -290,10 +519,17 @@ def parse_mgf_file(file_path):
             current_block_secondary = OrderedDict()
 
         elif line == "END IONS":
+            # Track missing keys in the current block for later display
             missing_keys = natsort.natsorted([key.lower() for key in required_keys if key not in current_block_primary.keys() and key not in current_block_secondary.keys()])
             if len(missing_keys) > 0:
                 incomplete_blocks[str(missing_keys)] += 1
-            blocks.append(OrderedDict(list(natsort.natsorted(current_block_primary.items(), key=lambda x: x[0].lower())) + list(natsort.natsorted(current_block_secondary.items(), key=lambda x: x[0].lower()))))
+
+            # Check if the block has the required keys to be considered valid
+            use_block = "pepmass" in current_block_primary and is_float(current_block_primary["pepmass"]) and "name" in current_block_primary
+            if use_block:
+                blocks.append(OrderedDict(list(natsort.natsorted(current_block_primary.items(), key=lambda x: x[0].lower())) + list(natsort.natsorted(current_block_secondary.items(), key=lambda x: x[0].lower()))))
+
+            # Reset current blocks for the next iteration
             current_block_primary = OrderedDict()
             current_block_secondary = OrderedDict()
 
@@ -329,7 +565,7 @@ def parse_mgf_file(file_path):
                     else:
                         # Single value, wrap in list
                         try:
-                            num = float(value)
+                            num = round(float(value), 0)
                             value = [num]
                         except ValueError:
                             pass  # Leave as is if not a number
@@ -354,7 +590,7 @@ def parse_mgf_file(file_path):
                 elif value.lower() in ["negative", "neg", "n", "-"]:
                     value = "-"
                 else:
-                    raise ValueError(f"Invalid ion mode: {value}")
+                    value = "NA"
                 key = "ionmode"
                 is_primary = True
 
@@ -369,7 +605,7 @@ def parse_mgf_file(file_path):
                 key = "pepmass"
                 is_primary = True
 
-            elif key in ["instrument", "instrument_model", "instrument_model_name", "instrument_name", "source_instrument", "ms_mass_analyzer"]:
+            elif key in ["instrument", "instrument_model", "instrument_model_name", "instrument_name", "source_instrument", "ms_mass_analyzer", "instrument_type"]:
                 key = "instrument"
                 is_primary = True
 
@@ -485,6 +721,23 @@ def show_overview_of_blocks(blocks):
         print("")
     else:
         print("   - No instrument information found in blocks.")
+
+    ionmodes = {}
+    for block in blocks:
+        if "ionmode" in block:
+            ionmode = block["ionmode"]
+        else:
+            ionmode = "Unknown"
+        ionmodes[ionmode] = ionmodes.get(ionmode, 0) + 1
+
+    if ionmodes:
+        print("   - Ion mode usage counts: ", end="")
+        sorted_ionmodes = sorted(ionmodes.items(), key=lambda item: item[1], reverse=True)
+        for i, (ionmode, count) in enumerate(sorted_ionmodes):
+            print(f"{', ' if i > 0 else ''}{Fore.YELLOW if i % 2 == 0 else Fore.GREEN}{ionmode}: {count}{Style.RESET_ALL}", end="")
+        print("")
+    else:
+        print("   - No ion mode information found in blocks.")
 
     fragmentation_method_counts = {}
     for block in blocks:
@@ -732,10 +985,11 @@ def prep_smarts_key(smart, replace=True):
     return rdkit.Chem.MolFromSmarts(smart)
 
 
-def process_database(database_name, mgf_file, smiles_field, name_field, sf_field, smart_checks, standardize_block_functions, output_folder, filter_fn=None, verbose=False):
+def process_database(database_name, mgf_file, smiles_field, name_field, sf_field, smart_checks, standardize_block_functions, output_folder, include_compound_plots=None, filter_fn=None, verbose=False):
     start = time.time()
 
-    # keep track of generated files
+    # keep track of generated results and files
+    found_results = {}
     generated_files = []
 
     # parse MGF file
@@ -750,13 +1004,17 @@ def process_database(database_name, mgf_file, smiles_field, name_field, sf_field
     # apply custom filter if provided
     if filter_fn is not None:
         spectra = filter_fn(spectra)
-    print(f"   2. Filtered to {Fore.YELLOW}{len(spectra)}{Style.RESET_ALL} blocks with SMILES string, warning, must not be valid smiles")
+    print(f"\n   2. Filtered to {Fore.YELLOW}{len(spectra)}{Style.RESET_ALL} blocks with SMILES string, warning, must not be valid smiles")
+
+    if len(spectra) == 0:
+        print(f"\n{Fore.RED}ERROR: No valid spectra found after filtering. {Style.RESET_ALL}")
+        return found_results, spectra, generated_files
 
     # show overview of the spectra
     show_overview_of_blocks(spectra)
 
     standardize_blocks(spectra, standardize_block_functions)
-    print(f"   3. standardized block information")
+    print(f"\n   3. standardized block information")
 
     # show overview of the spectra
     show_overview_of_blocks(spectra)
@@ -766,42 +1024,57 @@ def process_database(database_name, mgf_file, smiles_field, name_field, sf_field
 
     # get unique names and smiles from the spectra
     names = set([block[name_field] for block in spectra if name_field in block.keys() and block[name_field]])
-    print(f"   4. Found {Fore.YELLOW}{len(names)}{Style.RESET_ALL} unique compound names in the MGF file")
+    print(f"\n   4. Found {Fore.YELLOW}{len(names)}{Style.RESET_ALL} unique compound names in the MGF file")
 
     temp_dir = tempfile.TemporaryDirectory()
 
     # add each name to the table data
-    for i, name in tqdm(enumerate(list(natsort.natsorted(names, key=lambda x: x.lower())))):
+    if len(names) > 2000:
+        if include_compound_plots is None:
+            print(f"{Fore.YELLOW}WARNING: More than 2000 unique names found, plotting disabled as it might take longer than {len(names) / 50} seconds.\nConsider setting the parameter include_compound_plots to True.{Style.RESET_ALL}")
+            include_compound_plots = False
+        elif include_compound_plots:
+            print(f"{Fore.RED}WARNING: More than 2000 unique names found, plotting may take a long time.{Style.RESET_ALL}")
+
+    smiles = defaultdict(list)
+    formulas = defaultdict(list)
+    for block in spectra:
+        if name_field in block.keys():
+            if smiles_field in block.keys() and block[smiles_field]:
+                smiles[block[name_field]].append(block[smiles_field])
+            if sf_field in block.keys() and block[sf_field]:
+                formulas[block[name_field]].append(block[sf_field])
+    for i, name in tqdm(enumerate(list(natsort.natsorted(names, key=lambda x: x.lower()))), position=0, leave=False, total=len(names)):
         # add compound
         table_data[name] = {"A_name": name, "A_comment": ""}
 
         # get unique smiles for the compound
-        smiles = set([block[smiles_field] for block in spectra if name_field in block.keys() and block[name_field] == name and smiles_field in block.keys() and block[smiles_field]])
-        table_data[name]["A_uniqueSmiles"] = str(smiles) if len(smiles) == 1 else f"{len(smiles)}: {smiles}"
+        csmiles = set(smiles[name])  # use set to ensure uniqueness
+        table_data[name]["A_uniqueSmiles"] = str(csmiles) if len(csmiles) == 1 else f"{len(csmiles)}: {csmiles}"
 
         # get unique sum formulas
-        formulas = set([block[sf_field] for block in spectra if name_field in block.keys() and block[name_field] == name and sf_field in block.keys() and block[sf_field]])
-        table_data[name]["A_SumFormula"] = str(formulas) if len(formulas) == 1 else f"{len(formulas)}: {str(formulas)}"
+        cformulas = set(formulas[name])  # use set to ensure uniqueness
+        table_data[name]["A_SumFormula"] = str(cformulas) if len(cformulas) == 1 else f"{len(cformulas)}: {str(cformulas)}"
 
         # draw structure if possible
-        try:
-            img = draw_smiles(smiles, max_draw=500)
-            open(
-                f"{temp_dir.name}/img_{i}.png",
-                "wb",
-            ).write(img.data)
-            table_data[name]["A_structure"] = f"$$$IMG:{temp_dir.name}/img_{i}.png"
-        except Exception as e:
-            print(f"ERROR: could not draw structure for {name}: {e}")
-            table_data[name]["A_structure"] = "ERROR: could not draw structure"
+        if include_compound_plots is None or include_compound_plots:
+            try:
+                img = draw_smiles(smiles[name], max_draw=500)
+                open(
+                    f"{temp_dir.name}/img_{i}.png",
+                    "wb",
+                ).write(img.data)
+                table_data[name]["A_structure"] = f"$$$IMG:{temp_dir.name}/img_{i}.png"
+            except Exception as e:
+                print(f"ERROR: could not draw structure for {name}: {e}")
+                table_data[name]["A_structure"] = "ERROR: could not draw structure"
 
     n_spectra_with_smiles = sum(1 for block in spectra if smiles_field in block.keys() and block[smiles_field])
-    print(f"   5. Found {Fore.YELLOW}{n_spectra_with_smiles}{Style.RESET_ALL} spectra with valid SMILES")
+    print(f"\n   5. Found {Fore.YELLOW}{n_spectra_with_smiles}{Style.RESET_ALL} spectra with valid SMILES")
 
     unique_smiles_strings = sorted(list(set([block[smiles_field] for block in spectra if smiles_field in block.keys() and smiles_field != ""])))
-    print(f"   6. Found {Fore.YELLOW}{len(unique_smiles_strings)}{Style.RESET_ALL} unique smiles strings")
+    print(f"\n   6. Found {Fore.YELLOW}{len(unique_smiles_strings)}{Style.RESET_ALL} unique smiles strings")
 
-    found_results = {}
     for check_name, check_parameters in smart_checks.items():
         found_results[check_name] = {}
         subs = check_parameters["filter"]
@@ -831,14 +1104,20 @@ def process_database(database_name, mgf_file, smiles_field, name_field, sf_field
                 found_results[check_name]["matching_compounds"] = matching_compounds
 
                 if len(smiles_set) > 0:
-                    try:
-                        img = draw_names(matching_compounds, spectra, name_field, smiles_field, max_draw=500)
-                        out_file = f"{output_folder}/{database_name}___{check_name}__{typ}.png"
-                        open(out_file, "wb").write(img.data)
-                        print(f"   - Exported images for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
-                        generated_files.append(out_file)
-                    except Exception as e:
-                        print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
+                    # Partition matching_compounds and spectra into chunks of 500
+                    matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
+                    chunk_size = 500
+                    for chunk_idx in range(0, len(matching_compounds_list), chunk_size):
+                        chunk_compounds = matching_compounds_list[chunk_idx : chunk_idx + chunk_size]
+                        # try:
+                        #    img = draw_names(chunk_compounds, spectra, name_field, smiles_field, max_draw=chunk_size)
+                        #    out_file = f"{output_folder}/{database_name}___{check_name}__{typ}_chunk{chunk_idx}.png"
+                        #    with open(out_file, "wb") as f:
+                        #        f.write(img.data)
+                        #    print(f"   - Exported images {chunk_idx}-{chunk_idx + chunk_size} for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+                        #    generated_files.append(out_file)
+                        # except Exception as e:
+                        #    print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
 
                 out_file = f"{output_folder}/{database_name}___{check_name}__{typ}.mgf"
                 export_mgf_file(matching_blocks, out_file)
@@ -847,9 +1126,6 @@ def process_database(database_name, mgf_file, smiles_field, name_field, sf_field
 
             else:
                 print("   - No matches found")
-
-    # get other structures/smiles
-    other_smiles = set(unique_smiles_strings) - set(found_results["StructureOfInterest"]["matching_smiles"])
 
     # write the table to an Excel file
     out_file = f"{output_folder}/{database_name}___table.xlsx"
