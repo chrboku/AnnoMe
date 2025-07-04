@@ -20,10 +20,10 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 * Open a terminal and navigate to an empty folder. 
 
-* Clone the repo AnnoMe with the command **git clone https://github.com/chrboku/AnnoMe**
+* Clone the repo AnnoMe with the command `git clone https://github.com/chrboku/AnnoMe`.
 
-* Execute the demo filter-script with **uv run python ./demo/Demo_FilterDatabasesPrenylatedCompounds_publicDBs.py**. This will download the publicly available MS/MS databases and the MS2DeepScore model. Then the script will filter the public databases for **prenylated flavones** and **prenylated chalcones**. 
+* Execute the demo filter-script with `uv run python ./demo/Demo_FilterDatabasesPrenylatedCompounds_publicDBs.py`. This will download the publicly available MS/MS databases and the MS2DeepScore model. Then the script will filter the public databases for `prenylated flavones` and `prenylated chalcones`. 
 
-* Execute the demo analysis-script with **uv run jupyter nbconvert --to HTML --execute ./demo/Analysis_PrenylatedCompounds_publicDBs.ipynb**. Once finished, the log of the classification pipeline will be available in **./demo/Analysis_PrenylatedCompounds_publicDBs.html** and the prediction results will be available in **./demo/publicDBs/output/PrenylatedCompounds_publicDBs/**
+* Execute the demo analysis-script with `uv run jupyter nbconvert --to HTML --execute ./demo/Analysis_PrenylatedCompounds_publicDBs.ipynb`. Once finished, the log of the classification pipeline will be available in `./demo/Analysis_PrenylatedCompounds_publicDBs.html` and the prediction results will be available in `./demo/publicDBs/output/PrenylatedCompounds_publicDBs/`. 
 
 ## TODO: include how a new search can be started, what the parameters are, and documentation about the results
