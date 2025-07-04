@@ -9,7 +9,7 @@ import shutil
 
 # Download the common MS/MS libraries if they do not exist
 libraries_path = "./demo/publicDBs/libraries"
-if not os.path.exists(libraries_path) or True:
+if not os.path.exists(libraries_path):
     print(f"Common MS/MS libraries not found in {Fore.YELLOW}{libraries_path}{Style.RESET_ALL}. Downloading...")
     # Create the directory if it does not exist
     os.makedirs(libraries_path, exist_ok=True)
