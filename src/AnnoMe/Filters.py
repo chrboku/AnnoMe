@@ -199,18 +199,18 @@ def download_common_MSMS_libraries(dest_folder):
     """
 
     print("Downloading GNPS - MONA")
-    #download_file("https://external.gnps2.org/gnpslibrary/MONA.mgf", dest_folder)
+    download_file("https://external.gnps2.org/gnpslibrary/MONA.mgf", dest_folder)
     print("Downloading GNPS - Wine DB Orbitrap")
-    #download_file("https://external.gnps2.org/gnpslibrary/WINE-DB-ORBITRAP.mgf", dest_folder)
+    download_file("https://external.gnps2.org/gnpslibrary/WINE-DB-ORBITRAP.mgf", dest_folder)
     print("Downloading GNPS - GNPS cleaned")
-    #download_file("https://external.gnps2.org/processed_gnps_data/gnps_cleaned.mgf", dest_folder)
+    download_file("https://external.gnps2.org/processed_gnps_data/gnps_cleaned.mgf", dest_folder)
     print("Downloading MassSpecGym")
-    #download_file("https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/resolve/main/data/MassSpecGym.tsv", dest_folder)
+    download_file("https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/resolve/main/data/MassSpecGym.tsv", dest_folder)
     print("Processing MassSpecGym file")
     tsv_to_mgf(os.path.join(dest_folder, "MassSpecGym.tsv"), os.path.join(dest_folder, "MassSpecGym.mgf"))
     fix_massspecgym_nameandid(os.path.join(dest_folder, "MassSpecGym.mgf"))
     print("Downloading MassBank Riken")
-    #download_file("https://github.com/MassBank/MassBank-data/releases/download/2025.05.1/MassBank.msp_RIKEN", dest_folder)
+    download_file("https://github.com/MassBank/MassBank-data/releases/download/2025.05.1/MassBank.msp_RIKEN", dest_folder)
     print("Processing MassBank Riken file")
     msp_to_mgf(os.path.join(dest_folder, "MassBank.msp_RIKEN"), os.path.join(dest_folder, "MassBank_RIKEN.mgf"))
 
