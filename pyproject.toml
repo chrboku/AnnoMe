@@ -8,7 +8,7 @@ authors = [
     { name = "Tomas Rypar"},
     { name = "Rainer Schuhmacher"}
 ]
-requires-python = "==3.12.10"
+requires-python = "==3.12.11"
 dependencies = [
     "bokeh>=3.7.3",
     "ipykernel>=6.29.5",
