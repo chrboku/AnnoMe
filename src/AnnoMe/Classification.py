@@ -107,16 +107,12 @@ def execution_timer(title=None):
         end_time = time.time()
         total_time = end_time - start_time
         print(f"{title} Failed: {e}")
-        print(
-            f"{title} Failed: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}"
-        )
+        print(f"{title} Failed: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
         raise e
     finally:
         end_time = time.time()
         total_time = end_time - start_time
-        print(
-            f"{title} Finished: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}"
-        )
+        print(f"{title} Finished: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
 
 
 @contextmanager
@@ -201,14 +197,10 @@ def save_as_pdf_pages(
                 with p9._utils.context.plot_context(plot).rc_context:
                     # Save as a page in the PDF file
                     pdf.savefig(fig, **fig_kwargs)
-            elif isinstance(plot, plt.Figure) or isinstance(
-                plot, matplotlib.table.Table
-            ):
+            elif isinstance(plot, plt.Figure) or isinstance(plot, matplotlib.table.Table):
                 pdf.savefig(plot)
             else:
-                raise TypeError(
-                    f"Unsupported type {type(plot)}. Must be ggplot or Figure."
-                )
+                raise TypeError(f"Unsupported type {type(plot)}. Must be ggplot or Figure.")
 
 
 def process_ce_value(value):
@@ -1549,13 +1541,15 @@ def generate_embedding_plots(df, output_dir, colors):
         ## TODO include heatmap here
 
 
-def train_and_classify(df, subsets = None):
+def train_and_classify(df, subsets = None, classifiers=None, cross_validation=None):
     """
     Trains various classifiers on the MS2DeepScore embeddings and evaluates their performance.
 
     Args:
         df (pd.DataFrame): DataFrame containing MS2DeepScore embeddings and associated metadata.
         subsets (dict, optional): Dictionary specifying subsets of the data to use for training and evaluation.
+        classifiers (dict, optional): Dictionary of classifiers to use for training and evaluation.
+        cross_validation (object, optional): Cross-validation strategy to use for training and evaluation.
 
     Returns:
         dict: Dictionary containing the results of the classification experiments.
@@ -1571,36 +1565,37 @@ def train_and_classify(df, subsets = None):
     df["used_for_validation"] = False
     df["used_for_inference"] = False
 
-    # Test different classifiers
-    classifiers = {
-        "Nearest Neighbors n=3": KNeighborsClassifier(3),
-        "Nearest Neighbors n=10": KNeighborsClassifier(10),
-        "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
-        #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
-        # "Gaussian Process":         GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
-        "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
-        "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
-        "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
-        "AdaBoost": AdaBoostClassifier(random_state=42),
-        "Naive Bayes": GaussianNB(),
-        "QDA": QuadraticDiscriminantAnalysis(),
-        "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
-        "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
-        # "Gradient Boosting":        GradientBoostingClassifier(random_state=42),
-        "Bagging Classifier": BaggingClassifier(random_state=42),
-        "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-        "Ridge Classifier": RidgeClassifier(random_state=42),
-        "Voting Classifier (soft)": VotingClassifier(
-            estimators=[
-                ("lr", LogisticRegression(random_state=42, max_iter=1000)),
-                ("rf", RandomForestClassifier(random_state=42)),
-                ("gnb", GaussianNB()),
-            ],
-            voting="soft",
-        ),
-    }
+    # Setup different classifiers if not specified by the user
+    if classifiers is None:
+        classifiers = {
+            "Nearest Neighbors n=3": KNeighborsClassifier(3),
+            "Nearest Neighbors n=10": KNeighborsClassifier(10),
+            "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
+            #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
+            # "Gaussian Process":         GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
+            "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
+            "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
+            "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
+            "AdaBoost": AdaBoostClassifier(random_state=42),
+            "Naive Bayes": GaussianNB(),
+            "QDA": QuadraticDiscriminantAnalysis(),
+            "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
+            "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
+            # "Gradient Boosting":        GradientBoostingClassifier(random_state=42),
+            "Bagging Classifier": BaggingClassifier(random_state=42),
+            "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+            "Ridge Classifier": RidgeClassifier(random_state=42),
+            "Voting Classifier (soft)": VotingClassifier(
+                estimators=[
+                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
+                    ("rf", RandomForestClassifier(random_state=42)),
+                    ("gnb", GaussianNB()),
+                ],
+                voting="soft",
+            ),
+        }
 
-    print(f"{len(classifiers)} different models will be trained")
+    print(f"   - {len(classifiers)} different models will be trained")
 
     if subsets is None:
         subsets = {
@@ -1608,9 +1603,12 @@ def train_and_classify(df, subsets = None):
             "negative"     : lambda x: x["ionMode"] == "negative",
         }
 
-    # Execute classifiers with cross-validation
-    cv = StratifiedShuffleSplit(n_splits=10, test_size=0.8, train_size=0.2, random_state=42)
-    cv = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
+    # Setup crossvalidation if not specified by the user
+    if cross_validation is None:
+        #cross_validation = StratifiedShuffleSplit(n_splits=10, test_size=0.8, train_size=0.2, random_state=42)
+        cross_validation = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
+        printf(f"   - Using StratifiedKFold cross-validation with {cross_validation.n_splits} folds")
+        print(f"   - Using {cross_validation.n_splits} folds for cross-validation")
 
     # Filter the dataframe and ms2_embeddings for training and inference
     train_df = df[df["type"].isin(["train - relevant", "train - other"])].reset_index(drop = True)
@@ -1706,7 +1704,7 @@ def train_and_classify(df, subsets = None):
                         fold_conf_matrices = []
 
                         # Perform 5-fold cross-validation
-                        for fold, (train_idx, test_idx) in enumerate(cv.split(trainSubset_X, trainSubset_y_gt)):
+                        for fold, (train_idx, test_idx) in enumerate(cross_validation.split(trainSubset_X, trainSubset_y_gt)):
                             print("")
 
                             trainSubset_train_useInds, trainSubset_test_useInds = (
