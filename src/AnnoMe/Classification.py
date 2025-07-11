@@ -11,6 +11,8 @@ from contextlib import contextmanager
 import itertools
 import tempfile
 import re
+import warnings
+from collections import Counter
 
 # Data science packages
 import numpy as np
@@ -28,9 +30,11 @@ from matchms.filtering.default_pipelines import DEFAULT_FILTERS
 from ms2deepscore import MS2DeepScore
 from ms2deepscore.models import load_model
 
+# Dimensionality reduction packages
 import umap
 import pacmap
 
+# Machine learning packages
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
@@ -40,7 +44,14 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import confusion_matrix, balanced_accuracy_score, precision_score, f1_score, roc_auc_score, recall_score
+from sklearn.metrics import (
+    confusion_matrix,
+    balanced_accuracy_score,
+    precision_score,
+    f1_score,
+    roc_auc_score,
+    recall_score,
+)
 from sklearn.ensemble import (
     ExtraTreesClassifier,
     GradientBoostingClassifier,
@@ -53,9 +64,8 @@ from sklearn.model_selection import StratifiedShuffleSplit, StratifiedKFold
 # Other utilities
 from natsort import natsorted
 
+# Colorama for colored terminal output
 from colorama import Fore, Style
-import warnings
-from collections import Counter
 
 # Set random seeds
 np.random.seed(42)
@@ -70,12 +80,22 @@ random.seed(42)
 
 
 def set_random_seeds(seed):
+    """
+    Set random seeds for reproducibility.
+    Args:
+        seed (int): The seed value to set for random number generation.
+    """
     np.random.seed(seed)
     random.seed(seed)
 
 
 @contextmanager
 def execution_timer(title=None):
+    """
+    Context manager to time the execution of a block of code.
+    Args:
+        title (str, optional): Title to display in the timer output.
+    """
     start_time = time.time()
     if title:
         title = f"[{title}]: "
@@ -87,18 +107,27 @@ def execution_timer(title=None):
         end_time = time.time()
         total_time = end_time - start_time
         print(f"{title} Failed: {e}")
-        print(f"{title} Failed: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+        print(
+            f"{title} Failed: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}"
+        )
         raise e
     finally:
         end_time = time.time()
         total_time = end_time - start_time
-        print(f"{title} Finished: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}")
+        print(
+            f"{title} Finished: Total execution time: {Fore.YELLOW}{total_time:.2f}{Style.RESET_ALL} seconds, finished at: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(end_time))}"
+        )
 
 
 @contextmanager
 def all_logging_disabled(highest_level=logging.CRITICAL):
-    previous_level = logging.root.manager.disable
+    """
+    Context manager to disable all logging messages above a specified level.
+    Args:
+        highest_level (int): The logging level above which all messages will be suppressed.
+    """
 
+    previous_level = logging.root.manager.disable
     logging.disable(highest_level)
 
     try:
@@ -108,6 +137,11 @@ def all_logging_disabled(highest_level=logging.CRITICAL):
 
 
 def p9theme():
+    """
+    Returns a minimal plotnine theme with custom styling.
+    This theme sets the base font size, removes axis ticks, and customizes
+    various elements such as title, panel background, grid lines, and strip background.
+    """
     return p9.theme_minimal(base_size=6) + p9.theme(
         axis_ticks=p9.element_blank(),
         title=p9.element_text(color="#3C3C3C"),
@@ -127,6 +161,16 @@ def save_as_pdf_pages(
     verbose=True,
     **kwargs,
 ):
+    """
+    Save multiple plots as pages in a PDF file.
+    Args:
+        plots (iterable): An iterable of ggplot objects or matplotlib figures.
+        filename (str, optional): The name of the output PDF file. If not provided,
+            it will be generated from the first plot's filename.
+        path (str, optional): The directory where the PDF file will be saved.
+        verbose (bool, optional): If True, print the filename being saved.
+        **kwargs: Additional keyword arguments passed to PdfPages.savefig().
+    """
     # as in ggplot.save()
     fig_kwargs = {"bbox_inches": "tight"}
     fig_kwargs.update(kwargs)
@@ -157,10 +201,14 @@ def save_as_pdf_pages(
                 with p9._utils.context.plot_context(plot).rc_context:
                     # Save as a page in the PDF file
                     pdf.savefig(fig, **fig_kwargs)
-            elif isinstance(plot, plt.Figure) or isinstance(plot, matplotlib.table.Table):
+            elif isinstance(plot, plt.Figure) or isinstance(
+                plot, matplotlib.table.Table
+            ):
                 pdf.savefig(plot)
             else:
-                raise TypeError(f"Unsupported type {type(plot)}. Must be ggplot or Figure.")
+                raise TypeError(
+                    f"Unsupported type {type(plot)}. Must be ggplot or Figure."
+                )
 
 
 def process_ce_value(value):
@@ -667,6 +715,9 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000):
     """
     Generator that yields paths to temporary MGF files, each containing up to max_blocks spectra from the input file.
     Each yielded file is deleted when closed.
+    Args:
+        input_mgf_path (str): Path to the input MGF file.
+        max_blocks (int): Maximum number of spectra blocks per chunk.
     """
     def write_chunk(chunk_lines):
         temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
@@ -694,6 +745,16 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000):
 
 
 def select_randomly_n_spectra(input_mgf_path, n = None):
+    """
+    Selects n random spectra from an MGF file and writes them to a new temporary file.
+    If n is None or negative, returns the original file path and False.
+    Args:
+        input_mgf_path (str): Path to the input MGF file.
+        n (int, optional): Number of spectra to select. If None or negative, returns the original file path and False.
+    Returns:
+        tuple: A tuple containing the path to the new MGF file with selected spectra and a boolean indicating if the file was created.
+        If no spectra were selected, the original file path and False are returned.
+    """
     if n is None or n < 0:
         return input_mgf_path, False
 
@@ -724,7 +785,20 @@ def select_randomly_n_spectra(input_mgf_path, n = None):
     return temp.name, True
 
 def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW, total = None):
-    
+    """
+    Generates and prints various classification metrics including confusion matrix, balanced accuracy, precision, F1 score, recall, and ROC AUC.
+    Args:
+        gt (list): Ground truth labels.
+        pred (list): Predicted labels.
+        labels (list): List of unique labels for classification.
+        print_pre (str): Prefix for printed messages.
+        col_correct (str): Color for correct metrics.
+        col_wrong (str): Color for wrong metrics.
+        total (int, optional): Total number of samples (for printing purposes).
+    Returns:
+        tuple: A tuple containing the confusion matrix as a percentage and a DataFrame with the metrics
+    """
+
     # Generate the confusion matrix
     conf_matrix = confusion_matrix(gt, pred, labels = labels)
     conf_matrix_sum = conf_matrix.sum(axis=1, keepdims=True)
@@ -769,6 +843,15 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
 
 
 def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None):
+    """
+    Generates MS2DeepScore embeddings for the provided datasets using the specified model file.
+    Args:
+        model_file_name (str): Path to the MS2DeepScore model file.
+        datasets (dict): Dictionary containing dataset information, including file paths and types.
+        data_to_add (dict, optional): Additional data to include in the embeddings.
+    Returns:
+        pd.DataFrame: DataFrame containing the generated MS2DeepScore embeddings and associated metadata.
+    """
     with execution_timer(title="MS2DeepScore"):
         print(f"\n\nRunning {Fore.YELLOW}MS2DeepScore{Style.RESET_ALL}")
         print("#######################################################")
@@ -898,10 +981,15 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
     
     return df
 
-
-
-
 def add_mzmine_metainfos(datasets, df):
+    """
+    Adds MZmine meta-information to the main dataframe from the datasets.
+    Args:
+        datasets (dict): Dictionary containing dataset information, including MZmine meta-table paths.
+        df (pd.DataFrame): Main dataframe to which MZmine meta-information will be added
+    Returns:
+        pd.DataFrame: Updated dataframe with MZmine meta-information added.
+    """
     allMZmine = []
     for dataset_name, ds in datasets.items():
         if "mzmine_meta_table" in ds.keys() and ds["mzmine_meta_table"] is not None and ds["mzmine_meta_table"] != "":
@@ -1008,9 +1096,15 @@ def add_mzmine_metainfos(datasets, df):
 
     return df
 
-
-
 def add_sirius_fingerprints(datasets, df):
+    """
+    Adds SIRIUS fingerprints to the main dataframe from the datasets.
+    Args:
+        datasets (dict): Dictionary containing dataset information, including fingerprint file paths.
+        df (pd.DataFrame): Main dataframe to which SIRIUS fingerprints will be added.
+    Returns:
+        pd.DataFrame: Updated dataframe with SIRIUS fingerprints added.
+    """
     df["sirius_fingerprint"] = None
     for dataset_name, ds in datasets.items():
         if "fingerprintFile" in ds.keys() and ds["fingerprintFile"] is not None and ds["fingerprintFile"] != "":
@@ -1032,8 +1126,15 @@ def add_sirius_fingerprints(datasets, df):
 
     return df   
 
-
 def add_sirius_canopus(datasets, df):
+    """
+    Adds SIRIUS Canopus annotations to the main dataframe from the datasets.
+    Args:
+        datasets (dict): Dictionary containing dataset information, including Canopus file paths.
+        df (pd.DataFrame): Main dataframe to which SIRIUS Canopus annotations will be added.
+    Returns:
+        pd.DataFrame: Updated dataframe with SIRIUS Canopus annotations added.
+    """
     allCanopus = []
     for dataset_name, ds in datasets.items():
         if "canopus_file" in ds.keys() and ds["canopus_file"] is not None and ds["canopus_file"] != "" and ds["canopus_file"] != "::SIRIUS":
@@ -1105,8 +1206,15 @@ def add_sirius_canopus(datasets, df):
 
     return df
 
-
 def add_sirius_predictions(datasets, df):
+    """
+    Adds SIRIUS predictions to the main dataframe from the datasets.
+    Args:
+        datasets (dict): Dictionary containing dataset information, including SIRIUS file paths.
+        df (pd.DataFrame): Main dataframe to which SIRIUS predictions will be added.
+    Returns:
+        pd.DataFrame: Updated dataframe with SIRIUS predictions added.
+    """
     allSIRIUS = []
     for dataset_name, ds in datasets.items():
         if "sirius_file" in ds.keys() and ds["sirius_file"] is not None and ds["sirius_file"] != "":
@@ -1178,8 +1286,15 @@ def add_sirius_predictions(datasets, df):
 
     return df
 
-
 def add_mzmine_quant(datasets, df):
+    """
+    Adds MZmine quantification data to the main dataframe from the datasets.
+    Args:
+        datasets (dict): Dictionary containing dataset information, including quantification file paths.
+        df (pd.DataFrame): Main dataframe to which MZmine quantification data will be added.
+    Returns:
+        pd.DataFrame: Updated dataframe with MZmine quantification data added.
+    """
     allQuant = []
     for dataset_name, ds in datasets.items():
         if "quant_file" in ds.keys() and ds["quant_file"] is not None and ds["quant_file"] != "":
@@ -1261,6 +1376,13 @@ def add_mzmine_quant(datasets, df):
     return df
 
 def remove_invalid_CEs(df):
+    """
+    Removes MS/MS spectra with merged collision energies from the dataframe.
+    Args:
+        df (pd.DataFrame): DataFrame containing MS/MS spectra with a 'CE' column
+    Returns:
+        pd.DataFrame: Updated dataframe with invalid CEs removed.
+    """
     print(f"Removing MS/MS spectra with merged collision energies")
 
     # Remove certain MSMS spectra that have multiple collision energies
@@ -1314,6 +1436,11 @@ def remove_invalid_CEs(df):
     return df
 
 def show_dataset_overview(df):
+    """
+    Prints an overview of the datasets in the dataframe, including the number of spectra and unique values for CE, ionMode, adduct, and fragmentation_method.
+    Args:
+        df (pd.DataFrame): DataFrame containing MS/MS spectra with 'source', 'CE', 'ionMode', 'adduct', and 'fragmentation_method' columns.
+    """
     # Overview of CE, ionMode, and adduct columns
     for column in ["CE", "ionMode", "adduct", "fragmentation_method"]:
         summary_table = pd.DataFrame()
@@ -1337,6 +1464,13 @@ def show_dataset_overview(df):
         print(summary_table)
 
 def generate_embedding_plots(df, output_dir, colors):
+    """
+    Generates UMAP and PaCMAP embeddings from MS2DeepScore embeddings and plots them using plotnine.
+    Args:
+        df (pd.DataFrame): DataFrame containing MS2DeepScore embeddings and associated metadata.
+        output_dir (str): Directory where the generated plots will be saved.
+        colors (dict): Dictionary mapping dataset names to colors for plotting.
+    """
     with execution_timer(title="Generating UMAP/pacmap embeddings"):
         # output the embeddings
         print("\n\nGenerating embeddings")
@@ -1416,6 +1550,16 @@ def generate_embedding_plots(df, output_dir, colors):
 
 
 def train_and_classify(df, subsets = None):
+    """
+    Trains various classifiers on the MS2DeepScore embeddings and evaluates their performance.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing MS2DeepScore embeddings and associated metadata.
+        subsets (dict, optional): Dictionary specifying subsets of the data to use for training and evaluation.
+
+    Returns:
+        dict: Dictionary containing the results of the classification experiments.
+    """
 
     print("\n\nTraining models")
     print("#######################################################")
@@ -1681,7 +1825,12 @@ def train_and_classify(df, subsets = None):
 
 
 def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "", min_prediction_threshold = 120):
-
+    """
+    Generates a prediction overview by counting the number of times each feature was predicted to be a compound
+    of interest and visualizing the results using a bar chart and UMAP plot.
+    Args:
+        df (pd.DataFrame): DataFrame containing the original data with features and metadata.
+    """
     print("\n\nGenerating Prediction Overview")
     print("#######################################################")
 

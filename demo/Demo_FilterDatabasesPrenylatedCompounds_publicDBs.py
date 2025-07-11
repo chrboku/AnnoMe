@@ -1,4 +1,10 @@
-from AnnoMe.Filters import process_database, prep_smarts_key, download_common_MSMS_libraries, download_MS2DeepScore_model, CE_parser
+from AnnoMe.Filters import (
+    process_database,
+    prep_smarts_key,
+    download_common_MSMS_libraries,
+    download_MS2DeepScore_model,
+    CE_parser,
+)
 from collections import OrderedDict
 import pathlib
 import re
@@ -10,23 +16,33 @@ import shutil
 # Download the common MS/MS libraries if they do not exist
 libraries_path = "./demo/publicDBs/libraries"
 if not os.path.exists(libraries_path):
-    print(f"Common MS/MS libraries not found in {Fore.YELLOW}{libraries_path}{Style.RESET_ALL}. Downloading...")
+    print(
+        f"Common MS/MS libraries not found in {Fore.YELLOW}{libraries_path}{Style.RESET_ALL}. Downloading..."
+    )
     # Create the directory if it does not exist
     os.makedirs(libraries_path, exist_ok=True)
     try:
         download_common_MSMS_libraries(libraries_path)
     except Exception as e:
         shutil.rmtree(libraries_path)
-        print(f"{Fore.RED}Error downloading common MS/MS libraries: {e}{Style.RESET_ALL}")
-        print(f"{Fore.RED}Please check your internet connection or the availability of the libraries.{Style.RESET_ALL}")
+        print(
+            f"{Fore.RED}Error downloading common MS/MS libraries: {e}{Style.RESET_ALL}"
+        )
+        print(
+            f"{Fore.RED}Please check your internet connection or the availability of the libraries.{Style.RESET_ALL}"
+        )
         raise e
 else:
-    print(f"Common MS/MS libraries found in {Fore.GREEN}{libraries_path}.{Style.RESET_ALL}, skipping download and processing")
+    print(
+        f"Common MS/MS libraries found in {Fore.GREEN}{libraries_path}{Style.RESET_ALL}, skipping download and processing"
+    )
 
 # Download the MS2DeepScore model if it does not exist
 model_path = f"./demo/publicDBs/models"
 if not os.path.exists(model_path):
-    print(f"MS2DeepScore model not found in {Fore.YELLOW}{model_path}{Style.RESET_ALL}. Downloading...")
+    print(
+        f"MS2DeepScore model not found in {Fore.YELLOW}{model_path}{Style.RESET_ALL}. Downloading..."
+    )
     # Create the directory if it does not exist
     os.makedirs(model_path, exist_ok=True)
     try:
@@ -34,10 +50,14 @@ if not os.path.exists(model_path):
     except Exception as e:
         shutil.rmtree(model_path)
         print(f"{Fore.RED}Error downloading MS2DeepScore model: {e}{Style.RESET_ALL}")
-        print(f"{Fore.RED}Please check your internet connection or the availability of the model.{Style.RESET_ALL}")
+        print(
+            f"{Fore.RED}Please check your internet connection or the availability of the model.{Style.RESET_ALL}"
+        )
         raise e
 else:
-    print(f"MS2DeepScore model found in {Fore.GREEN}{model_path}.{Style.RESET_ALL}, skipping download and processing")
+    print(
+        f"MS2DeepScore model found in {Fore.GREEN}{model_path}{Style.RESET_ALL}, skipping download and processing"
+    )
 
 import sys
 
@@ -85,16 +105,35 @@ def filter_generic(spectra):
             True]
 
 input_data = {
-    #"gnps_cleaned": {"mgf_file": f"{libraries_path}/gnps_cleaned.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "gnps_cleaned": {"mgf_file": f"{libraries_path}/gnps_cleaned.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
     "MassBank_RIKEN": {"mgf_file": f"{libraries_path}/MassBank_RIKEN.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
     "MassSpecGym": {"mgf_file": f"{libraries_path}/MassSpecGym.mgf", "smiles_field": "smiles", "name_field": "inchikey", "sf_field": "formula", "filter": filter_generic},
     "MONA": {"mgf_file": f"{libraries_path}/MONA.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
     "WINE-DB-ORBITRAP": {"mgf_file": f"{libraries_path}/WINE-DB-ORBITRAP.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+
+    "MSnLib_20241003_enamdisc_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_enamdisc_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_enamdisc_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_enamdisc_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_enammol_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_enammol_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_enammol_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_enammol_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_mcebio_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_mcebio_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_mcebio_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_mcebio_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_mcedrug_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_mcedrug_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_mcedrug_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_mcedrug_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_mcescaf_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_mcescaf_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_mcescaf_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_mcescaf_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_nihnp_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_nihnp_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_nihnp_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_nihnp_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_otavapep_neg_ms2": {"mgf_file": f"{libraries_path}/20241003_otavapep_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20241003_otavapep_pos_ms2": {"mgf_file": f"{libraries_path}/20241003_otavapep_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20250228_mcediv_50k_sub_neg_ms2": {"mgf_file": f"{libraries_path}/20250228_mcediv_50k_sub_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20250228_mcediv_50k_sub_pos_ms2": {"mgf_file": f"{libraries_path}/20250228_mcediv_50k_sub_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20250228_targetmolnphts_np_neg_ms2": {"mgf_file": f"{libraries_path}/20250228_targetmolnphts_np_neg_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
+    "MSnLib_20250228_targetmolnphts_pos_ms2": {"mgf_file": f"{libraries_path}/20250228_targetmolnphts_pos_ms2.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
 }
 
 # Visualize SMARTS with https://smarts.plus/view/1cf72609-6995-4b25-8a16-42eeeb8c09df
 checks = OrderedDict([
-    ("StructureOfInterest", {"filter": [[flavone_smart, isoflavone_smart, chalcone1_smart, chalcone2_smart], 
+    ("prenyl_flavonoid_or_chalcone", {"filter": [[flavone_smart, isoflavone_smart, chalcone1_smart, chalcone2_smart], 
                                         [prep_smarts_key(x) for x in ["CC=C(C)CCC=C(C)C", "C\\C=C(/C)\\CCC(O)C(=C)C", "CC(O)C(C)CCC=C(C)C", "CC=C(C)CCCC(C)(C)O", "CC(=CCCC1(C)OCCC=C1)C", "CC(=C)C(O)CCC1(C)OC=CCC1O", "C\\C=C(/C)\\CCCC(C)(O)CO", "CC(=CCCC(C)(O)C1CCCO1)C", "CC1(C)C(O)CCC2(C)OCCCC12", "CC1C(=CCC(O)C1(C)C)C", "CC1C(=C)CCC(O)C1(C)C", "COCC(C)(O)CCCC(=CC)C", "CC(=CCCC1(C)OC=CCC1O)C", "CC1(C)OCCC=C1", "CC1OC=CC1(C)C", "CC(CC=C(C)C)C(=C)C", "CCC(=C)C", "CC=C(C)C", "C-C(-C)-C=C", "CC(=C)C=C", "CC(=CCO)C", "CC(C)(O)C=C", "CCC(C)(C)O", "CC(O)C(=C)C", "CC1OC1(C)C", "C\\C=C(/C)\\CO", "CC(O)C(C)(C)O", "CC1(C)CCc2ccccc2O1", "CC1(C)CCCCO1"]]]}),
 ])
 include_details = False
@@ -120,7 +159,9 @@ generated_files = []
 output_folder_existed = pathlib.Path(out_path).exists()
 pathlib.Path(out_path).mkdir(parents=True, exist_ok=True)
 for database_name in input_data.keys():
-    print("\n\n##########################################################################")
+    print(
+        "\n\n##########################################################################"
+    )
     print(f"Processing database: {Fore.YELLOW}{database_name}{Style.RESET_ALL}")
 
     mgf_file = input_data[database_name]["mgf_file"]
@@ -129,7 +170,18 @@ for database_name in input_data.keys():
     sf_field = input_data[database_name]["sf_field"]
     filter_fn = input_data[database_name]["filter"]
 
-    found_results, spectra, gen_files = process_database(database_name, mgf_file, smiles_field, name_field, sf_field, checks, standardize_block_functions, out_path, filter_fn=filter_fn, verbose=include_details)
+    found_results, spectra, gen_files = process_database(
+        database_name,
+        mgf_file,
+        smiles_field,
+        name_field,
+        sf_field,
+        checks,
+        standardize_block_functions,
+        out_path,
+        filter_fn=filter_fn,
+        verbose=include_details,
+    )
     generated_files.extend(gen_files)
 
 print(f"\nGenerated files:")
@@ -137,4 +189,6 @@ for file in generated_files:
     print(f"   - {file}")
 
 if output_folder_existed:
-    print(f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m")
+    print(
+        f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m"
+    )

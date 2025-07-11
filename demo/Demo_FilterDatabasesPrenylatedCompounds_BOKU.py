@@ -126,7 +126,9 @@ generated_files = []
 output_folder_existed = pathlib.Path(out_path).exists()
 pathlib.Path(out_path).mkdir(parents=True, exist_ok=True)
 for database_name in input_data.keys():
-    print("\n\n##########################################################################")
+    print(
+        "\n\n##########################################################################"
+    )
     print(f"Processing database: {Fore.YELLOW}{database_name}{Style.RESET_ALL}")
 
     mgf_file = input_data[database_name]["mgf_file"]
@@ -135,7 +137,18 @@ for database_name in input_data.keys():
     sf_field = input_data[database_name]["sf_field"]
     filter_fn = input_data[database_name]["filter"]
 
-    found_results, spectra, gen_files = process_database(database_name, mgf_file, smiles_field, name_field, sf_field, checks, standardize_block_functions, out_path, filter_fn=filter_fn, verbose=include_details)
+    found_results, spectra, gen_files = process_database(
+        database_name,
+        mgf_file,
+        smiles_field,
+        name_field,
+        sf_field,
+        checks,
+        standardize_block_functions,
+        out_path,
+        filter_fn=filter_fn,
+        verbose=include_details,
+    )
     generated_files.extend(gen_files)
 
 print(f"\nGenerated files:")
@@ -143,4 +156,6 @@ for file in generated_files:
     print(f"   - {file}")
 
 if output_folder_existed:
-    print(f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m")
+    print(
+        f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m"
+    )
