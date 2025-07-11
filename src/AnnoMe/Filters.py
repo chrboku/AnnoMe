@@ -44,6 +44,7 @@ def download_file(url, dest_folder, file_name=None):
     Args:
         url (str): The URL of the file to download.
         dest_folder (str): The folder where the downloaded file will be saved.
+        file_name (str, optional): The name to give the downloaded file. If not provided, the original file name will be used.
 
     Returns:
         str: The path to the downloaded file.
@@ -72,7 +73,10 @@ def tsv_to_mgf(tsv_file_path, mgf_file_path):
         mgf_file_path (str): Path to the output MGF file.
     """
 
-    with open(tsv_file_path, "r", encoding="utf-8") as tsvfile, open(mgf_file_path, "w", encoding="utf-8") as mgffile:
+    with (
+        open(tsv_file_path, "r", encoding="utf-8") as tsvfile,
+        open(mgf_file_path, "w", encoding="utf-8") as mgffile,
+    ):
         reader = csv.DictReader(tsvfile, delimiter="\t")
         for row in reader:
             mgffile.write("BEGIN IONS\n")
@@ -125,7 +129,10 @@ def msp_to_mgf(msp_file_path, mgf_file_path):
                 peaks.append((mz.strip(), intensity.strip()))
         return header, peaks
 
-    with open(msp_file_path, "r", encoding="utf-8") as infile, open(mgf_file_path, "w", encoding="utf-8") as outfile:
+    with (
+        open(msp_file_path, "r", encoding="utf-8") as infile,
+        open(mgf_file_path, "w", encoding="utf-8") as outfile,
+    ):
         block_lines = []
         for line in infile:
             if line.strip() == "" and block_lines:
@@ -192,33 +199,96 @@ def download_common_MSMS_libraries(dest_folder):
 
     Args:
         dest_folder (str): The folder where the libraries will be downloaded.
-
-    Returns:
-        list: A list of paths to the downloaded library files.
     """
 
-    print("Downloading GNPS - MONA")
+    print("Downloading public datasets for MS/MS libraries...")
+    print("   - MONA")
     download_file("https://external.gnps2.org/gnpslibrary/MONA.mgf", dest_folder)
-    print("Downloading GNPS - Wine DB Orbitrap")
-    download_file("https://external.gnps2.org/gnpslibrary/WINE-DB-ORBITRAP.mgf", dest_folder)
-    print("Downloading GNPS - GNPS cleaned")
-    download_file("https://external.gnps2.org/processed_gnps_data/gnps_cleaned.mgf", dest_folder)
-    print("Downloading MassSpecGym")
-    download_file("https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/resolve/main/data/MassSpecGym.tsv", dest_folder)
-    print("Processing MassSpecGym file")
-    tsv_to_mgf(os.path.join(dest_folder, "MassSpecGym.tsv"), os.path.join(dest_folder, "MassSpecGym.mgf"))
+    print("   - GNPS - Wine DB Orbitrap")
+    download_file(
+        "https://external.gnps2.org/gnpslibrary/WINE-DB-ORBITRAP.mgf", dest_folder
+    )
+    print("   - GNPS - GNPS cleaned")
+    download_file(
+        "https://external.gnps2.org/processed_gnps_data/gnps_cleaned.mgf", dest_folder
+    )
+    print("   - MassSpecGym")
+    download_file(
+        "https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/resolve/main/data/MassSpecGym.tsv",
+        dest_folder,
+    )
+    print("   - MassSpecGym file")
+    tsv_to_mgf(
+        os.path.join(dest_folder, "MassSpecGym.tsv"),
+        os.path.join(dest_folder, "MassSpecGym.mgf"),
+    )
     fix_massspecgym_nameandid(os.path.join(dest_folder, "MassSpecGym.mgf"))
-    print("Downloading MassBank Riken")
-    download_file("https://github.com/MassBank/MassBank-data/releases/download/2025.05.1/MassBank.msp_RIKEN", dest_folder)
-    print("Processing MassBank Riken file")
-    msp_to_mgf(os.path.join(dest_folder, "MassBank.msp_RIKEN"), os.path.join(dest_folder, "MassBank_RIKEN.mgf"))
+    print("   - MassBank Riken")
+    download_file(
+        "https://github.com/MassBank/MassBank-data/releases/download/2025.05.1/MassBank.msp_RIKEN",
+        dest_folder,
+    )
+    print("   - MassBank Riken file")
+    msp_to_mgf(
+        os.path.join(dest_folder, "MassBank.msp_RIKEN"),
+        os.path.join(dest_folder, "MassBank_RIKEN.mgf"),
+    )
+
+    files = [
+        "20250228_targetmolnphts_pos_msn.mgf",
+        "20250228_targetmolnphts_pos_ms2.mgf",
+        "20250228_targetmolnphts_np_neg_ms2.mgf",
+        "20250228_targetmolnphts_neg_msn.mgf",
+        "20250228_mcediv_50k_sub_pos_msn.mgf",
+        "20250228_mcediv_50k_sub_pos_ms2.mgf",
+        "20250228_mcediv_50k_sub_neg_msn.mgf",
+        "20250228_mcediv_50k_sub_neg_ms2.mgf",
+        "20241003_otavapep_pos_msn.mgf",
+        "20241003_otavapep_pos_ms2.mgf",
+        "20241003_otavapep_neg_msn.mgf",
+        "20241003_otavapep_neg_ms2.mgf",
+        "20241003_nihnp_pos_msn.mgf",
+        "20241003_nihnp_pos_ms2.mgf",
+        "20241003_nihnp_neg_msn.mgf",
+        "20241003_nihnp_neg_ms2.mgf",
+        "20241003_mcescaf_pos_msn.mgf",
+        "20241003_mcescaf_pos_ms2.mgf",
+        "20241003_mcescaf_neg_msn.mgf",
+        "20241003_mcescaf_neg_ms2.mgf",
+        "20241003_mcedrug_pos_msn.mgf",
+        "20241003_mcedrug_pos_ms2.mgf",
+        "20241003_mcedrug_neg_msn.mgf",
+        "20241003_mcedrug_neg_ms2.mgf",
+        "20241003_mcebio_pos_msn.mgf",
+        "20241003_mcebio_pos_ms2.mgf",
+        "20241003_mcebio_neg_msn.mgf",
+        "20241003_mcebio_neg_ms2.mgf",
+        "20241003_enammol_pos_msn.mgf",
+        "20241003_enammol_pos_ms2.mgf",
+        "20241003_enammol_neg_msn.mgf",
+        "20241003_enammol_neg_ms2.mgf",
+        "20241003_enamdisc_pos_msn.mgf",
+        "20241003_enamdisc_pos_ms2.mgf",
+        "20241003_enamdisc_neg_msn.mgf",
+        "20241003_enamdisc_neg_ms2.mgf",
+    ]
+    for file_name in files:
+        print(f"   - {file_name}")
+        download_file(
+            f"https://zenodo.org/api/records/15683662/files/{file_name}/content",
+            dest_folder,
+            file_name=file_name,
+        )
 
 
 def download_MS2DeepScore_model(dest_folder):
     """
     Downloads the MS2DeepScore model to the specified destination folder.
     """
-    model_url = "https://zenodo.org/records/13897744/files/ms2deepscore_model.pt?download=1"
+    print("Downloading MS2DeepScore model...")
+    model_url = (
+        "https://zenodo.org/records/13897744/files/ms2deepscore_model.pt?download=1"
+    )
     download_file(model_url, dest_folder, file_name="ms2deepscore_model.pt")
 
 
