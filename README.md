@@ -1,6 +1,6 @@
 # AnnoMe
 
-This is a package for the classification of MS/MS spectra of novel compounds into either "interesting" or "other" compounds. In this respect, the classification result "interesting"  refers to specific substance classes of interest to the user, while the classification result "other" refer to structures not of interest. For this, the classifiers first need to be trained on a large set of MS/MS spectra of compounds of interest (e.g., obtained from reference standards) and others (e.g., obtained from reference standards of other compounds and from large MS/MS spectra repositories). 
+This is a package for the classification of MS/MS spectra of novel compounds into either "relevant" or "other" compounds. In this respect, the classification result "relevant"  refers to specific substance classes of interest to the user, while the classification result "other" refer to structures not of interest. For this, the classifiers first need to be trained on a large set of MS/MS spectra of compounds of interest (e.g., obtained from reference standards) and others (e.g., obtained from reference standards of other compounds and from large MS/MS spectra repositories). 
 
 ## Limitations
 
@@ -8,7 +8,7 @@ Classification of MS/MS spectra into substance classes is a non-trivial task and
 
 ## Methodology
 
-Using training data consisting of annotated and labeled MS/MS spectra of compounds of interest and others, different classifiers (LDA, NN, SVM, etc.) are first trained using cross-validation and different random seeds. The results are then aggregated and a majority-vote is derived which indicates the final classification of the input MS/MS spectra to either "interesting" or "other". The term "interesting" refers to compounds of interest, while the term "other" refers to compounds not of interest. 
+Using training data consisting of annotated and labeled MS/MS spectra of compounds of interest and others, different classifiers (LDA, NN, SVM, etc.) are first trained using cross-validation and different random seeds. The results are then aggregated and a majority-vote is derived which indicates the final classification of the input MS/MS spectra to either "relevant" or "other". The term "relevant" refers to compounds of interest, while the term "other" refers to compounds not of interest. 
 
 ## Disclaimer
 

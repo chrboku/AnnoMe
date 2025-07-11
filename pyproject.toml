@@ -1,6 +1,6 @@
 [project]
 name = "annome"
-version = "0.4.1"
+version = "0.5.0"
 description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
 authors = [
@@ -26,6 +26,7 @@ dependencies = [
     "tables>=3.10.2",
     "tqdm>=4.67.1",
     "umap-learn>=0.5.8",
+    "xlsxwriter>=3.2.5",
 ]
 
 [build-system]

@@ -160,7 +160,6 @@ def msp_to_mgf(msp_file_path, mgf_file_path):
             outfile.write("END IONS\n\n")
 
 
-
 def fix_massspecgym_nameandid(mgf_file_path):
     """
     Fixes the 'name' and 'id' fields in the MassSpecGym MGF file.
@@ -1110,14 +1109,14 @@ def process_database(database_name, mgf_file, smiles_field, name_field, sf_field
                     for chunk_idx in range(0, len(matching_compounds_list), chunk_size):
                         chunk_compounds = matching_compounds_list[chunk_idx : chunk_idx + chunk_size]
                         try:
-                           img = draw_names(chunk_compounds, spectra, name_field, smiles_field, max_draw=chunk_size)
-                           out_file = f"{output_folder}/{database_name}___{check_name}__{typ}_chunk{chunk_idx}.png"
-                           with open(out_file, "wb") as f:
-                               f.write(img.data)
-                           print(f"   - Exported images {chunk_idx}-{chunk_idx + chunk_size} for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
-                           generated_files.append(out_file)
+                            img = draw_names(chunk_compounds, spectra, name_field, smiles_field, max_draw=chunk_size)
+                            out_file = f"{output_folder}/{database_name}___{check_name}__{typ}_chunk{chunk_idx}.png"
+                            with open(out_file, "wb") as f:
+                                f.write(img.data)
+                            print(f"   - Exported images {chunk_idx}-{chunk_idx + chunk_size} for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+                            generated_files.append(out_file)
                         except Exception as e:
-                           print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
+                            print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
 
                 out_file = f"{output_folder}/{database_name}___{check_name}__{typ}.mgf"
                 export_mgf_file(matching_blocks, out_file)

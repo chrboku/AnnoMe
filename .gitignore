@@ -11,3 +11,4 @@ wheels/
 
 # demo files
 demo/publicDBs
+demo/*.html

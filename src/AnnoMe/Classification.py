@@ -10,6 +10,7 @@ import warnings
 from contextlib import contextmanager
 import itertools
 import tempfile
+import re
 
 # Data science packages
 import numpy as np
@@ -39,7 +40,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.metrics import confusion_matrix
+from sklearn.metrics import confusion_matrix, balanced_accuracy_score, precision_score, f1_score, roc_auc_score, recall_score
 from sklearn.ensemble import (
     ExtraTreesClassifier,
     GradientBoostingClassifier,
@@ -53,6 +54,8 @@ from sklearn.model_selection import StratifiedShuffleSplit, StratifiedKFold
 from natsort import natsorted
 
 from colorama import Fore, Style
+import warnings
+from collections import Counter
 
 # Set random seeds
 np.random.seed(42)
@@ -124,7 +127,6 @@ def save_as_pdf_pages(
     verbose=True,
     **kwargs,
 ):
-
     # as in ggplot.save()
     fig_kwargs = {"bbox_inches": "tight"}
     fig_kwargs.update(kwargs)
@@ -721,18 +723,49 @@ def select_randomly_n_spectra(input_mgf_path, n = None):
 
     return temp.name, True
 
-def get_and_print_conf_matrix(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW):
+def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW, total = None):
     
     # Generate the confusion matrix
     conf_matrix = confusion_matrix(gt, pred, labels = labels)
     conf_matrix_sum = conf_matrix.sum(axis=1, keepdims=True)
     conf_matrix_percent = (conf_matrix / conf_matrix_sum * 100).round(3)
     
+    # Prepare a list of dictionaries to collect confusion matrix data
+    metric_data = []
     for i, row_label in enumerate(labels):
         for j, col_label in enumerate(labels):
-            print(f"   - {col_correct if i == j else col_wrong}[{print_pre}] {row_label}({conf_matrix_sum[i, 0]}) -> {col_label}({conf_matrix[i, j]}): {conf_matrix_percent[i, j]:.3f}%{Style.RESET_ALL}")
+            print(f"   - [{print_pre}] {col_correct if i == j else col_wrong}Confusion matrix {row_label} ({conf_matrix_sum[i, 0]}/{total}) -> {col_label} ({conf_matrix[i, j]}): {conf_matrix_percent[i, j]:.3f}%{Style.RESET_ALL}")
+            metric_data.append({                
+                "metric": f"Confusion matrix count: {row_label} -> {col_label}",
+                "value": conf_matrix[i, j],
+            })
+            metric_data.append({                
+                "metric": f"Confusion matrix percent: {row_label} -> {col_label}",
+                "value": conf_matrix_percent[i, j]
+            })
 
-    return conf_matrix_percent
+    # Print overall metrics
+    val = balanced_accuracy_score(gt, pred)
+    print(f"   - [{print_pre}] {col_correct}Balanced accuracy: {val:.3f}{Style.RESET_ALL}")
+    metric_data.append({"metric": "balanced_accuracy", "value": val})
+
+    val = precision_score(gt, pred, average="weighted")
+    print(f"   - [{print_pre}] {col_correct}Precision: {val:.3f}{Style.RESET_ALL}")
+    metric_data.append({"metric": "weighted precision", "value": val})
+
+    val = f1_score(gt, pred, average='weighted')
+    print(f"   - [{print_pre}] {col_correct}F1 Score: {val:.3f}{Style.RESET_ALL}")
+    metric_data.append({"metric": "weighted F1 score", "value": val})
+
+    val = recall_score(gt, pred, average='weighted')
+    print(f"   - [{print_pre}] {col_correct}Recall: {val:.3f}{Style.RESET_ALL}")
+    metric_data.append({"metric": "weighted recall value", "value": val})
+
+    val = roc_auc_score(np.array([1 if x == "relevant" else 0 for x in gt]), np.array([1 if x == "relevant" else 0 for x in pred]))
+    print(f"   - [{print_pre}] {col_correct}ROC AUC: {val:.3f}{Style.RESET_ALL}")
+    metric_data.append({"metric": "weighted roc auc", "value": val})
+
+    return conf_matrix_percent, pd.DataFrame(metric_data)
 
 
 def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None):
@@ -756,7 +789,7 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
                     print(f"{dataset}: Processing spectra file {Fore.YELLOW}{ds["file"]}{Style.RESET_ALL}")
                     print(f"   - Type {Fore.YELLOW}{ds["type"]}{Style.RESET_ALL}")
                     
-                    allowed_types = ["train - interesting", "train - other", "validation - interesting", "validation - other", "inference"]
+                    allowed_types = ["train - relevant", "train - other", "validation - relevant", "validation - other", "inference"]
                     if ds["type"] not in allowed_types:
                         raise ValueError(f"Dataset type {ds['type']} is not supported. Supported types are: {str(allowed_types)}.")
                     
@@ -816,37 +849,52 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
     df = pd.DataFrame(df)
 
     # add extra columns from each spectra (extract common keys from the MS/MS spectra)
-    if data_to_add is not None:
-        # extract metadata from the spectra
-        for meta_info_to_add in data_to_add:
-            fields = data_to_add[meta_info_to_add]
-            meta_values = []
+    if data_to_add is None:
+        data_to_add = {}
+    if "MSLEVEL" not in data_to_add.keys():
+        data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
 
-            for rowi, spectrum in enumerate(df["ms2deepscore:cleaned_spectra"]):
-                if isinstance(fields, list):
-                    value = None
-                    for key in fields:
-                        for key in [key, key.lower(), key.upper()]:
-                            try:
-                                value = spectrum.metadata_dict().get(key)
-                                break
-                            except:
-                                pass
-                        if value is not None:
+    spectrum = df["ms2deepscore:cleaned_spectra"].iloc[0]
+    print(spectrum.metadata_dict().keys())
+
+    # extract metadata from the spectra
+    for meta_info_to_add in data_to_add:
+        fields = data_to_add[meta_info_to_add]
+        meta_values = []
+
+        for rowi, spectrum in enumerate(df["ms2deepscore:cleaned_spectra"]):
+            if isinstance(fields, list):
+                value = None
+                for key in fields:
+                    for key in [key, key.lower(), key.upper()]:
+                        try:
+                            value = spectrum.metadata_dict().get(key).lower()
                             break
-                    
-                    if value is None:
-                        value = "NA"
-                    meta_values.append(value)
+                        except:
+                            pass
+                    if value is not None:
+                        break
+                
+                if value is None:
+                    value = "NA"
+                meta_values.append(value)
 
-                else:
-                    meta_values.append(spectrum.metadata_dict().get(fields))
+            else:
+                meta_values.append(spectrum.metadata_dict().get(fields))
 
-            df[meta_info_to_add] = meta_values
+        df[meta_info_to_add] = meta_values
 
-        # Perform post-processing of the main dataframe
-        # Apply the processing function to the 'CE' column
-        df["CE"] = df["CE"].apply(process_ce_value)
+    # Perform post-processing of the main dataframe
+    # Apply the processing function to the 'CE' column
+    df["CE"] = df["CE"].apply(process_ce_value)
+
+    # Print overview of 'MSLEVEL' column: how many have value 1, then drop these
+    mslevel_counts = df["MSLEVEL"].value_counts(dropna=False)
+    print("MSLEVEL value counts:\n", mslevel_counts)
+    num_mslevel_1 = (df["MSLEVEL"] == "1").sum()
+    print(f"Number of rows with MSLEVEL == 1: {num_mslevel_1}")
+    df = df[df["MSLEVEL"] != "1"].reset_index(drop=True)
+    print(f"After removing MSLEVEL == 1, remaining rows: {Fore.YELLOW}{len(df)}{Style.RESET_ALL}")
     
     return df
 
@@ -1334,7 +1382,7 @@ def generate_embedding_plots(df, output_dir, colors):
                 subtitle="calculated from MS2DeepScore embeddings",
             )
         )
-        out_file = os.path.join(output_dir, "umap_from_MS2DeepScoreEmbeddings.pdf")
+        out_file = os.path.join(output_dir, "reduction__umap_from_MS2DeepScoreEmbeddings.pdf")
         p_umap.save(out_file, width=16, height=12)
         print(f"UMAP plot saved as {out_file}")
 
@@ -1360,7 +1408,7 @@ def generate_embedding_plots(df, output_dir, colors):
                 subtitle="calculated from MS2DeepScore embeddings",
             )
         )
-        out_file = os.path.join(output_dir, "pacmap_from_MS2DeepScoreEmbeddings.pdf")
+        out_file = os.path.join(output_dir, "reduction__pacmap_from_MS2DeepScoreEmbeddings.pdf")
         p_pacmap.save(out_file, width=16, height=12)
         print(f"PACMAP plot saved as {out_file}")
 
@@ -1368,8 +1416,18 @@ def generate_embedding_plots(df, output_dir, colors):
 
 
 def train_and_classify(df, subsets = None):
-    # Test different classifiers
 
+    print("\n\nTraining models")
+    print("#######################################################")
+
+    if "$$UUID" not in df.columns:
+        df["$$UUID"] = [f"$${i}" for i in range(df.shape[0])]
+
+    df["used_for_training"] = False
+    df["used_for_validation"] = False
+    df["used_for_inference"] = False
+
+    # Test different classifiers
     classifiers = {
         "Nearest Neighbors n=3": KNeighborsClassifier(3),
         "Nearest Neighbors n=10": KNeighborsClassifier(10),
@@ -1398,6 +1456,8 @@ def train_and_classify(df, subsets = None):
         ),
     }
 
+    print(f"{len(classifiers)} different models will be trained")
+
     if subsets is None:
         subsets = {
             "positive"     : lambda x: x["ionMode"] == "positive",
@@ -1409,54 +1469,84 @@ def train_and_classify(df, subsets = None):
     cv = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
 
     # Filter the dataframe and ms2_embeddings for training and inference
-    df_train = df[df["type"].isin(["train - interesting", "train - other"])].reset_index()
-    ms2ds_embeddings_train = np.array(df_train["ms2deepscore:embeddings"].tolist())
-    df_train = df_train.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
-    print(f"Size of training dataset: {Fore.YELLOW}{ms2ds_embeddings_train.shape[0]}{Style.RESET_ALL}")
+    train_df = df[df["type"].isin(["train - relevant", "train - other"])].reset_index(drop = True)
+    train_X = np.array(train_df["ms2deepscore:embeddings"].tolist())
+    train_df = train_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
+    train_df["prediction_results"] = [[] for _ in range(len(train_df))]
+    train_df["used"] = [False for _ in range(len(train_df))]
+    print(f"Size of training dataset: {Fore.YELLOW}{train_X.shape[0]}{Style.RESET_ALL}")
 
-    df_vali = df[df["type"].isin(["validation - interesting", "validation - other"])].reset_index()
-    X_vali = np.array(df_vali["ms2deepscore:embeddings"].tolist())
-    df_vali = df_vali.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
-    y_vali_gt = df_vali["type"].values
-    y_vali_gt = np.array(["interesting" if s.lower() == "validation - interesting" else "other" for s in y_vali_gt])
-    print(f"Size of validation dataset: {Fore.YELLOW}{X_vali.shape[0]}{Style.RESET_ALL}")
+    vali_df = df[df["type"].isin(["validation - relevant", "validation - other"])].reset_index(drop = True)
+    vali_X = np.array(vali_df["ms2deepscore:embeddings"].tolist())
+    vali_df = vali_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
+    vali_df["prediction_results"] = [[] for _ in range(len(vali_df))]
+    vali_df["used"] = [False for _ in range(len(vali_df))]
+    vali_y_gt = np.array(["relevant" if s.lower() == "validation - relevant" else "other" for s in vali_df["type"].values])
+    print(f"Size of validation dataset: {Fore.YELLOW}{vali_X.shape[0]}{Style.RESET_ALL}")
 
-    df_infe = df[df["type"].isin(["inference"])].reset_index()
-    X_infe = np.array(df_infe["ms2deepscore:embeddings"].tolist())
-    df_infe = df_infe.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
-    df_infe["prediction_results"] = [[] for _ in range(len(df_infe))]
-    print(f"Size of inference dataset: {Fore.YELLOW}{X_infe.shape[0]}{Style.RESET_ALL}")
+    infe_df = df[df["type"].isin(["inference"])].reset_index(drop = True)
+    infe_X = np.array(infe_df["ms2deepscore:embeddings"].tolist())
+    infe_df = infe_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
+    infe_df["prediction_results"] = [[] for _ in range(len(infe_df))]
+    infe_df["used"] = [False for _ in range(len(infe_df))]
+    print(f"Size of inference dataset: {Fore.YELLOW}{infe_X.shape[0]}{Style.RESET_ALL}")
 
-    labels = ["interesting", "other"]
+    labels = ["relevant", "other"]
+    trained_classifiers = []
+    metrics_df = []
     with execution_timer(title="Classifiers with Cross-Validation"):
         for subset in subsets:
             with execution_timer(title=f"Subset: {subset}"):
                 print(f"\n\n\n********************************************************************************")
                 print(f"Subset: {subset}")
 
-                # subset the data for training
-                useInds_train = df_train[df_train.apply(subsets[subset], axis=1)].index.tolist()
-                if len(df_train) == 0:
+                # subset the data
+                trainSubset_useInds = train_df[train_df.apply(subsets[subset], axis=1)].index.tolist()
+                valiSubset_useInds = vali_df[vali_df.apply(subsets[subset], axis=1)].index.tolist()
+                infeSubset_useInds = infe_df[infe_df.apply(subsets[subset], axis=1)].index.tolist()
+
+                df.loc[trainSubset_useInds, "used_for_training"] = True
+                df.loc[valiSubset_useInds, "used_for_validation"] = True
+                df.loc[infeSubset_useInds, "used_for_inference"] = True
+
+                if len(trainSubset_useInds) == 0:
                     print(f"{Fore.RED}Skipping subset '{subset}' because df_train is empty.{Style.RESET_ALL}")
                     continue
-                print(f"Number of spectra in subset (train): {len(useInds_train)}, these are {len(useInds_train) / len(df_train) * 100:.2f}% of the total spectra.")
+                print(f"Number of spectra in subset (train): {len(trainSubset_useInds)}, these are {len(trainSubset_useInds) / len(train_df) * 100:.2f}% of the total spectra.")
 
-                # Subselect the embeddings for the training and inference sets
-                X_train, y_train_gt = (
-                    ms2ds_embeddings_train[useInds_train, :],
-                    df_train["type"].values[useInds_train],
+                # Subselect the training embeddings
+                trainSubset_X, trainSubset_y_gt = (
+                    train_X[trainSubset_useInds, :],
+                    train_df["type"].values[trainSubset_useInds],
                 )
-                y_train_gt = np.array(["interesting" if s.lower() == "train - interesting" else "other" for s in y_train_gt])
+                trainSubset_y_gt = np.array(["relevant" if s.lower() == "train - relevant" else "other" for s in trainSubset_y_gt])
+                train_df.loc[trainSubset_useInds, "used"] = True
+
+                # Subselect the validation embeddings
+                valiSubset_X, vali_y_gt = None, None
+                if len(valiSubset_useInds) > 0:
+                    valiSubset_X, vali_y_gt = ( 
+                        vali_X[valiSubset_useInds, :],
+                        vali_df["type"].values[valiSubset_useInds],
+                    )
+                    valiSubset_y_gt = np.array(["relevant" if s.lower() == "validation - relevant" else "other" for s in vali_y_gt])
+                    vali_df.loc[valiSubset_useInds, "used"] = True
+
+                # Subselect the inference embeddings
+                infeSubset_X = None
+                if len(infeSubset_useInds) > 0:
+                    infeSubset_X = infe_X[infeSubset_useInds, :]
+                    infe_df.loc[infeSubset_useInds, "used"] = True
                 
-                # Show an overview of y_train_gt
-                unique, counts = np.unique(y_train_gt, return_counts=True)
-                print("Overview of y_train_gt (ground-truth labels):")
+                # Show an overview of trainSubset_y_gt
+                unique, counts = np.unique(trainSubset_y_gt, return_counts=True)
+                print("Overview of trainSubset_y_gt (ground-truth labels):")
                 for label, count in zip(unique, counts):
                     print(f"   - {label}: {count}")
 
-                # Only continue if there are at least two different labels in y_train_gt
-                if len(np.unique(y_train_gt)) < 2:
-                    print(f"{Fore.RED}Skipping subset '{subset}' because only one class present in y_train_gt: {np.unique(y_train_gt)}{Style.RESET_ALL}")
+                # Only continue if there are at least two different labels in trainSubset_y_gt
+                if len(np.unique(trainSubset_y_gt)) < 2:
+                    print(f"{Fore.RED}Skipping subset '{subset}' because only one class present in trainSubset_y_gt: {np.unique(trainSubset_y_gt)}{Style.RESET_ALL}")
                     continue
 
                 # Perform classifiers with cross-validation
@@ -1472,57 +1562,94 @@ def train_and_classify(df, subsets = None):
                         fold_conf_matrices = []
 
                         # Perform 5-fold cross-validation
-                        for fold, (train_idx, test_idx) in enumerate(cv.split(X_train, y_train_gt)):
+                        for fold, (train_idx, test_idx) in enumerate(cv.split(trainSubset_X, trainSubset_y_gt)):
                             print("")
-                            X_train_train, X_train_test = (
-                                X_train[train_idx, :],
-                                X_train[test_idx, :],
+
+                            trainSubset_train_useInds, trainSubset_test_useInds = (
+                                [trainSubset_useInds[i] for i in train_idx],
+                                [trainSubset_useInds[i] for i in test_idx]
                             )
-                            y_train_train_gt, y_train_test_gt = (
-                                y_train_gt[train_idx],
-                                y_train_gt[test_idx],
+                            trainSubset_train_X, trainSubset_test_X = (
+                                trainSubset_X[train_idx, :],
+                                trainSubset_X[test_idx, :],
+                            )
+                            trainSubset_train_y_gt, trainSubset_test_y_gt = (
+                                trainSubset_y_gt[train_idx],
+                                trainSubset_y_gt[test_idx],
                             )
 
                             # Train the model
                             start_time = time.time()
-                            clf.fit(X_train_train, y_train_train_gt)
+                            clf.fit(trainSubset_train_X, trainSubset_train_y_gt)
+                            trained_classifiers.append((f"{subset} / {cname} / {fold}", clf))
                             duration = time.time() - start_time
 
                             # Test on the test set
-                            y_train_test_pred = clf.predict(X_train_test)
-                            score = np.mean(y_train_test_pred == y_train_test_gt)
+                            trainSubset_test_y_pred = clf.predict(trainSubset_test_X)
+                            score = np.mean(trainSubset_test_y_pred == trainSubset_test_y_gt)
 
-                            conf_matrix_percent = get_and_print_conf_matrix(y_train_test_gt, y_train_test_pred, labels, "Test set")
+                            # print results for user
+                            print(f"   [Fold {fold + 1}] Score: {Fore.YELLOW}{score:.3f}{Style.RESET_ALL}, Duration: {Fore.YELLOW}{duration:.2f} seconds{Style.RESET_ALL}")
+
+                            # calculate model metrics
+                            conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_test_y_gt, trainSubset_test_y_pred, labels, "Test subset", total = trainSubset_test_X.shape[0])
+
+                            # save confusion matrix and other resultsresults
+                            df_metric["from"] = "Test set"
+                            df_metric["subset"] = subset
+                            df_metric["classifier"] = cname
+                            df_metric["fold"] = fold
+                            metrics_df.append(df_metric)
 
                             fold_scores.append(score)
                             fold_durations.append(duration)
                             fold_conf_matrices.append(conf_matrix_percent)
 
-                            print(f"   [Fold {fold + 1}] Score: {Fore.YELLOW}{score:.3f}{Style.RESET_ALL}, Duration: {Fore.YELLOW}{duration:.2f} seconds{Style.RESET_ALL}")
+                            # Store the results in the inference_results dictionary
+                            for idx in range(trainSubset_test_X.shape[0]):
+                                if trainSubset_test_y_pred[idx] == "relevant":
+                                    idx = trainSubset_test_useInds[idx]
+                                    train_df.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
 
                             # process validation dataset
-                            if X_vali.shape[0] > 0:
+                            # Note: Usually the validation dataset is processed last, but due to the architecture here it needs to run now
+                            # TODO: change architecture and place validation set calculations outside the pipeline once the user has selected the final models
+                            if len(valiSubset_useInds) > 0:
                                 # Predict on the inference embeddings
-                                y_vali_pred = clf.predict(X_vali)
-                                # print confusion matrix
-                                get_and_print_conf_matrix(y_vali_gt, y_vali_pred, labels, "Validation set", col_correct=Fore.MAGENTA, col_wrong=Fore.CYAN)
+                                valiSubset_y_pred = clf.predict(valiSubset_X)
 
-                            # process inference dataset
-                            if X_infe.shape[0] > 0:
-                                # Predict on the inference embeddings
-                                y_infe_pred = clf.predict(X_infe)
+                                conf_matrix_percent, df_metric = get_and_print_metrics(valiSubset_y_gt, valiSubset_y_pred, labels, "Validation set", total = valiSubset_X.shape[0])
 
-                                # Count the number of 'prenylated flavonoid' and others in the inference predictions
-                                y_infe_pred_interesting_count = np.sum(y_infe_pred == "interesting")
-                                y_infe_pred_other_count = len(y_infe_pred) - y_infe_pred_interesting_count
-
-                                print(f"   * [Inference] Number of 'interesting': {Fore.YELLOW}{y_infe_pred_interesting_count}{Style.RESET_ALL}")
-                                print(f"   * [Inference] Number of 'other'      : {Fore.YELLOW}{y_infe_pred_other_count}{Style.RESET_ALL}")
+                                # save confusion matrix and other resultsresults
+                                df_metric["from"] = "Validation set"
+                                df_metric["subset"] = subset
+                                df_metric["classifier"] = cname
+                                df_metric["fold"] = fold
+                                metrics_df.append(df_metric)
 
                                 # Store the results in the inference_results dictionary
-                                for idx in range(df_infe.shape[0]):
-                                    if y_infe_pred[idx] == "interesting":
-                                        df_infe.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
+                                for idx in range(valiSubset_X.shape[0]):
+                                    if valiSubset_y_pred[idx] == "relevant":
+                                        idx = valiSubset_useInds[idx]
+                                        vali_df.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
+
+                            # process inference dataset
+                            if len(infeSubset_useInds) > 0:
+                                # Predict on the inference embeddings
+                                infeSubset_y_pred = clf.predict(infeSubset_X)
+
+                                # Count the number of 'relevant' and 'other' compounds in the inference predictions
+                                infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
+                                infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
+
+                                print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
+                                print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
+
+                                # Store the results in the inference_results dictionary
+                                for idx in range(infeSubset_X.shape[0]):
+                                    if infeSubset_y_pred[idx] == "relevant":
+                                        idx = infeSubset_useInds[idx]
+                                        infe_df.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
 
                         # Calculate average results
                         avg_score, std_score, min_score, max_score = (
@@ -1538,8 +1665,8 @@ def train_and_classify(df, subsets = None):
                         avg_conf_matrix_percent = np.mean(fold_conf_matrices, axis=0)
                         avg_conf_matrix_percent_df = pd.DataFrame(
                             avg_conf_matrix_percent,
-                            index=np.unique(y_train_gt),
-                            columns=np.unique(y_train_gt),
+                            index=np.unique(trainSubset_y_gt),
+                            columns=np.unique(trainSubset_y_gt),
                         )
 
                         print(f"\nAverage score: {avg_score:.3f} ± {std_score:.3f} (min: {min_score:.3f}, max: {max_score:.3f})")
@@ -1547,17 +1674,42 @@ def train_and_classify(df, subsets = None):
                         print("Average Confusion Matrix (Percentages, rows: ground-truth, columns: predictions):")
                         print(avg_conf_matrix_percent_df)
 
-    return df_infe
+    # collapse df_conf_matrices to a single dataframe
+    metrics_df = pd.concat(metrics_df, ignore_index=True) if metrics_df else pd.DataFrame()
+
+    return train_df, vali_df, infe_df, metrics_df
 
 
-def generate_prediction_overview(df, df_inference, output_dir, min_prediction_threshold = 120):
+def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "", min_prediction_threshold = 120):
+
+    print("\n\nGenerating Prediction Overview")
+    print("#######################################################")
+
+    # Subset df to include only rows where both 'source' and 'type' match those in df_predicted
+    mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"])
+    df = df.copy()[mask]
+
     # Generate the prediction results
-    # Aggregate the df_inference results and extract the number of times it was predicted to be a compound of interest
+    # Aggregate the df_predicted results and extract the number of times it was predicted to be a compound of interest
     # Calculate the count of predictions for each row
-    df_inference["prediction_count"] = df_inference["prediction_results"].apply(len)
+
+    # Summarize prediction_results by counting detections per row
+    def count_detections(pred_list, threshold):
+        if not isinstance(pred_list, list) or len(pred_list) == 0:
+            return 0
+        # Extract first part before "/" for each string
+        first_parts = [str(x).split("/", 1)[0].strip() for x in pred_list if isinstance(x, str) and "/" in x]
+        # Count occurrences of each first part
+        counts = Counter(first_parts)
+        # Count how many first parts meet or exceed the threshold
+        detections = sum(1 for v in counts.values() if v >= threshold)
+        return detections
+
+    df_predicted["prediction_count"] = df_predicted["prediction_results"].apply(lambda x: count_detections(x, min_prediction_threshold))
+
 
     # Sort the DataFrame by count in descending order
-    aggregated_df = df_inference.sort_values(by="prediction_count", ascending=False).reset_index(drop=True)
+    aggregated_df = df_predicted.sort_values(by="prediction_count", ascending=False).reset_index(drop=True)
 
     # Create the bar chart using plotnine    
     plot = (
@@ -1575,17 +1727,17 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
     )
 
     # Print the plot
-    out_file = os.path.join(output_dir, "interesting_predictions_classificationChart.pdf")
+    out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_classificationChart.pdf")
     plot.save(out_file, width=16, height=12)
     print(f"plot saved as {out_file}")
 
 
     # Add a new column 'prediction' to df with default value 'NA'
-    df["classification:interesting"] = ""
+    df["classification:relevant"] = ""
 
     # Update the 'prediction' column for rows present in aggregated_df
     for _, row in aggregated_df.iterrows():
-        if row["prediction_count"] > min_prediction_threshold:
+        if row["prediction_count"] >= 1:
             # Create a mask to identify matching rows in df
             mask = (
                 (df["source"] == row["source"])
@@ -1596,8 +1748,8 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
                 & (df["precursor_mz"] == row["precursor_mz"])
                 & (df["RTINSECONDS"] == row["RTINSECONDS"])
             )
-            # Set the prediction value to "interesting" for matching rows
-            df.loc[mask, "classification:interesting"] = "interesting"
+            # Set the prediction value to "relevant" for matching rows
+            df.loc[mask, "classification:relevant"] = "relevant"
 
     p_umap = (
         p9.ggplot(
@@ -1606,7 +1758,7 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
                 x="umap_1",
                 y="umap_2",
                 label="name",
-                colour="classification:interesting",
+                colour="classification:relevant",
                 shape="ionMode",
             ),
         )
@@ -1615,17 +1767,17 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
         + p9theme()
         + p9.labs(
             title="UMAP embeddings of the spectra",
-            subtitle="calculated from MS2DeepScore embeddings\nprenylated compounds are predicted based on classifier majority vote",
+            subtitle="calculated from MS2DeepScore embeddings\n'relevant' compounds are predicted based on classifier majority vote",
         )
     )
 
     # Print the plot
-    out_file = os.path.join(output_dir, "interesting_predictions_umap.pdf")
+    out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_umap.pdf")
     p_umap.save(out_file, width=16, height=12)
     print(f"Umap plot saved as {out_file}")
 
-    # Filter rows annotated as 'prenylated flavonoid' in the prediction column
-    subset_df = df[df["classification:interesting"] == "interesting"].copy()
+    # Filter rows annotated as 'relevant' in the prediction column
+    subset_df = df[df["classification:relevant"] == "relevant"].copy()
     subset_df = df.copy()
 
     try:
@@ -1638,19 +1790,20 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
         feature_map_plot = (
             p9.ggplot(
                 temp,
-                p9.aes(x="RTINSECONDS", y="precursor_mz", size="area_log10", color="classification:interesting"),
+                p9.aes(x="RTINSECONDS", y="precursor_mz", size="area_log10", color="classification:relevant"),
             )
             + p9.geom_point(alpha=0.1)
+            + p9.facet_wrap("classification:relevant")
             + p9theme()
             + p9.labs(
-                title="Feature Map of predicted Prenylated Flavonoids",
+                title="Feature Map of predicted 'relevant' compounds",
                 x="Retention Time (s)",
                 y="Precursor m/z",
             )
         )
 
         # Print the plot
-        out_file = os.path.join(output_dir, "interesting_predictions_feature_map.pdf")
+        out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_feature_map.pdf")
         feature_map_plot.save(out_file, width=16, height=12)
         print(f"Feature map plot saved as {out_file}")
 
@@ -1661,13 +1814,13 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
     # Modify the 'name' column to keep only the part after the first underscore
     subset_df["name"] = subset_df["name"].apply(lambda x: x.split("_", 1)[1] if "_" in x else x)
 
-    # Save subset_df to an HDF5 file
-    out_file_h5 = os.path.join(output_dir, "interesting_predictions_long.h5")
-    subset_df.to_hdf(out_file_h5, key="df", mode="w")
-    print(f"Saved table to {out_file_h5}")
+    ## Save subset_df to an HDF5 file
+    #out_file_h5 = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_long.h5")
+    #subset_df.to_hdf(out_file_h5, key="df", mode="w")
+    #print(f"Saved table to {out_file_h5}")
 
     # Pivot the table
-    aggClassification = lambda x: str(sum(d == "interesting" for d in x)) if sum(d == "interesting" for d in x) > 0 else ""
+    aggClassification = lambda x: str(sum(d == "relevant" for d in x)) if sum(d == "relevant" for d in x) > 0 else ""
     pivot_table = (
         subset_df[
             [
@@ -1683,7 +1836,7 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
                 #"height",
                 #"area",
                 "CE",
-                "classification:interesting",
+                "classification:relevant",
             ]
         ]
         .reset_index(drop=True)
@@ -1703,14 +1856,14 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
             ],
             columns="CE",
             aggfunc={
-                "classification:interesting": aggClassification,
+                "classification:relevant": aggClassification,
             },
             fill_value="",
         )
     )
 
     for sumCols, newCol in [
-        ("classification:interesting", "annotated_as_times:interesting"),
+        ("classification:relevant", "annotated_as_times:relevant"),
     ]:
         # Select all columns under the 'CE' level in the MultiIndex
         ce_columns = [col for col in pivot_table.columns if col[0] == sumCols]
@@ -1720,7 +1873,8 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
 
     # Extract column names starting with 'datafile:'
     additional_columns = [col for col in subset_df.columns if (col.startswith("datafile:") and col.endswith(":area")) or col.startswith("mzmine:")]
-    # Reduce interesting_df to the 'name' column and all columns from datafile_columns
+    # Reduce relevant_df to the 'name' column and all columns from datafile_columns
+    warnings.filterwarnings("ignore")
     reduced_df = subset_df[["name"] + additional_columns].drop_duplicates()
     # Reindex reduced_df to match the order of 'name' in pivot_table's index
     reduced_df = reduced_df.set_index("name").reindex(pivot_table.index.get_level_values("name")).reset_index()
@@ -1730,19 +1884,129 @@ def generate_prediction_overview(df, df_inference, output_dir, min_prediction_th
     for datafile_column in additional_columns:
         pivot_table[datafile_column] = reduced_df[datafile_column].values
 
-    # Sort the pivot_table by 'annotated_as_interesting' in descending order
+    # Sort the pivot_table by 'annotated_as_relevant' in descending order
     pivot_table = pivot_table.sort_values(
         by=[
-            "annotated_as_times:interesting",
+            "annotated_as_times:relevant",
         ],
         ascending=False,
     )
 
-    # Save the filtered DataFrame to an Excel file
-    out_file = os.path.join(output_dir, "interesting_predictions_long.xlsx")
-    subset_df.reset_index().to_excel(out_file, index=True)
+    x = pivot_table.copy()
+    x.columns = ['_'.join(filter(None, col)).strip() for col in x.columns.values]
+    x.columns = [re.sub(r"_Unnamed: \d+_level_\d+", "", col) for col in x.columns]
+    x.columns = [re.sub(r"Unnamed: \d+_level_\d+_", "", col) for col in x.columns]
+    overall = x.groupby(['source', 'annotated_as_times:relevant']).size().reset_index(name='row_count')
+
+    # Save the DataFrames to an Excel file
+    out_file = os.path.join(output_dir, f"{file_prefix}_data.xlsx")
+    writer = pd.ExcelWriter(out_file, engine='xlsxwriter')  
+    subset_df.to_excel(writer, sheet_name='long', index=False)
+    pivot_table.to_excel(writer, sheet_name='pivot_table', index=True)
+    overall.to_excel(writer, sheet_name='overall', index=False)
+    writer.close()
     print(f"Saved table to {out_file}")
 
-    out_file = os.path.join(output_dir, "interesting_predictions.xlsx")
-    pivot_table.reset_index().to_excel(out_file, index=True)
-    print(f"Saved pivot_table to {out_file}")
+
+def generate_ml_metrics_overview(df_metrics, output_dir):
+    """
+    Generate an overview of the machine learning metrics and save it to a file.
+    
+    Parameters:
+    - df_metrics: DataFrame containing the machine learning metrics. Columns are "metric", "value", "from", "subset", "classifier", "fold"
+    - output_dir: Directory where the overview will be saved.
+    """
+
+    print("\n\nGenerating Machine Learning Metrics Overview")
+    print("#######################################################")
+
+    overview_file = os.path.join(output_dir, "ML_metrics_overview.tsv")
+    df_metrics.to_csv(overview_file, sep="\t", index=False)
+    print(f"Machine learning metrics overview saved to {overview_file}")
+
+    # print overview of the different metrics and sets
+    print("\nMachine Learning Metrics and Sets Overview:")
+    print(df_metrics["metric"].unique())
+    print(df_metrics["from"].unique())
+
+    # histogram of metrics balanced_accuracy
+
+    balanced_accuracy_data = df_metrics[df_metrics["metric"] == "balanced_accuracy"]
+    # Aggregate per "from" and calculate mean and median accuracy
+    accuracy_stats = (
+        balanced_accuracy_data.groupby("from")["value"]
+        .agg(["mean", "median", "std"])
+        .reset_index()
+    )
+    print("\nMean and Median Balanced Accuracy per 'from':")
+    print(accuracy_stats)
+    p = (
+        p9.ggplot(balanced_accuracy_data, p9.aes(x="value"))
+        + p9.geom_histogram(bins=30, fill="steelblue", color="black")
+        + p9.facet_wrap("from")
+        + p9theme()
+        + p9.labs(title="Distribution of Balanced Accuracy", x="Balanced Accuracy", y="Count")
+    )
+    out_file = os.path.join(output_dir, "ML_metrics_balanced_accuracy_histogram.png")
+    p.save(out_file, width=10, height=6, dpi=300)
+
+    # ROC AUC plot for "weighted roc auc"
+    roc_auc_data = df_metrics[df_metrics["metric"] == "weighted roc auc"]
+    # Aggregate by 'from', 'subset', and 'classifier', and calculate median and mean
+    roc_auc_stats = (
+        roc_auc_data.groupby(["from", "subset", "classifier"])["value"]
+        .agg(["mean", "median", "std"])
+        .reset_index()
+        .sort_values(by="median", ascending=False)
+    )
+    print("\nMedian and Mean Weighted ROC AUC per 'from', 'subset', and 'classifier':")
+    for group, data in roc_auc_data.groupby("from"):
+        print(f"\nTop 10 Weighted ROC AUC for '{group}':")
+        print(data.nlargest(10, "value"))
+    p_roc_auc = (
+        p9.ggplot(roc_auc_data, p9.aes(x="fold", y="value", color="classifier"))
+        + p9.geom_line()
+        + p9.geom_point()
+        + p9.facet_grid("from", "subset")
+        + p9theme()
+        + p9.labs(title="Weighted ROC AUC Across Folds", x="Fold", y="Weighted ROC AUC")
+    )
+    roc_auc_file = os.path.join(output_dir, "ML_metrics_weighted_roc_auc_plot.png")
+    p_roc_auc.save(roc_auc_file, width=10, height=6, dpi=300)
+    print(f"Weighted ROC AUC plot saved to {roc_auc_file}")
+
+    # Filter rows where the metric starts with "confusion matrix percent"
+    confusion_matrix_percent_data = df_metrics[df_metrics["metric"].str.startswith("Confusion matrix percent: ")]
+    confusion_matrix_percent_data["metric"] = confusion_matrix_percent_data["metric"].str.replace(
+        r"^Confusion matrix percent: ", "", regex=True
+    )
+    # Histogram of confusion matrix percent
+    confusion_matrix_percent_data["value"] = confusion_matrix_percent_data["value"].astype(float)
+    confusion_matrix_percent_data = confusion_matrix_percent_data[
+        confusion_matrix_percent_data["metric"].isin(
+            ["relevant -> relevant", "other -> other"]
+        )
+    ]
+    # Aggregate by 'from' and 'metric', calculate mean, median, and std
+    aggregated_metrics = (
+        confusion_matrix_percent_data.groupby(["from", "metric"])["value"]
+        .agg(["mean", "median", "std"])
+        .reset_index()
+    )
+    print("\nAggregated Confusion Matrix values (Mean, Median, Std) by 'from' and 'metric' in %:")
+    print(aggregated_metrics)
+    p_confusion_matrix = (
+        p9.ggplot(confusion_matrix_percent_data, p9.aes(x="value", fill="metric"))
+        + p9.geom_histogram(bins=30, color="black", alpha=0.7)
+        + p9.facet_grid("from", "metric", scales="free_y")
+        + p9theme()
+        + p9.guides(fill=False)
+        + p9.labs(
+            title="Distribution of Confusion Matrix Percent Metrics",
+            x="Percent",
+            y="Count",
+        )
+    )
+    confusion_matrix_file = os.path.join(output_dir, "ML_metrics_confusion_matrix_percent_histogram.png")
+    p_confusion_matrix.save(confusion_matrix_file, width=12, height=8, dpi=300)
+    print(f"Confusion matrix percent histogram saved to {confusion_matrix_file}")
