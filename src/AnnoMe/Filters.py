@@ -1293,7 +1293,9 @@ def process_database(
     # add each name to the table data
     if len(names) > 2000:
         if include_compound_plots is None:
-            print(f"{Fore.YELLOW}WARNING: More than 2000 unique names found, plotting disabled as it might take longer than {len(names) / 50} seconds.\nConsider setting the parameter include_compound_plots to True.{Style.RESET_ALL}")
+            print(
+                f"{Fore.YELLOW}WARNING: More than 2000 unique names found, plotting disabled as it might take longer than {len(names) / 50} seconds.\nConsider setting the parameter include_compound_plots to True.{Style.RESET_ALL}"
+            )
             include_compound_plots = False
         elif include_compound_plots:
             print(f"{Fore.RED}WARNING: More than 2000 unique names found, plotting may take a long time.{Style.RESET_ALL}")
@@ -1363,7 +1365,9 @@ def process_database(
                         matching_compounds.add(spectrum[name_field])
                         matching_blocks.append(spectrum)
 
-                print(f"   - Found {Fore.YELLOW}{len(matching_compounds)}{Style.RESET_ALL} compounds with {Fore.YELLOW}{'' if typ == 'MatchingSmiles' else 'non-'}matching{Style.RESET_ALL} SMILES for {Fore.YELLOW}{check_name}{Style.RESET_ALL}")
+                print(
+                    f"   - Found {Fore.YELLOW}{len(matching_compounds)}{Style.RESET_ALL} compounds with {Fore.YELLOW}{'' if typ == 'MatchingSmiles' else 'non-'}matching{Style.RESET_ALL} SMILES for {Fore.YELLOW}{check_name}{Style.RESET_ALL}"
+                )
                 for name in natsort.natsorted(matching_compounds, key=lambda x: x.lower()):
                     table_data[name][f"C_{check_name}"] = "detected"
                     if verbose:

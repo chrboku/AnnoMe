@@ -854,14 +854,13 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
             ms2ds_model = MS2DeepScore(model)
 
         # process each dataset
-        for dataset in datasets:
-            ds = datasets[dataset]
+        for ds in datasets:
             print(f"\n\nGenerating MS2DeepScore embeddings for {Fore.YELLOW}{ds['name']}{Style.RESET_ALL}")
 
-            with execution_timer(title=f"Dataset {dataset}"):
+            with execution_timer(title=f"Dataset {ds['name']}"):
                 with execution_timer(title="Running pipeline"):
-                    
-                    print(f"{dataset}: Processing spectra file {Fore.YELLOW}{ds["file"]}{Style.RESET_ALL}")
+
+                    print(f"{ds['name']}: Processing spectra file {Fore.YELLOW}{ds['file']}{Style.RESET_ALL}")
                     print(f"   - Type {Fore.YELLOW}{ds["type"]}{Style.RESET_ALL}")
                     
                     allowed_types = ["train - relevant", "train - other", "validation - relevant", "validation - other", "inference"]
@@ -916,8 +915,8 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
         "ms2deepscore:embeddings": [],
     }
     # add each dataset
-    for dataset_name, ds in datasets.items():
-        df["source"].extend([dataset_name] * len(ds["ms2deepscore:embeddings"]))
+    for ds in datasets:
+        df["source"].extend([ds["name"]] * len(ds["ms2deepscore:embeddings"]))
         df["type"].extend([ds["type"]] * len(ds["ms2deepscore:embeddings"]))
         df["ms2deepscore:cleaned_spectra"].extend(ds["ms2deepscore:cleaned_spectra"])
         df["ms2deepscore:embeddings"].extend(ds["ms2deepscore:embeddings"])
@@ -983,12 +982,12 @@ def add_mzmine_metainfos(datasets, df):
         pd.DataFrame: Updated dataframe with MZmine meta-information added.
     """
     allMZmine = []
-    for dataset_name, ds in datasets.items():
+    for ds in datasets:
         if "mzmine_meta_table" in ds.keys() and ds["mzmine_meta_table"] is not None and ds["mzmine_meta_table"] != "":
             print(f"Processing and adding MZmine meta-information from {Fore.YELLOW}{ds['mzmine_meta_table']}{Style.RESET_ALL}")
             # Read the quantification file as a TSV
             mzmine_df = pd.read_csv(ds["mzmine_meta_table"], sep=",", low_memory=False)
-            mzmine_df["source"] = dataset_name
+            mzmine_df["source"] = ds["name"]
 
             # Update cols_to_keep with the new names
             all_cols = mzmine_df.columns.tolist()  # Get updated column names
@@ -1098,7 +1097,7 @@ def add_sirius_fingerprints(datasets, df):
         pd.DataFrame: Updated dataframe with SIRIUS fingerprints added.
     """
     df["sirius_fingerprint"] = None
-    for dataset_name, ds in datasets.items():
+    for ds in datasets:
         if "fingerprintFile" in ds.keys() and ds["fingerprintFile"] is not None and ds["fingerprintFile"] != "":
             if ds["fingerprintFile"] == "::RDKIT":
                 pass
@@ -1112,7 +1111,7 @@ def add_sirius_fingerprints(datasets, df):
                     # Update the sirius_fingerprint column in df
                     for feature_name, fingerprint_info in fingerprints_data.items():
                         # Check if the feature name exists in the current dataset
-                        mask = (df["source"] == dataset_name) & (df["name"] == feature_name)
+                        mask = (df["source"] == ds["name"]) & (df["name"] == feature_name)
                         assert mask.sum() == 1, f"Expected a single row match, but got {mask.sum()} matches."
                         df.loc[mask, "sirius_fingerprint"] = str(fingerprint_info["fingerprint"])
 
@@ -1128,12 +1127,12 @@ def add_sirius_canopus(datasets, df):
         pd.DataFrame: Updated dataframe with SIRIUS Canopus annotations added.
     """
     allCanopus = []
-    for dataset_name, ds in datasets.items():
+    for ds in datasets:
         if "canopus_file" in ds.keys() and ds["canopus_file"] is not None and ds["canopus_file"] != "" and ds["canopus_file"] != "::SIRIUS":
             print(f"reading Canopus annotations from {Fore.YELLOW}{ds['canopus_file']}{Style.RESET_ALL}")
             # Read the Canopus file as a TSV
             canopus_df = pd.read_csv(ds["canopus_file"], sep="\t")
-            canopus_df["source"] = dataset_name
+            canopus_df["source"] = ds["name"]
             canopus_df = canopus_df[
                 [
                     "source",
@@ -1208,12 +1207,12 @@ def add_sirius_predictions(datasets, df):
         pd.DataFrame: Updated dataframe with SIRIUS predictions added.
     """
     allSIRIUS = []
-    for dataset_name, ds in datasets.items():
+    for ds in datasets:
         if "sirius_file" in ds.keys() and ds["sirius_file"] is not None and ds["sirius_file"] != "":
             print(f"reading SIRIUS annotations from {Fore.YELLOW}{ds['sirius_file']}{Style.RESET_ALL}")
             # Read the Canopus file as a TSV
             sirius_df = pd.read_csv(ds["sirius_file"], sep="\t")
-            sirius_df["source"] = dataset_name
+            sirius_df["source"] = ds["name"]
             sirius_df = sirius_df[
                 [
                     "source",
@@ -1288,18 +1287,18 @@ def add_mzmine_quant(datasets, df):
         pd.DataFrame: Updated dataframe with MZmine quantification data added.
     """
     allQuant = []
-    for dataset_name, ds in datasets.items():
+    for ds in datasets:
         if "quant_file" in ds.keys() and ds["quant_file"] is not None and ds["quant_file"] != "":
             print(f"reading quantification information from {Fore.YELLOW}{ds['quant_file']}{Style.RESET_ALL}")
             # Read the quantification file as a TSV
             quant_df = pd.read_csv(ds["quant_file"], sep=",", low_memory=False)
-            quant_df["source"] = dataset_name
+            quant_df["source"] = ds["name"]
             quant_df["datafile:max_quant_sample"] = None
 
             # Identify columns starting with 'datafile:'
             cols_to_rename = [col for col in quant_df.columns if col.startswith("datafile:")]
             # Create the renaming dictionary
-            rename_mapping = {col: col.replace("datafile:", f"datafile:{dataset_name}:") for col in cols_to_rename}
+            rename_mapping = {col: col.replace("datafile:", f"datafile:{ds["name"]}:") for col in cols_to_rename}
             # Rename the columns
             quant_df.rename(columns=rename_mapping, inplace=True)
 
@@ -1321,7 +1320,7 @@ def add_mzmine_quant(datasets, df):
 
             # Select only the desired columns, handling potential missing columns gracefully
             quant_df = quant_df[[col for col in cols_to_keep if col in quant_df.columns]]
-            datasets[dataset_name]["samples_columns"] = [col.replace("datafile:", "").replace(":area", "").replace(".mzML", "").replace(".mzXML", "") for col in quant_df.columns if col.startswith("datafile:") and col.endswith(":area")]
+            ds["samples_columns"] = [col.replace("datafile:", "").replace(":area", "").replace(".mzML", "").replace(".mzXML", "") for col in quant_df.columns if col.startswith("datafile:") and col.endswith(":area")]
 
             allQuant.append(quant_df)
 
@@ -1427,7 +1426,7 @@ def remove_invalid_CEs(df):
 
     return df
 
-def show_dataset_overview(df):
+def show_dataset_overview(df, print_method = print):
     """
     Prints an overview of the datasets in the dataframe, including the number of spectra and unique values for CE, ionMode, adduct, and fragmentation_method.
     Args:
@@ -1453,7 +1452,25 @@ def show_dataset_overview(df):
 
         print(f"\nSummary table for column: {column}")
         print(f"-------------------------------------------------")
-        print(summary_table)
+        print_method(summary_table)
+
+    # Show combined overview table
+    # Select relevant columns
+    cols = ["CE", "ionMode", "fragmentation_method", "source"]
+    df_subset = df[cols].copy()
+
+    # Combine CE, ionMode, fragmentation_method into a single column for grouping
+    df_subset["combo"] = df_subset[["ionMode", "fragmentation_method", "CE"]].astype(str).agg("_".join, axis=1)
+
+    # Group by the combo and source, then count occurrences
+    grouped = df_subset.groupby(["combo", "source"]).size().reset_index(name="count")
+
+    # Pivot the table: rows are combo, columns are source, values are count
+    pivot = grouped.pivot(index="combo", columns="source", values="count").fillna(0).astype(int)
+
+    print("\nPivot table of (CE, ionMode, fragmentation_method) combinations by source:")
+    with pd.option_context('display.max_rows', 1000, 'display.max_columns', 100):
+        print_method(pivot)
 
 def generate_embedding_plots(df, output_dir, colors):
     """
@@ -1497,8 +1514,6 @@ def generate_embedding_plots(df, output_dir, colors):
                 df,
                 mapping=p9.aes(x="umap_1", y="umap_2", label="name", colour="source", shape="ionMode"),
             )
-            + p9.geom_point(data=df[df["source"] == "MB BOKU"], alpha=0.3)
-            + p9.geom_point(data=df[df["source"] != "MB BOKU"], alpha=0.7)
             + p9.facet_wrap("source")
             # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
             + p9theme()
@@ -1523,8 +1538,6 @@ def generate_embedding_plots(df, output_dir, colors):
                     shape="ionMode",
                 ),
             )
-            + p9.geom_point(data=df[df["source"] == "MB BOKU"], alpha=0.3)
-            + p9.geom_point(data=df[df["source"] != "MB BOKU"], alpha=0.7)
             + p9.facet_wrap("source")
             # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
             + p9theme()
@@ -1541,7 +1554,7 @@ def generate_embedding_plots(df, output_dir, colors):
         ## TODO include heatmap here
 
 
-def train_and_classify(df, subsets = None, classifiers=None, cross_validation=None):
+def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, cross_validation=None):
     """
     Trains various classifiers on the MS2DeepScore embeddings and evaluates their performance.
 
@@ -1602,15 +1615,19 @@ def train_and_classify(df, subsets = None, classifiers=None, cross_validation=No
             "positive"     : lambda x: x["ionMode"] == "positive",
             "negative"     : lambda x: x["ionMode"] == "negative",
         }
+    if callable(subsets):
+        subsets = {"provided_function": subsets}
+    
 
     # Setup crossvalidation if not specified by the user
     if cross_validation is None:
         #cross_validation = StratifiedShuffleSplit(n_splits=10, test_size=0.8, train_size=0.2, random_state=42)
         cross_validation = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
-        printf(f"   - Using StratifiedKFold cross-validation with {cross_validation.n_splits} folds")
+        print(f"   - Using StratifiedKFold cross-validation with {cross_validation.n_splits} folds")
         print(f"   - Using {cross_validation.n_splits} folds for cross-validation")
 
     # Filter the dataframe and ms2_embeddings for training and inference
+    # for training
     train_df = df[df["type"].isin(["train - relevant", "train - other"])].reset_index(drop = True)
     train_X = np.array(train_df["ms2deepscore:embeddings"].tolist())
     train_df = train_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
@@ -1618,6 +1635,7 @@ def train_and_classify(df, subsets = None, classifiers=None, cross_validation=No
     train_df["used"] = [False for _ in range(len(train_df))]
     print(f"Size of training dataset: {Fore.YELLOW}{train_X.shape[0]}{Style.RESET_ALL}")
 
+    # for validation
     vali_df = df[df["type"].isin(["validation - relevant", "validation - other"])].reset_index(drop = True)
     vali_X = np.array(vali_df["ms2deepscore:embeddings"].tolist())
     vali_df = vali_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
@@ -1626,12 +1644,35 @@ def train_and_classify(df, subsets = None, classifiers=None, cross_validation=No
     vali_y_gt = np.array(["relevant" if s.lower() == "validation - relevant" else "other" for s in vali_df["type"].values])
     print(f"Size of validation dataset: {Fore.YELLOW}{vali_X.shape[0]}{Style.RESET_ALL}")
 
+    # for inference
     infe_df = df[df["type"].isin(["inference"])].reset_index(drop = True)
     infe_X = np.array(infe_df["ms2deepscore:embeddings"].tolist())
     infe_df = infe_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
     infe_df["prediction_results"] = [[] for _ in range(len(infe_df))]
     infe_df["used"] = [False for _ in range(len(infe_df))]
     print(f"Size of inference dataset: {Fore.YELLOW}{infe_X.shape[0]}{Style.RESET_ALL}")
+
+    # Generate an overview of train_df and save to file
+    cols = ["CE", "ionMode", "fragmentation_method", "source"]
+    out_file = os.path.join(output_dir, "dataset_overview.xlsx")
+    writer = pd.ExcelWriter(out_file, engine='xlsxwriter')  
+    for c_df_name, c_df in {"input": df, "train": train_df, "validation": vali_df, "inference": infe_df}.items():
+        if not c_df.empty:
+            # Show combined overview table
+            # Select relevant columns
+            df_subset = c_df[cols].copy()
+
+            # Combine CE, ionMode, fragmentation_method into a single column for grouping
+            df_subset["combo"] = df_subset[["ionMode", "fragmentation_method", "CE"]].astype(str).agg("_".join, axis=1)
+
+            # Group by the combo and source, then count occurrences
+            grouped = df_subset.groupby(["combo", "source"]).size().reset_index(name="count")
+
+            # Pivot the table: rows are combo, columns are source, values are count
+            pivot = grouped.pivot(index="combo", columns="source", values="count").fillna(0).astype(int)
+        
+            pivot.to_excel(writer, sheet_name=c_df_name)
+    writer.close()
 
     labels = ["relevant", "other"]
     trained_classifiers = []
@@ -2048,9 +2089,12 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     # Save the DataFrames to an Excel file
     out_file = os.path.join(output_dir, f"{file_prefix}_data.xlsx")
     writer = pd.ExcelWriter(out_file, engine='xlsxwriter')  
-    subset_df.to_excel(writer, sheet_name='long', index=False)
-    pivot_table.to_excel(writer, sheet_name='pivot_table', index=True)
-    overall.to_excel(writer, sheet_name='overall', index=False)
+    if not subset_df.empty:
+        subset_df.to_excel(writer, sheet_name='long', index=False)
+    if not pivot_table.empty:
+        pivot_table.to_excel(writer, sheet_name='pivot_table', index=True)
+    if not overall.empty:
+        overall.to_excel(writer, sheet_name='overall', index=False)
     writer.close()
     print(f"Saved table to {out_file}")
 

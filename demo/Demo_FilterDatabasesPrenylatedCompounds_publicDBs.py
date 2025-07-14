@@ -16,33 +16,23 @@ import shutil
 # Download the common MS/MS libraries if they do not exist
 libraries_path = "./demo/publicDBs/libraries"
 if not os.path.exists(libraries_path):
-    print(
-        f"Common MS/MS libraries not found in {Fore.YELLOW}{libraries_path}{Style.RESET_ALL}. Downloading..."
-    )
+    print(f"Common MS/MS libraries not found in {Fore.YELLOW}{libraries_path}{Style.RESET_ALL}. Downloading...")
     # Create the directory if it does not exist
     os.makedirs(libraries_path, exist_ok=True)
     try:
         download_common_MSMS_libraries(libraries_path)
     except Exception as e:
         shutil.rmtree(libraries_path)
-        print(
-            f"{Fore.RED}Error downloading common MS/MS libraries: {e}{Style.RESET_ALL}"
-        )
-        print(
-            f"{Fore.RED}Please check your internet connection or the availability of the libraries.{Style.RESET_ALL}"
-        )
+        print(f"{Fore.RED}Error downloading common MS/MS libraries: {e}{Style.RESET_ALL}")
+        print(f"{Fore.RED}Please check your internet connection or the availability of the libraries.{Style.RESET_ALL}")
         raise e
 else:
-    print(
-        f"Common MS/MS libraries found in {Fore.GREEN}{libraries_path}{Style.RESET_ALL}, skipping download and processing"
-    )
+    print(f"Common MS/MS libraries found in {Fore.GREEN}{libraries_path}{Style.RESET_ALL}, skipping download and processing")
 
 # Download the MS2DeepScore model if it does not exist
 model_path = f"./demo/publicDBs/models"
 if not os.path.exists(model_path):
-    print(
-        f"MS2DeepScore model not found in {Fore.YELLOW}{model_path}{Style.RESET_ALL}. Downloading..."
-    )
+    print(f"MS2DeepScore model not found in {Fore.YELLOW}{model_path}{Style.RESET_ALL}. Downloading...")
     # Create the directory if it does not exist
     os.makedirs(model_path, exist_ok=True)
     try:
@@ -50,14 +40,10 @@ if not os.path.exists(model_path):
     except Exception as e:
         shutil.rmtree(model_path)
         print(f"{Fore.RED}Error downloading MS2DeepScore model: {e}{Style.RESET_ALL}")
-        print(
-            f"{Fore.RED}Please check your internet connection or the availability of the model.{Style.RESET_ALL}"
-        )
+        print(f"{Fore.RED}Please check your internet connection or the availability of the model.{Style.RESET_ALL}")
         raise e
 else:
-    print(
-        f"MS2DeepScore model found in {Fore.GREEN}{model_path}{Style.RESET_ALL}, skipping download and processing"
-    )
+    print(f"MS2DeepScore model found in {Fore.GREEN}{model_path}{Style.RESET_ALL}, skipping download and processing")
 
 import sys
 
@@ -159,9 +145,7 @@ generated_files = []
 output_folder_existed = pathlib.Path(out_path).exists()
 pathlib.Path(out_path).mkdir(parents=True, exist_ok=True)
 for database_name in input_data.keys():
-    print(
-        "\n\n##########################################################################"
-    )
+    print("\n\n##########################################################################")
     print(f"Processing database: {Fore.YELLOW}{database_name}{Style.RESET_ALL}")
 
     mgf_file = input_data[database_name]["mgf_file"]
@@ -189,6 +173,4 @@ for file in generated_files:
     print(f"   - {file}")
 
 if output_folder_existed:
-    print(
-        f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m"
-    )
+    print(f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m")

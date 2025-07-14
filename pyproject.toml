@@ -1,6 +1,6 @@
 [project]
 name = "annome"
-version = "0.6.0"
+version = "0.7.0"
 description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
 authors = [
@@ -32,3 +32,6 @@ dependencies = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 200

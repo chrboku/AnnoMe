@@ -126,9 +126,7 @@ generated_files = []
 output_folder_existed = pathlib.Path(out_path).exists()
 pathlib.Path(out_path).mkdir(parents=True, exist_ok=True)
 for database_name in input_data.keys():
-    print(
-        "\n\n##########################################################################"
-    )
+    print("\n\n##########################################################################")
     print(f"Processing database: {Fore.YELLOW}{database_name}{Style.RESET_ALL}")
 
     mgf_file = input_data[database_name]["mgf_file"]
@@ -156,6 +154,4 @@ for file in generated_files:
     print(f"   - {file}")
 
 if output_folder_existed:
-    print(
-        f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m"
-    )
+    print(f"\n\033[91mOutput folder {out_path} already existed. Existing files have not been deleted, exercise with caution.\033[0m")
