@@ -10,5 +10,10 @@ wheels/
 .venv
 
 # demo files
-demo/publicDBs
-demo/*.html
+demo/output
+
+# resources
+resources/*
+
+# for publication
+forPublication/*/

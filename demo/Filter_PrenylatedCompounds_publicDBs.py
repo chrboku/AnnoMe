@@ -1,51 +1,20 @@
 from AnnoMe.Filters import (
     process_database,
     prep_smarts_key,
-    download_common_MSMS_libraries,
+    download_MSMS_libraries,
     download_MS2DeepScore_model,
-    CE_parser,
 )
 from collections import OrderedDict
 import pathlib
 import re
 from colorama import Fore, Style
-import os
-import shutil
 
 
 # Download the common MS/MS libraries if they do not exist
-libraries_path = "./demo/publicDBs/libraries"
-if not os.path.exists(libraries_path):
-    print(f"Common MS/MS libraries not found in {Fore.YELLOW}{libraries_path}{Style.RESET_ALL}. Downloading...")
-    # Create the directory if it does not exist
-    os.makedirs(libraries_path, exist_ok=True)
-    try:
-        download_common_MSMS_libraries(libraries_path)
-    except Exception as e:
-        shutil.rmtree(libraries_path)
-        print(f"{Fore.RED}Error downloading common MS/MS libraries: {e}{Style.RESET_ALL}")
-        print(f"{Fore.RED}Please check your internet connection or the availability of the libraries.{Style.RESET_ALL}")
-        raise e
-else:
-    print(f"Common MS/MS libraries found in {Fore.GREEN}{libraries_path}{Style.RESET_ALL}, skipping download and processing")
+download_MSMS_libraries()
 
 # Download the MS2DeepScore model if it does not exist
-model_path = f"./demo/publicDBs/models"
-if not os.path.exists(model_path):
-    print(f"MS2DeepScore model not found in {Fore.YELLOW}{model_path}{Style.RESET_ALL}. Downloading...")
-    # Create the directory if it does not exist
-    os.makedirs(model_path, exist_ok=True)
-    try:
-        download_MS2DeepScore_model(model_path)
-    except Exception as e:
-        shutil.rmtree(model_path)
-        print(f"{Fore.RED}Error downloading MS2DeepScore model: {e}{Style.RESET_ALL}")
-        print(f"{Fore.RED}Please check your internet connection or the availability of the model.{Style.RESET_ALL}")
-        raise e
-else:
-    print(f"MS2DeepScore model found in {Fore.GREEN}{model_path}{Style.RESET_ALL}, skipping download and processing")
-
-import sys
+download_MS2DeepScore_model()
 
 
 ## Parameters
@@ -90,6 +59,7 @@ def filter_generic(spectra):
             #"collision_energy" in block and 10 <= CE_parser(block["collision_energy"]) <= 90 and
             True]
 
+libraries_path = "./resources/libraries"
 input_data = {
     "gnps_cleaned": {"mgf_file": f"{libraries_path}/gnps_cleaned.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
     "MassBank_RIKEN": {"mgf_file": f"{libraries_path}/MassBank_RIKEN.mgf", "smiles_field": "smiles", "name_field": "name", "sf_field": "formula", "filter": filter_generic},
@@ -120,11 +90,14 @@ input_data = {
 # Visualize SMARTS with https://smarts.plus/view/1cf72609-6995-4b25-8a16-42eeeb8c09df
 checks = OrderedDict([
     ("prenyl_flavonoid_or_chalcone", {"filter": [[flavone_smart, isoflavone_smart, chalcone1_smart, chalcone2_smart], 
-                                        [prep_smarts_key(x) for x in ["CC=C(C)CCC=C(C)C", "C\\C=C(/C)\\CCC(O)C(=C)C", "CC(O)C(C)CCC=C(C)C", "CC=C(C)CCCC(C)(C)O", "CC(=CCCC1(C)OCCC=C1)C", "CC(=C)C(O)CCC1(C)OC=CCC1O", "C\\C=C(/C)\\CCCC(C)(O)CO", "CC(=CCCC(C)(O)C1CCCO1)C", "CC1(C)C(O)CCC2(C)OCCCC12", "CC1C(=CCC(O)C1(C)C)C", "CC1C(=C)CCC(O)C1(C)C", "COCC(C)(O)CCCC(=CC)C", "CC(=CCCC1(C)OC=CCC1O)C", "CC1(C)OCCC=C1", "CC1OC=CC1(C)C", "CC(CC=C(C)C)C(=C)C", "CCC(=C)C", "CC=C(C)C", "C-C(-C)-C=C", "CC(=C)C=C", "CC(=CCO)C", "CC(C)(O)C=C", "CCC(C)(C)O", "CC(O)C(=C)C", "CC1OC1(C)C", "C\\C=C(/C)\\CO", "CC(O)C(C)(C)O", "CC1(C)CCc2ccccc2O1", "CC1(C)CCCCO1"]]]}),
+                                        [prep_smarts_key(x) for x in ["CC=C(C)CCC=C(C)C", "C\\C=C(/C)\\CCC(O)C(=C)C", "CC(O)C(C)CCC=C(C)C", "CC=C(C)CCCC(C)(C)O", "CC(=CCCC1(C)OCCC=C1)C", "CC(=C)C(O)CCC1(C)OC=CCC1O", "C\\C=C(/C)\\CCCC(C)(O)CO", "CC(=CCCC(C)(O)C1CCCO1)C", "CC1(C)C(O)CCC2(C)OCCCC12", "CC1C(=CCC(O)C1(C)C)C", "CC1C(=C)CCC(O)C1(C)C", "COCC(C)(O)CCCC(=CC)C", "CC(=CCCC1(C)OC=CCC1O)C", "CC1(C)OCCC=C1", "CC1OC=CC1(C)C", "CC(CC=C(C)C)C(=C)C", "CCC(=C)C", "CC=C(C)C", "C-C(-C)-C=C", "CC(=C)C=C", "CC(=CCO)C", "CC(C)(O)C=C", "CCC(C)(C)O", "CC(O)C(=C)C", "CC1OC1(C)C", "C\\C=C(/C)\\CO", "CC(O)C(C)(C)O", "CC1(C)CCc2ccccc2O1", "CC1(C)CCCCO1"]]]}),                                        
+    ("flavonoid", {"filter": [[flavone_smart]]}),
+    ("isoflavonoid", {"filter": [[isoflavone_smart]]}),
+    ("stilbene", {"filter": [[prep_smarts_key("c1:c:c:[C,c](:c:c:1)[CH]=[CH][C,c]2:c:c:c:c:c:2", replace=False)]]}),
 ])
 include_details = False
 
-out_path = f"{libraries_path}/derived_prenylated_compounds/"
+out_path = f"./resources/libraries_filtered/"
 
 def evAbs(x):
     match = re.match(r"(\d+(?:\.\d+)?)\s*eV\s*\(absolute\)", str(x), re.IGNORECASE)

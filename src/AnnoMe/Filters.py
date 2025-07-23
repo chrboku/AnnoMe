@@ -1,3 +1,4 @@
+import json
 import os
 import pathlib
 import tempfile
@@ -36,8 +37,10 @@ import natsort
 import colorama
 from colorama import Fore, Style
 
+import zipfile
 
-def download_file(url, dest_folder, file_name=None):
+
+def download_file_if_not_exists(url, dest_folder, file_name=None):
     """
     Downloads a file from a given URL to a specified destination folder.
 
@@ -57,9 +60,10 @@ def download_file(url, dest_folder, file_name=None):
     else:
         filename = os.path.join(dest_folder, file_name)
 
-    response = requests.get(url)
-    with open(filename, "wb") as f:
-        f.write(response.content)
+    if not os.path.exists(filename):
+        response = requests.get(url)
+        with open(filename, "wb") as f:
+            f.write(response.content)
 
     return filename
 
@@ -193,7 +197,47 @@ def fix_massspecgym_nameandid(mgf_file_path):
                 outfile.write(line)
 
 
-def download_common_MSMS_libraries(dest_folder):
+def get_config_value(key, config_location=None):
+    """
+    Retrieves a configuration value from a specified location or the default config file.
+
+    Args:
+        key (str): The key for which to retrieve the value.
+        config_location (str, optional): The path to the configuration file. If None, uses the default location.
+
+    Returns:
+        str: The value associated with the key, or None if not found.
+    """
+    if config_location is None:
+        config_location = os.path.join(os.path.dirname(__file__), "../../config.json")
+
+    if not os.path.exists(config_location):
+        raise FileNotFoundError(f"Configuration file not found at {config_location}")
+
+    with open(config_location, "r") as f:
+        config = json.load(f)
+        if key not in config:
+            raise KeyError(f"Key '{key}' not found in configuration file at {config_location}")
+        return config.get(key, None)
+
+    raise RuntimeError(f"Failed to retrieve value for key '{key}' from configuration file at {config_location}, unknown error")
+
+def unzip_file(zip_file_path, dest_folder):
+    """
+    Unzips a zip file to the specified destination folder.
+
+    Args:
+        zip_file_path (str): The path to the zip file.
+        dest_folder (str): The folder where the contents will be extracted.
+    """
+
+    if not os.path.exists(dest_folder):
+        os.makedirs(dest_folder)
+
+    with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+        zip_ref.extractall(dest_folder)
+
+def download_MSMS_libraries(dest_folder=None):
     """
     Downloads common MS/MS libraries to the specified destination folder.
 
@@ -201,89 +245,79 @@ def download_common_MSMS_libraries(dest_folder):
         dest_folder (str): The folder where the libraries will be downloaded.
     """
 
-    print("Downloading public datasets for MS/MS libraries...")
+    if dest_folder is None:
+        dest_folder = os.path.join(".", "resources")
+
+    c_dest_folder = os.path.join(dest_folder, "libraries")
+
+    print(f"Downloading (if necessary) public datasets for MS/MS libraries, to {c_dest_folder}...")
     print("   - MONA")
-    download_file("https://external.gnps2.org/gnpslibrary/MONA.mgf", dest_folder)
-    print("   - GNPS - Wine DB Orbitrap")
-    download_file("https://external.gnps2.org/gnpslibrary/WINE-DB-ORBITRAP.mgf", dest_folder)
-    print("   - GNPS - GNPS cleaned")
-    download_file("https://external.gnps2.org/processed_gnps_data/gnps_cleaned.mgf", dest_folder)
+    download_file_if_not_exists(get_config_value("url:MONA"), c_dest_folder)
+    print("   - GNPS Wine DB Orbitrap")
+    download_file_if_not_exists(get_config_value("url:GNPS_Wine_DB_Orbitrap"), c_dest_folder)
+    print("   - GNPS cleaned")
+    download_file_if_not_exists(get_config_value("url:GNPS_Cleaned"), c_dest_folder)
     print("   - MassSpecGym")
-    download_file(
-        "https://huggingface.co/datasets/roman-bushuiev/MassSpecGym/resolve/main/data/MassSpecGym.tsv",
-        dest_folder,
+    download_file_if_not_exists(
+        get_config_value("url:MassSpecGym"),
+        c_dest_folder,
     )
-    print("   - MassSpecGym file")
+    print("      - processing")
     tsv_to_mgf(
-        os.path.join(dest_folder, "MassSpecGym.tsv"),
-        os.path.join(dest_folder, "MassSpecGym.mgf"),
+        os.path.join(c_dest_folder, "MassSpecGym.tsv"),
+        os.path.join(c_dest_folder, "MassSpecGym.mgf"),
     )
-    fix_massspecgym_nameandid(os.path.join(dest_folder, "MassSpecGym.mgf"))
+    fix_massspecgym_nameandid(os.path.join(c_dest_folder, "MassSpecGym.mgf"))
     print("   - MassBank Riken")
-    download_file(
-        "https://github.com/MassBank/MassBank-data/releases/download/2025.05.1/MassBank.msp_RIKEN",
-        dest_folder,
+    download_file_if_not_exists(
+        get_config_value("url:MB_Riken"),
+        c_dest_folder,
     )
-    print("   - MassBank Riken file")
+    print("      - processing")
     msp_to_mgf(
-        os.path.join(dest_folder, "MassBank.msp_RIKEN"),
-        os.path.join(dest_folder, "MassBank_RIKEN.mgf"),
+        os.path.join(c_dest_folder, "MassBank.msp_RIKEN"),
+        os.path.join(c_dest_folder, "MassBank_RIKEN.mgf"),
     )
 
-    files = [
-        "20250228_targetmolnphts_pos_msn.mgf",
-        "20250228_targetmolnphts_pos_ms2.mgf",
-        "20250228_targetmolnphts_np_neg_ms2.mgf",
-        "20250228_targetmolnphts_neg_msn.mgf",
-        "20250228_mcediv_50k_sub_pos_msn.mgf",
-        "20250228_mcediv_50k_sub_pos_ms2.mgf",
-        "20250228_mcediv_50k_sub_neg_msn.mgf",
-        "20250228_mcediv_50k_sub_neg_ms2.mgf",
-        "20241003_otavapep_pos_msn.mgf",
-        "20241003_otavapep_pos_ms2.mgf",
-        "20241003_otavapep_neg_msn.mgf",
-        "20241003_otavapep_neg_ms2.mgf",
-        "20241003_nihnp_pos_msn.mgf",
-        "20241003_nihnp_pos_ms2.mgf",
-        "20241003_nihnp_neg_msn.mgf",
-        "20241003_nihnp_neg_ms2.mgf",
-        "20241003_mcescaf_pos_msn.mgf",
-        "20241003_mcescaf_pos_ms2.mgf",
-        "20241003_mcescaf_neg_msn.mgf",
-        "20241003_mcescaf_neg_ms2.mgf",
-        "20241003_mcedrug_pos_msn.mgf",
-        "20241003_mcedrug_pos_ms2.mgf",
-        "20241003_mcedrug_neg_msn.mgf",
-        "20241003_mcedrug_neg_ms2.mgf",
-        "20241003_mcebio_pos_msn.mgf",
-        "20241003_mcebio_pos_ms2.mgf",
-        "20241003_mcebio_neg_msn.mgf",
-        "20241003_mcebio_neg_ms2.mgf",
-        "20241003_enammol_pos_msn.mgf",
-        "20241003_enammol_pos_ms2.mgf",
-        "20241003_enammol_neg_msn.mgf",
-        "20241003_enammol_neg_ms2.mgf",
-        "20241003_enamdisc_pos_msn.mgf",
-        "20241003_enamdisc_pos_ms2.mgf",
-        "20241003_enamdisc_neg_msn.mgf",
-        "20241003_enamdisc_neg_ms2.mgf",
-    ]
+    files = get_config_value("MSnLib_files")
+    print("   - MSnLib files:")
     for file_name in files:
-        print(f"   - {file_name}")
-        download_file(
-            f"https://zenodo.org/api/records/15683662/files/{file_name}/content",
-            dest_folder,
+        print(f"      - {file_name}")
+        download_file_if_not_exists(
+            get_config_value("url:MSnLib_base").format(file_name=file_name),
+            c_dest_folder,
             file_name=file_name,
         )
 
+    print("   - BOKU iBAM")
+    download_file_if_not_exists(
+        get_config_value("url:BOKU_iBAM"),
+        c_dest_folder,
+        file_name="BOKU_iBAM.mgf",
+    )
 
-def download_MS2DeepScore_model(dest_folder):
+    c_dest_folder = os.path.join(dest_folder, "libraries_other")
+
+    print("   - other MSMS datasets")
+    download_file_if_not_exists(
+        get_config_value("url:other_MSMS_datasets"),
+        c_dest_folder,
+        file_name="other_MSMS_datasets.zip",
+    )
+    # Unzip the downloaded file if it is a zip file
+    unzip_file(os.path.join(c_dest_folder, "other_MSMS_datasets.zip"), c_dest_folder)
+
+
+def download_MS2DeepScore_model(dest_folder=None):
     """
     Downloads the MS2DeepScore model to the specified destination folder.
     """
-    print("Downloading MS2DeepScore model...")
-    model_url = "https://zenodo.org/records/13897744/files/ms2deepscore_model.pt?download=1"
-    download_file(model_url, dest_folder, file_name="ms2deepscore_model.pt")
+
+    if dest_folder is None:
+        dest_folder = os.path.join(".", "resources", "models")
+
+    print(f"Downloading (if necessary) MS2DeepScore model, to {dest_folder}...")
+    download_file_if_not_exists(get_config_value("url:MS2DeepScore_model"), dest_folder, file_name="ms2deepscore_model.pt")
 
 
 def CE_parser(ce_str):
@@ -782,6 +816,9 @@ def parse_mgf_file(file_path):
                 "instrument_type",
             ]:
                 key = "instrument"
+                if key in current_block_primary:
+                    # If already exists, append the new value
+                    value = current_block_primary[key] + f"; {value}"
                 is_primary = True
 
             elif key in ["name", "compound_name"]:

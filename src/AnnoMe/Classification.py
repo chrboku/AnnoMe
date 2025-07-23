@@ -702,8 +702,7 @@ def getElementOfIsotope(isotope):
     return fT.elemDetails[isotope][1]
 
 
-
-def chunk_mgf_file(input_mgf_path, max_blocks=30000):
+def chunk_mgf_file(input_mgf_path, max_blocks=30000, encoding="utf-8"):
     """
     Generator that yields paths to temporary MGF files, each containing up to max_blocks spectra from the input file.
     Each yielded file is deleted when closed.
@@ -717,7 +716,7 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000):
         temp.close()
         return temp.name
 
-    with open(input_mgf_path, "r", encoding="utf-8") as infile:
+    with open(input_mgf_path, "r", encoding=encoding, errors="ignore") as infile:
         chunk_lines = []
         block_count = 0
         for line in infile:
@@ -734,9 +733,7 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000):
             temp_path = write_chunk(chunk_lines)
             yield temp_path
 
-
-
-def select_randomly_n_spectra(input_mgf_path, n = None):
+def select_randomly_n_spectra(input_mgf_path, n = None, encoding="utf-8"):
     """
     Selects n random spectra from an MGF file and writes them to a new temporary file.
     If n is None or negative, returns the original file path and False.
@@ -751,7 +748,7 @@ def select_randomly_n_spectra(input_mgf_path, n = None):
         return input_mgf_path, False
 
     # Read all spectra blocks from the MGF file
-    with open(input_mgf_path, "r", encoding="utf-8") as infile:
+    with open(input_mgf_path, "r", encoding=encoding, errors="ignore") as infile:
         spectra_blocks = []
         current_block = []
         for line in infile:
@@ -1096,7 +1093,7 @@ def add_sirius_fingerprints(datasets, df):
     Returns:
         pd.DataFrame: Updated dataframe with SIRIUS fingerprints added.
     """
-    df["sirius_fingerprint"] = None
+    all_fingerprints = []
     for ds in datasets:
         if "fingerprintFile" in ds.keys() and ds["fingerprintFile"] is not None and ds["fingerprintFile"] != "":
             if ds["fingerprintFile"] == "::RDKIT":
@@ -1111,9 +1108,37 @@ def add_sirius_fingerprints(datasets, df):
                     # Update the sirius_fingerprint column in df
                     for feature_name, fingerprint_info in fingerprints_data.items():
                         # Check if the feature name exists in the current dataset
-                        mask = (df["source"] == ds["name"]) & (df["name"] == feature_name)
-                        assert mask.sum() == 1, f"Expected a single row match, but got {mask.sum()} matches."
-                        df.loc[mask, "sirius_fingerprint"] = str(fingerprint_info["fingerprint"])
+                        all_fingerprints.append({
+                            "source": ds["name"],
+                            "name": feature_name,
+                            "sirius_fingerprint": str(fingerprint_info["fingerprint"]),
+                        })
+
+    if len(all_fingerprints) > 0:
+        # Create a DataFrame from the collected fingerprints
+        fingerprints_df = pd.DataFrame(all_fingerprints)
+
+        # Add prefix "sirius:" to each column except 'source' and 'name'
+        fingerprints_df = fingerprints_df.rename(columns={col: f"sirius:{col}" for col in fingerprints_df.columns if col not in ["source", "name"]})
+
+        # Perform the left merge.
+        # This merges the current fingerprints_df with the entire df based on source and name.
+        # Columns from fingerprints_df are added to df. Rows not matching the join keys get NaN for these new columns.
+        # If fingerprints_df columns already exist in df (other than join keys), suffixes are added.
+        df["id"] = df["name"].astype(str).str.split("_", n=1).str[1]
+        df = pd.merge(
+            df,
+            fingerprints_df,  # Contains columns like 'source', 'name', etc. for the current dataset
+            left_on=["source", "id"],
+            right_on=["source", "id"],
+            how="left",
+            suffixes=(
+                "",
+                "",
+            ),  # Suffix for overlapping columns from the right dataframe (fingerprints_df)
+        )
+        # Remove the 'id' column added by the merge
+        df.drop(columns=["id"], inplace=True)
 
     return df   
 
@@ -1363,6 +1388,23 @@ def add_mzmine_quant(datasets, df):
         )
         # Remove the 'id' column added by the merge
         df.drop(columns=["id"], inplace=True)
+
+    return df
+
+def add_all_metadata(datasets, df):
+    """    
+    Adds all available metadata to the main dataframe from the datasets.
+    Args:
+        datasets (dict): Dictionary containing dataset information, including MZmine meta-table paths, SIRIUS fingerprints, Canopus annotations, and SIRIUS predictions.
+        df (pd.DataFrame): Main dataframe to which metadata will be added.
+    Returns:
+        pd.DataFrame: Updated dataframe with all metadata added.
+    """
+    df = add_mzmine_metainfos(datasets, df)
+    df = add_sirius_fingerprints(datasets, df)
+    df = add_sirius_canopus(datasets, df)
+    df = add_sirius_predictions(datasets, df)
+    df = add_mzmine_quant(datasets, df)
 
     return df
 
@@ -2110,6 +2152,10 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
 
     print("\n\nGenerating Machine Learning Metrics Overview")
     print("#######################################################")
+
+    if df_metrics.empty:
+        print(f"{Fore.RED}No machine learning metrics found. Skipping overview generation.{Style.RESET_ALL}")
+        return
 
     overview_file = os.path.join(output_dir, "ML_metrics_overview.tsv")
     df_metrics.to_csv(overview_file, sep="\t", index=False)
