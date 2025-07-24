@@ -4,20 +4,20 @@ inFile = "I:/Tomas_PrenylatedCompounds/analysis/results/HCD_{ion_mode}__sirius/c
 feature_column = "mappingFeatureId"
 class_column = "ClassyFire#most specific class"
 relevant_classes = [
-    "6-prenylated flavanones", 
-    "6-prenylated isoflavanones", 
-    "8-prenylated flavanones", 
-    "3'-prenylated flavanones", 
-    "3-prenylated flavones", 
-    "3-prenylated chalcones", 
-    "8-prenylated isoflavanones", 
-    "Pyranoisoflavonoids", 
-    "O-methylated isoflavonoids", 
-    "3'-O-methylated flavonoids", 
-    "Hydroxyisoflavonoids", 
-    "8-prenylated flavones", 
-    "6-prenylated flavones", 
-    "Pyranoflavonoids"
+   "6-prenylated flavanones", 
+   "6-prenylated isoflavanones", 
+   "8-prenylated flavanones", 
+   "3'-prenylated flavanones", 
+   "3-prenylated flavones", 
+   "3-prenylated chalcones", 
+   "8-prenylated isoflavanones", 
+   "Pyranoisoflavonoids", 
+   "8-prenylated flavones", 
+   "6-prenylated flavones", 
+   "Pyranoflavonoids", 
+   "2-prenylated xanthones", 
+   "4-prenylated xanthones", 
+   "8-prenylated xanthones", 
 ]
 
 for ion_mode in ["pos", "neg"]:
