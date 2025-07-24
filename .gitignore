@@ -10,7 +10,7 @@ wheels/
 .venv
 
 # demo files
-demo/output
+demo
 
 # resources
 resources/*

@@ -300,7 +300,7 @@ def download_MSMS_libraries(dest_folder=None):
 
     print("   - other MSMS datasets")
     download_file_if_not_exists(
-        get_config_value("url:other_MSMS_datasets"),
+        get_config_value("url:BOKU_other_MSMS_datasets"),
         c_dest_folder,
         file_name="other_MSMS_datasets.zip",
     )
