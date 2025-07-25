@@ -58,7 +58,11 @@ if "smiles" in df.columns:
 print(f"\nFound {len(std_pren_compounds)} unique prenylated flavonoids or chalcones in standard datasets")
 print("\n\n")
 
-files = ["./resources/libraries_other/HCD_pos__sirius.mgf", "./resources/libraries_other/HCD_neg__sirius.mgf", "./resources/libraries_filtered/BOKU_iBAM___prenyl_flavonoid_or_chalcone__MatchingSmiles.mgf"]
+files = [
+    "./resources/libraries_other/HCD_pos__sirius.mgf",
+    "./resources/libraries_other/HCD_neg__sirius.mgf",
+    "./resources/libraries_filtered/BOKU_iBAM___prenyl_flavonoid_or_chalcone__MatchingSmiles.mgf",
+]
 for file in files:
     print(f"Processing in-house file: {file}")
     cmpds = parse_mgf_file(file)

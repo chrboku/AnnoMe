@@ -222,6 +222,7 @@ def get_config_value(key, config_location=None):
 
     raise RuntimeError(f"Failed to retrieve value for key '{key}' from configuration file at {config_location}, unknown error")
 
+
 def unzip_file(zip_file_path, dest_folder):
     """
     Unzips a zip file to the specified destination folder.
@@ -234,8 +235,9 @@ def unzip_file(zip_file_path, dest_folder):
     if not os.path.exists(dest_folder):
         os.makedirs(dest_folder)
 
-    with zipfile.ZipFile(zip_file_path, 'r') as zip_ref:
+    with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
         zip_ref.extractall(dest_folder)
+
 
 def download_MSMS_libraries(dest_folder=None):
     """

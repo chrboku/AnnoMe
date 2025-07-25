@@ -4,20 +4,20 @@ inFile = "I:/Tomas_PrenylatedCompounds/analysis/results/HCD_{ion_mode}__sirius/c
 feature_column = "mappingFeatureId"
 class_column = "ClassyFire#most specific class"
 relevant_classes = [
-   "6-prenylated flavanones", 
-   "6-prenylated isoflavanones", 
-   "8-prenylated flavanones", 
-   "3'-prenylated flavanones", 
-   "3-prenylated flavones", 
-   "3-prenylated chalcones", 
-   "8-prenylated isoflavanones", 
-   "Pyranoisoflavonoids", 
-   "8-prenylated flavones", 
-   "6-prenylated flavones", 
-   "Pyranoflavonoids", 
-   "2-prenylated xanthones", 
-   "4-prenylated xanthones", 
-   "8-prenylated xanthones", 
+    "6-prenylated flavanones",
+    "6-prenylated isoflavanones",
+    "8-prenylated flavanones",
+    "3'-prenylated flavanones",
+    "3-prenylated flavones",
+    "3-prenylated chalcones",
+    "8-prenylated isoflavanones",
+    "Pyranoisoflavonoids",
+    "8-prenylated flavones",
+    "6-prenylated flavones",
+    "Pyranoflavonoids",
+    "2-prenylated xanthones",
+    "4-prenylated xanthones",
+    "8-prenylated xanthones",
 ]
 
 for ion_mode in ["pos", "neg"]:
@@ -25,7 +25,7 @@ for ion_mode in ["pos", "neg"]:
     print(f"Processing ion mode: {ion_mode}")
 
     # Read the input file
-    df = pd.read_csv(inFile.format(ion_mode=ion_mode), sep='\t')
+    df = pd.read_csv(inFile.format(ion_mode=ion_mode), sep="\t")
 
     # Print the number of unique features
     print("\n---------------------------------------------------------------------")
@@ -50,14 +50,13 @@ for ion_mode in ["pos", "neg"]:
     df_filtered = df[df[class_column].isin(relevant_classes)]
     num_annotated_features = df_filtered[feature_column].nunique()
     print("\n---------------------------------------------------------------------")
-    print(f"Number of featureIds annotated at least once as a relevant class: {num_annotated_features}, that is {num_annotated_features/len(df[feature_column].unique())*100:.2f}% of all {len(df[feature_column].unique())} features.")
+    print(
+        f"Number of featureIds annotated at least once as a relevant class: {num_annotated_features}, that is {num_annotated_features / len(df[feature_column].unique()) * 100:.2f}% of all {len(df[feature_column].unique())} features."
+    )
 
     # Aggregate by class_column and "formulaRank", count occurrences
-    agg_stats = df_filtered.groupby([class_column, "formulaRank"]).agg(
-        spectra_count=('mappingFeatureId', 'size'),
-        unique_features=('mappingFeatureId', 'nunique')
-    ).reset_index()
+    agg_stats = df_filtered.groupby([class_column, "formulaRank"]).agg(spectra_count=("mappingFeatureId", "size"), unique_features=("mappingFeatureId", "nunique")).reset_index()
     print("\n---------------------------------------------------------------------")
     print("Counts by class and formulaRank (spectra and unique features):")
-    pd.set_option('display.max_rows', None)
+    pd.set_option("display.max_rows", None)
     print(agg_stats)
