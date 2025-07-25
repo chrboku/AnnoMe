@@ -12,6 +12,7 @@ wheels/
 # demo files
 demo/*.html
 demo/output
+demo/versions
 
 # resources
 resources/*
