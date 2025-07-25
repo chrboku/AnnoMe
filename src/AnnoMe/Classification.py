@@ -1,3 +1,5 @@
+from AnnoMe.Filters import parse_mgf_file
+
 # Standard library imports
 import ast
 import json
@@ -25,10 +27,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import plotnine as p9
 
 # ML / Bioinformatics packages
-from matchms.Pipeline import Pipeline, create_workflow
-from matchms.filtering.default_pipelines import DEFAULT_FILTERS
-from ms2deepscore import MS2DeepScore
-from ms2deepscore.models import load_model
+from dreams.api import dreams_embeddings
 
 # Dimensionality reduction packages
 import umap
@@ -702,6 +701,36 @@ def getElementOfIsotope(isotope):
     return fT.elemDetails[isotope][1]
 
 
+
+def standardize_mgf_file(input_mgf_file, standardization_columns = None):
+    """
+    Standardizes the MGF file by converting specified columns to a standard format.
+    Args:
+        input_mgf_file (str): Path to the input MGF file.
+        standardization_columns (list, optional): List of column names to standardize. If None, all columns are standardized.
+    Returns:
+        str: Path to the standardized MGF file.
+    """
+    if standardization_columns is None:
+        standardization_columns = [
+            (["pepmass", "PEPMASS", "PRECURSOR_MZ", "precursor_mz"], "PEPMASS")
+        ]
+
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
+    
+    with open(input_mgf_file, "r", encoding="utf-8", errors="ignore") as infile:
+        for line in infile:
+            for col_group, standard_col in standardization_columns:
+                if any(line.startswith(f"{col}=") for col in col_group):
+                        value = line.split("=")[-1].strip()
+                        line = f"{standard_col}={value}\n"
+            temp_file.write(line)
+    
+    temp_file.close()
+
+    return temp_file.name
+
+
 def chunk_mgf_file(input_mgf_path, max_blocks=30000, encoding="utf-8"):
     """
     Generator that yields paths to temporary MGF files, each containing up to max_blocks spectra from the input file.
@@ -831,35 +860,29 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
     return conf_matrix_percent, pd.DataFrame(metric_data)
 
 
-def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None):
+def generate_embeddings(datasets, data_to_add=None):
     """
-    Generates MS2DeepScore embeddings for the provided datasets using the specified model file.
+    Generates embeddings for the provided datasets using the specified model file.
     Args:
-        model_file_name (str): Path to the MS2DeepScore model file.
         datasets (dict): Dictionary containing dataset information, including file paths and types.
         data_to_add (dict, optional): Additional data to include in the embeddings.
     Returns:
-        pd.DataFrame: DataFrame containing the generated MS2DeepScore embeddings and associated metadata.
+        pd.DataFrame: DataFrame containing the generated embeddings and associated metadata.
     """
-    with execution_timer(title="MS2DeepScore"):
-        print(f"\n\nRunning {Fore.YELLOW}MS2DeepScore{Style.RESET_ALL}")
+    with execution_timer(title="DreaMS"):
+        print(f"\n\nRunning {Fore.YELLOW}DreaMS embedding generation{Style.RESET_ALL}")
         print("#######################################################")
-
-        with execution_timer(title="loading model"):
-            # load in the ms2deepscore model
-            model = load_model(model_file_name)
-            ms2ds_model = MS2DeepScore(model)
 
         # process each dataset
         for ds in datasets:
-            print(f"\n\nGenerating MS2DeepScore embeddings for {Fore.YELLOW}{ds['name']}{Style.RESET_ALL}")
+            print(f"\n\nGenerating DreaMS embeddings for {Fore.YELLOW}{ds['name']}{Style.RESET_ALL}")
 
             with execution_timer(title=f"Dataset {ds['name']}"):
                 with execution_timer(title="Running pipeline"):
 
                     print(f"{ds['name']}: Processing spectra file {Fore.YELLOW}{ds['file']}{Style.RESET_ALL}")
-                    print(f"   - Type {Fore.YELLOW}{ds["type"]}{Style.RESET_ALL}")
-                    
+                    print(f"   - Type {Fore.YELLOW}{ds['type']}{Style.RESET_ALL}")
+
                     allowed_types = ["train - relevant", "train - other", "validation - relevant", "validation - other", "inference"]
                     if ds["type"] not in allowed_types:
                         raise ValueError(f"Dataset type {ds['type']} is not supported. Supported types are: {str(allowed_types)}.")
@@ -868,56 +891,53 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
                     fi = ds["file"]
                     fi_rm = False
                     if "randomly_sample" in ds.keys():
-                        print(f"   - Randomly sampling {Fore.YELLOW}{ds["randomly_sample"]}{Style.RESET_ALL} spectra from input file")
+                        print(f"   - Randomly sampling {Fore.YELLOW}{ds['randomly_sample']}{Style.RESET_ALL} spectra from input file")
                         fi, fi_rm = select_randomly_n_spectra(fi, ds["randomly_sample"])
 
                     # chunk the mgf file so intermediate objects are smaller
                     for chunki, mgf_chunk_file in enumerate(chunk_mgf_file(fi)):
                         print(f"   - processing chunk {chunki}")
 
-                        with all_logging_disabled():
-                            # define the pipeline
-                            pipeline = Pipeline(
-                                create_workflow(
-                                    query_filters=DEFAULT_FILTERS,
-                                    score_computations=[[MS2DeepScore, {"model": model}]],
-                                )
-                            )
+                        std_mgf_file = standardize_mgf_file(mgf_chunk_file)
 
-                            # create embeddings
-                            report = pipeline.run(mgf_chunk_file)
-                            
-                            # save results (and concatenate if chunking was necessary)
-                            if "ms2deepscore:cleaned_spectra" not in ds:
-                                ds["ms2deepscore:cleaned_spectra"] = pipeline.spectra_queries
-                                ds["ms2deepscore:embeddings"] = ms2ds_model.get_embedding_array(pipeline.spectra_queries)
-                            else:
-                                ds["ms2deepscore:cleaned_spectra"].extend(pipeline.spectra_queries)
-                                ds["ms2deepscore:embeddings"] = np.concatenate((ds["ms2deepscore:embeddings"], ms2ds_model.get_embedding_array(pipeline.spectra_queries)), axis = 0)
+                        spectra = parse_mgf_file(std_mgf_file, check_required_keys=False)
+                        emds = dreams_embeddings(std_mgf_file)
+
+                        assert len(spectra) == emds.shape[0], "Number of spectra blocks and embeddings do not match!"
+
+                        # save results (and concatenate if chunking was necessary)
+                        if "mgf_data" not in ds:
+                            ds["mgf_data"] = spectra
+                            ds["embeddings"] = emds
+                        else:
+                            ds["mgf_data"].extend(spectra)
+                            ds["embeddings"] = np.concatenate((ds["embeddings"], emds), axis = 0)
 
                         # manual cleanup of temporary chunk file
                         os.remove(mgf_chunk_file)
+                        os.remove(std_mgf_file)
 
                     # manual cleanup of temporary randomly selected file (if used)
                     if fi_rm:
                         os.remove(fi)
 
-            print(f"   - Imported {Fore.YELLOW}{ds["ms2deepscore:embeddings"].shape[0]}{Style.RESET_ALL} spectra")
+            print(f"   - Imported {Fore.YELLOW}{ds['embeddings'].shape[0]}{Style.RESET_ALL} spectra")
 
     # Generate dataframe
     df = {
         "source": [],
         "type": [],
-        "ms2deepscore:cleaned_spectra": [],
-        "ms2deepscore:embeddings": [],
+        "mgf_data": [],
+        "embeddings": [],
     }
     # add each dataset
     for ds in datasets:
-        df["source"].extend([ds["name"]] * len(ds["ms2deepscore:embeddings"]))
-        df["type"].extend([ds["type"]] * len(ds["ms2deepscore:embeddings"]))
-        df["ms2deepscore:cleaned_spectra"].extend(ds["ms2deepscore:cleaned_spectra"])
-        df["ms2deepscore:embeddings"].extend(ds["ms2deepscore:embeddings"])
+        df["source"].extend([ds["name"]] * len(ds["embeddings"]))
+        df["type"].extend([ds["type"]] * len(ds["embeddings"]))
+        df["mgf_data"].extend(ds["mgf_data"])
+        df["embeddings"].extend(ds["embeddings"])
     df = pd.DataFrame(df)
+    print(df.head())
 
     # add extra columns from each spectra (extract common keys from the MS/MS spectra)
     if data_to_add is None:
@@ -925,21 +945,23 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
     if "MSLEVEL" not in data_to_add.keys():
         data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
 
-    spectrum = df["ms2deepscore:cleaned_spectra"].iloc[0]
-    print(spectrum.metadata_dict().keys())
+    meta_data = df["mgf_data"].iloc[0]
+    print(meta_data.keys())
 
     # extract metadata from the spectra
     for meta_info_to_add in data_to_add:
         fields = data_to_add[meta_info_to_add]
         meta_values = []
 
-        for rowi, spectrum in enumerate(df["ms2deepscore:cleaned_spectra"]):
+        for rowi, meta_data in enumerate(df["mgf_data"]):
             if isinstance(fields, list):
                 value = None
                 for key in fields:
                     for key in [key, key.lower(), key.upper()]:
                         try:
-                            value = spectrum.metadata_dict().get(key).lower()
+                            value = meta_data.get(key).lower()
+                            if key == "ionmode" and value in ["+", "-"]:
+                                value = "positive" if value == "+" else "negative"
                             break
                         except:
                             pass
@@ -951,7 +973,7 @@ def generate_ms2deepscore_embeddings(model_file_name, datasets, data_to_add=None
                 meta_values.append(value)
 
             else:
-                meta_values.append(spectrum.metadata_dict().get(fields))
+                meta_values.append(meta_data.get(fields))
 
         df[meta_info_to_add] = meta_values
 
@@ -1323,7 +1345,7 @@ def add_mzmine_quant(datasets, df):
             # Identify columns starting with 'datafile:'
             cols_to_rename = [col for col in quant_df.columns if col.startswith("datafile:")]
             # Create the renaming dictionary
-            rename_mapping = {col: col.replace("datafile:", f"datafile:{ds["name"]}:") for col in cols_to_rename}
+            rename_mapping = {col: col.replace("datafile:", f"datafile:{ds['name']}:") for col in cols_to_rename}
             # Rename the columns
             quant_df.rename(columns=rename_mapping, inplace=True)
 
@@ -1516,9 +1538,9 @@ def show_dataset_overview(df, print_method = print):
 
 def generate_embedding_plots(df, output_dir, colors):
     """
-    Generates UMAP and PaCMAP embeddings from MS2DeepScore embeddings and plots them using plotnine.
+    Generates UMAP and PaCMAP embeddings from embeddings and plots them using plotnine.
     Args:
-        df (pd.DataFrame): DataFrame containing MS2DeepScore embeddings and associated metadata.
+        df (pd.DataFrame): DataFrame containing embeddings and associated metadata.
         output_dir (str): Directory where the generated plots will be saved.
         colors (dict): Dictionary mapping dataset names to colors for plotting.
     """
@@ -1534,12 +1556,12 @@ def generate_embedding_plots(df, output_dir, colors):
             n_neighbors=50,  # key parameters How global or local the distribution 30, 50
             min_dist=0.2,  # can the dots overlap if you use 5 they move out a bit. 0.1, 0.2
         )
-        umap_embeddings = umap_reducer.fit(np.array(df["ms2deepscore:embeddings"].tolist()))
+        umap_embeddings = umap_reducer.fit(np.array(df["embeddings"].tolist()))
 
         # PacMAP
         print("Generating PaCMAP embeddings")
         pacmap_reducer = pacmap.PaCMAP(n_components=2, n_neighbors=10, MN_ratio=0.5, FP_ratio=2.0)
-        pacmap_embedding = pacmap_reducer.fit_transform(np.array(df["ms2deepscore:embeddings"].tolist()), init="pca")
+        pacmap_embedding = pacmap_reducer.fit_transform(np.array(df["embeddings"].tolist()), init="pca")
 
         df["umap_1"] = umap_embeddings.embedding_[:, 0]
         df["umap_2"] = umap_embeddings.embedding_[:, 1]
@@ -1562,10 +1584,10 @@ def generate_embedding_plots(df, output_dir, colors):
             + p9.scale_colour_manual(values=colors)
             + p9.labs(
                 title="UMAP embeddings of the spectra",
-                subtitle="calculated from MS2DeepScore embeddings",
+                subtitle="calculated from embeddings",
             )
         )
-        out_file = os.path.join(output_dir, "reduction__umap_from_MS2DeepScoreEmbeddings.pdf")
+        out_file = os.path.join(output_dir, "reduction__umap_from_embeddings.pdf")
         p_umap.save(out_file, width=16, height=12)
         print(f"UMAP plot saved as {out_file}")
 
@@ -1586,10 +1608,10 @@ def generate_embedding_plots(df, output_dir, colors):
             + p9.scale_colour_manual(values=colors)
             + p9.labs(
                 title="pacmap embeddings of the spectra",
-                subtitle="calculated from MS2DeepScore embeddings",
+                subtitle="calculated from embeddings",
             )
         )
-        out_file = os.path.join(output_dir, "reduction__pacmap_from_MS2DeepScoreEmbeddings.pdf")
+        out_file = os.path.join(output_dir, "reduction__pacmap_from_embeddings.pdf")
         p_pacmap.save(out_file, width=16, height=12)
         print(f"PACMAP plot saved as {out_file}")
 
@@ -1598,10 +1620,10 @@ def generate_embedding_plots(df, output_dir, colors):
 
 def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, cross_validation=None):
     """
-    Trains various classifiers on the MS2DeepScore embeddings and evaluates their performance.
+    Trains various classifiers on the embeddings and evaluates their performance.
 
     Args:
-        df (pd.DataFrame): DataFrame containing MS2DeepScore embeddings and associated metadata.
+        df (pd.DataFrame): DataFrame containing embeddings and associated metadata.
         subsets (dict, optional): Dictionary specifying subsets of the data to use for training and evaluation.
         classifiers (dict, optional): Dictionary of classifiers to use for training and evaluation.
         cross_validation (object, optional): Cross-validation strategy to use for training and evaluation.
@@ -1671,16 +1693,16 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
     # Filter the dataframe and ms2_embeddings for training and inference
     # for training
     train_df = df[df["type"].isin(["train - relevant", "train - other"])].reset_index(drop = True)
-    train_X = np.array(train_df["ms2deepscore:embeddings"].tolist())
-    train_df = train_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
+    train_X = np.array(train_df["embeddings"].tolist())
+    train_df = train_df.drop(columns=["embeddings"])
     train_df["prediction_results"] = [[] for _ in range(len(train_df))]
     train_df["used"] = [False for _ in range(len(train_df))]
     print(f"Size of training dataset: {Fore.YELLOW}{train_X.shape[0]}{Style.RESET_ALL}")
 
     # for validation
     vali_df = df[df["type"].isin(["validation - relevant", "validation - other"])].reset_index(drop = True)
-    vali_X = np.array(vali_df["ms2deepscore:embeddings"].tolist())
-    vali_df = vali_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
+    vali_X = np.array(vali_df["embeddings"].tolist())
+    vali_df = vali_df.drop(columns=["embeddings"])
     vali_df["prediction_results"] = [[] for _ in range(len(vali_df))]
     vali_df["used"] = [False for _ in range(len(vali_df))]
     vali_y_gt = np.array(["relevant" if s.lower() == "validation - relevant" else "other" for s in vali_df["type"].values])
@@ -1688,8 +1710,8 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
 
     # for inference
     infe_df = df[df["type"].isin(["inference"])].reset_index(drop = True)
-    infe_X = np.array(infe_df["ms2deepscore:embeddings"].tolist())
-    infe_df = infe_df.drop(columns=["ms2deepscore:cleaned_spectra", "ms2deepscore:embeddings"])
+    infe_X = np.array(infe_df["embeddings"].tolist())
+    infe_df = infe_df.drop(columns=["embeddings"])
     infe_df["prediction_results"] = [[] for _ in range(len(infe_df))]
     infe_df["used"] = [False for _ in range(len(infe_df))]
     print(f"Size of inference dataset: {Fore.YELLOW}{infe_X.shape[0]}{Style.RESET_ALL}")
@@ -1997,7 +2019,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         + p9theme()
         + p9.labs(
             title="UMAP embeddings of the spectra",
-            subtitle="calculated from MS2DeepScore embeddings\n'relevant' compounds are predicted based on classifier majority vote",
+            subtitle="calculated from embeddings\n'relevant' compounds are predicted based on classifier majority vote",
         )
     )
 

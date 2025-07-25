@@ -8,14 +8,12 @@ authors = [
     { name = "Tomas Rypar"},
     { name = "Rainer Schuhmacher"}
 ]
-requires-python = "==3.12.11"
+requires-python = "==3.11.0"
 dependencies = [
     "bokeh>=3.7.3",
     "chardet>=5.2.0",
     "ipykernel>=6.29.5",
     "jupyter>=1.1.1",
-    "matchms>=0.30.2",
-    "ms2deepscore>=2.5.2",
     "natsort>=8.4.0",
     "networkx>=3.5",
     "openpyxl>=3.1.5",
@@ -27,13 +25,17 @@ dependencies = [
     "seaborn>=0.13.2",
     "tables>=3.10.2",
     "tqdm>=4.67.1",
-    "umap-learn>=0.5.8",
     "xlsxwriter>=3.2.5",
+    "rdkit==2023.9.5",
+    "DreaMS @ git+https://github.com/pluskal-lab/DreaMS@main",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 200

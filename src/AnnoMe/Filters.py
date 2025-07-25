@@ -661,7 +661,7 @@ def is_float(value):
         return False
 
 
-def parse_mgf_file(file_path):
+def parse_mgf_file(file_path, check_required_keys=True):
     """
     Parses an MGF file and returns a dictionary containing the parsed data.
 
@@ -677,6 +677,7 @@ def parse_mgf_file(file_path):
     blocks = []
     current_block_primary = OrderedDict()
     current_block_secondary = OrderedDict()
+    blocks_not_used = 0
 
     required_keys = [
         "$$spectrumData",
@@ -704,7 +705,7 @@ def parse_mgf_file(file_path):
 
             # Check if the block has the required keys to be considered valid
             use_block = "pepmass" in current_block_primary and is_float(current_block_primary["pepmass"]) and "name" in current_block_primary
-            if use_block:
+            if use_block or not check_required_keys:
                 blocks.append(
                     OrderedDict(
                         list(
@@ -721,6 +722,8 @@ def parse_mgf_file(file_path):
                         )
                     )
                 )
+            else:
+                blocks_not_used += 1
 
             # Reset current blocks for the next iteration
             current_block_primary = OrderedDict()
@@ -849,6 +852,11 @@ def parse_mgf_file(file_path):
         print("   - Warning: Some blocks are missing required keys:")
         for keys, count in natsort.natsorted(incomplete_blocks.items(), key=lambda x: str(x[0].lower())):
             print(f"      - {keys}: {count} blocks")
+        print(f"{Style.RESET_ALL}")
+
+    if blocks_not_used > 0:
+        print(f"{Fore.RED}")
+        print(f"   - Warning: {blocks_not_used} blocks were not used due to missing required keys.")
         print(f"{Style.RESET_ALL}")
 
     return blocks

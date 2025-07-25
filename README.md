@@ -24,7 +24,7 @@ THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR I
 
 * Navigate into the new folder with `cd AnnoMe`. 
 
-* From the base folder (i.e., **AnnoMe**, the current folder), execute the demo filter-script with `uv run ./demo/Filter_PrenylatedCompounds_publicDBs.py`. This will download the publicly available MS/MS databases and the MS2DeepScore model. Then the scripts will filter the public databases for **prenylated flavones** and **prenylated chalcones**. The results will be available in **./resources/libraries_filtered**. 
+* From the base folder (i.e., **AnnoMe**, the current folder), execute the demo filter-script with `uv run ./demo/Filter_PrenylatedCompounds_publicDBs.py`. This will download the publicly available MS/MS databases and the DreaMS model. Then the scripts will filter the public databases for **prenylated flavones** and **prenylated chalcones**. The results will be available in **./resources/libraries_filtered**. 
 
 * Similar to the public database, execute the demo script for the in-house databases with `uv run ./demo/Filter_PrenylatedCompounds_BOKUDB.py`.
 
