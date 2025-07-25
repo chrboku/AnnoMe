@@ -3,7 +3,6 @@ from AnnoMe.Filters import (
     process_database,
     prep_smarts_key,
     download_MSMS_libraries,
-    download_MS2DeepScore_model,
 )
 from collections import OrderedDict
 import pathlib
@@ -13,9 +12,6 @@ from colorama import Fore, Style
 
 # Download the common MS/MS libraries if they do not exist
 download_MSMS_libraries()
-
-# Download the MS2DeepScore model if it does not exist
-download_MS2DeepScore_model()
 
 
 ## Parameters

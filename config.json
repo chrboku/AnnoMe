@@ -43,7 +43,6 @@
         "20241003_enamdisc_neg_msn.mgf",
         "20241003_enamdisc_neg_ms2.mgf"
     ],
-    "url:MS2DeepScore_model": "https://zenodo.org/records/13897744/files/ms2deepscore_model.pt?download=1",
     "url:BOKU_iBAM": "https://metabolomics-ifa.boku.ac.at/AnnoMe/BOKU_iBAM.mgf",
     "url:BOKU_other_MSMS_datasets": "https://metabolomics-ifa.boku.ac.at/AnnoMe/other_MSMS_datasets.zip"
 }

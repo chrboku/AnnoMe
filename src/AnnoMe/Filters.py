@@ -310,18 +310,6 @@ def download_MSMS_libraries(dest_folder=None):
     unzip_file(os.path.join(c_dest_folder, "other_MSMS_datasets.zip"), c_dest_folder)
 
 
-def download_MS2DeepScore_model(dest_folder=None):
-    """
-    Downloads the MS2DeepScore model to the specified destination folder.
-    """
-
-    if dest_folder is None:
-        dest_folder = os.path.join(".", "resources", "models")
-
-    print(f"Downloading (if necessary) MS2DeepScore model, to {dest_folder}...")
-    download_file_if_not_exists(get_config_value("url:MS2DeepScore_model"), dest_folder, file_name="ms2deepscore_model.pt")
-
-
 def CE_parser(ce_str):
     """
     Parses the collision energy string to extract the numeric value.
