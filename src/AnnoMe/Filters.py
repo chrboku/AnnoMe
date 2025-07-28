@@ -1379,9 +1379,8 @@ def process_database(
     unique_smiles_strings = sorted(list(set([block[smiles_field] for block in spectra if smiles_field in block.keys() and smiles_field != ""])))
     print(f"\n   6. Found {Fore.YELLOW}{len(unique_smiles_strings)}{Style.RESET_ALL} unique smiles strings")
 
-    for check_name, check_parameters in smart_checks.items():
+    for check_name, subs in smart_checks.items():
         found_results[check_name] = {}
-        subs = check_parameters["filter"]
 
         print("\n--------------------------------------------------------------------------")
         print(f"   # Checking for substructure '{check_name}'")
