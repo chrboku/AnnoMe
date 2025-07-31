@@ -1,4 +1,4 @@
-from AnnoMe.Filters import parse_mgf_file
+from AnnoMe.Filters import parse_mgf_file, download_MS2DeepScore_model
 
 # Standard library imports
 import ast
@@ -68,6 +68,7 @@ from natsort import natsorted
 
 # Colorama for colored terminal output
 from colorama import Fore, Style
+import hashlib
 
 # Set random seeds
 np.random.seed(42)
@@ -863,7 +864,7 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
     return conf_matrix_percent, pd.DataFrame(metric_data)
 
 
-def generate_embeddings(model_file_name, datasets, data_to_add=None):
+def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
     """
     Generates embeddings for the provided datasets using the specified model file.
     Args:
@@ -873,6 +874,29 @@ def generate_embeddings(model_file_name, datasets, data_to_add=None):
     Returns:
         pd.DataFrame: DataFrame containing the generated MS2DeepScore embeddings and associated metadata.
     """
+
+    if model_file_name is None:
+        model_dest_dir = "."
+        current_dir = os.path.basename(os.getcwd())
+        parent_dir = os.path.basename(os.path.dirname(os.getcwd()))
+        if current_dir == "AnnoMe":
+            model_dest_dir = os.path.abspath(os.path.join(os.getcwd(), "models"))
+        elif current_dir in ["demo", "forPublication"]:
+            if parent_dir == "AnnoMe":
+                model_dest_dir = os.path.abspath(os.path.join(os.getcwd(), "../resources/models/"))
+            else:
+                model_dest_dir = os.getcwd()
+        else:
+            model_dest_dir = os.getcwd()
+        model_file_name = os.path.join(model_dest_dir, "ms2deepscore_model.pt")
+
+        if not os.path.exists(model_dest_dir):
+            os.makedirs(model_dest_dir)
+        if not os.path.exists(model_file_name):
+            download_MS2DeepScore_model(dest_folder=model_dest_dir)
+        else: 
+            print(f"Model file {model_file_name} already exists, skipping download.")
+
     with execution_timer(title="MS2DeepScore"):
         print(f"\n\nRunning {Fore.YELLOW}MS2DeepScore{Style.RESET_ALL}")
         print("#######################################################")
@@ -1546,7 +1570,7 @@ def show_dataset_overview(df, print_method = print):
     with pd.option_context('display.max_rows', 1000, 'display.max_columns', 100):
         print_method(pivot)
 
-def generate_embedding_plots(df, output_dir, colors):
+def generate_embedding_plots(df, output_dir, colors=None):
     """
     Generates UMAP and PaCMAP embeddings from embeddings and plots them using plotnine.
     Args:
@@ -1554,6 +1578,21 @@ def generate_embedding_plots(df, output_dir, colors):
         output_dir (str): Directory where the generated plots will be saved.
         colors (dict): Dictionary mapping dataset names to colors for plotting.
     """
+    if colors is None:
+            # Generate a unique color for each value in 'source'
+            unique_sources = df["source"].unique()
+            import matplotlib.colors as mcolors
+
+            def string_to_color(s):
+                # Use a hash to generate a color from a string
+                hash_digest = hashlib.md5(s.encode()).hexdigest()
+                # Use the first 6 hex digits as RGB
+                rgb = tuple(int(hash_digest[i:i+2], 16) for i in (0, 2, 4))
+                # Normalize to [0,1] for matplotlib
+                return mcolors.to_hex([x / 255.0 for x in rgb])
+
+            colors = {src: string_to_color(src) for src in unique_sources}
+
     with execution_timer(title="Generating UMAP/pacmap embeddings"):
         # output the embeddings
         print("\n\nGenerating embeddings")
@@ -2013,30 +2052,33 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
             # Set the prediction value to "relevant" for matching rows
             df.loc[mask, "classification:relevant"] = "relevant"
 
-    p_umap = (
-        p9.ggplot(
-            df,
-            mapping=p9.aes(
-                x="umap_1",
-                y="umap_2",
-                label="name",
-                colour="classification:relevant",
-                shape="ionMode",
-            ),
-        )
-        + p9.geom_point(alpha=0.3)
-        # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
-        + p9theme()
-        + p9.labs(
-            title="UMAP embeddings of the spectra",
-            subtitle="calculated from embeddings\n'relevant' compounds are predicted based on classifier majority vote",
-        )
-    )
+    
 
-    # Print the plot
-    out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_umap.pdf")
-    p_umap.save(out_file, width=16, height=12)
-    print(f"Umap plot saved as {out_file}")
+    if "umap_1" in df.columns:
+        p_umap = (
+            p9.ggplot(
+                df,
+                mapping=p9.aes(
+                    x="umap_1",
+                    y="umap_2",
+                    label="name",
+                    colour="classification:relevant",
+                    shape="ionMode",
+                ),
+            )
+            + p9.geom_point(alpha=0.3)
+            # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
+            + p9theme()
+            + p9.labs(
+                title="UMAP embeddings of the spectra",
+                subtitle="calculated from embeddings\n'relevant' compounds are predicted based on classifier majority vote",
+            )
+        )
+
+        # Print the plot
+        out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_umap.pdf")
+        p_umap.save(out_file, width=16, height=12)
+        print(f"Umap plot saved as {out_file}")
 
     # Filter rows annotated as 'relevant' in the prediction column
     subset_df = df[df["classification:relevant"] == "relevant"].copy()
