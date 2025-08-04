@@ -982,25 +982,25 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
 
     spectrum = df["cleaned_spectra"].iloc[0]
-    print(spectrum.metadata_dict().keys())
+    print(spectrum.metadata_dict().keys(), spectrum.metadata_dict())
 
     # extract metadata from the spectra
     for meta_info_to_add in data_to_add:
         fields = data_to_add[meta_info_to_add]
         meta_values = []
-
         for rowi, spectrum in enumerate(df["cleaned_spectra"]):
             if isinstance(fields, list):
                 value = None
                 for key in fields:
                     for key in [key, key.lower(), key.upper()]:
-                        try:
-                            value = spectrum.metadata_dict().get(key).lower()
-                            break
-                        except:
-                            pass
-                    if value is not None:
-                        break
+                        if key in spectrum.metadata_dict():
+                            value = spectrum.metadata_dict().get(key)
+                            try:
+                                value = value.lower()
+                            except:
+                                pass
+                            if value is not None:
+                                break
                 
                 if value is None:
                     value = "NA"
@@ -1008,7 +1008,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
 
             else:
                 meta_values.append(spectrum.metadata_dict().get(fields))
-
+            
         df[meta_info_to_add] = meta_values
 
     # Perform post-processing of the main dataframe
@@ -1630,7 +1630,7 @@ def generate_embedding_plots(df, output_dir, colors=None):
             + p9.facet_wrap("source")
             # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
             + p9theme()
-            + p9.scale_colour_manual(values=colors)
+            #+ p9.scale_colour_manual(values=colors)
             + p9.labs(
                 title="UMAP embeddings of the spectra",
                 subtitle="calculated from embeddings",
@@ -1654,7 +1654,7 @@ def generate_embedding_plots(df, output_dir, colors=None):
             + p9.facet_wrap("source")
             # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
             + p9theme()
-            + p9.scale_colour_manual(values=colors)
+            #+ p9.scale_colour_manual(values=colors)
             + p9.labs(
                 title="pacmap embeddings of the spectra",
                 subtitle="calculated from embeddings",
