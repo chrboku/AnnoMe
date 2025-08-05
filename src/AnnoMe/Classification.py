@@ -1628,9 +1628,8 @@ def generate_embedding_plots(df, output_dir, colors=None):
                 mapping=p9.aes(x="umap_1", y="umap_2", label="name", colour="source", shape="ionMode"),
             )
             + p9.facet_wrap("source")
-            # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
             + p9theme()
-            #+ p9.scale_colour_manual(values=colors)
+            + p9.geom_point(size=2, alpha=0.1)
             + p9.labs(
                 title="UMAP embeddings of the spectra",
                 subtitle="calculated from embeddings",
@@ -1652,9 +1651,8 @@ def generate_embedding_plots(df, output_dir, colors=None):
                 ),
             )
             + p9.facet_wrap("source")
-            # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
             + p9theme()
-            #+ p9.scale_colour_manual(values=colors)
+            + p9.geom_point(size=2, alpha=0.1)
             + p9.labs(
                 title="pacmap embeddings of the spectra",
                 subtitle="calculated from embeddings",
