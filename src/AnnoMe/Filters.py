@@ -1312,6 +1312,7 @@ def process_database(
     include_compound_plots=None,
     filter_fn=None,
     verbose=False,
+    parallel_threads_plotting=24
 ):
     """
     Processes an MGF file, standardizes the blocks, checks if these contain the necessary substructures, and generates a summary table with compound information.
@@ -1465,7 +1466,7 @@ def process_database(
             # Partition matching_compounds and spectra into chunks of 500
             matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
 
-            with ThreadPoolExecutor() as executor:
+            with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
                 futures = {executor.submit(generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, f"{check_name}__MatchingSmiles"): chunk_idx for chunk_idx in range(0, len(matching_compounds_list), chunk_size)}
                 for future in as_completed(futures):
                     out_file = future.result()
@@ -1497,7 +1498,7 @@ def process_database(
         matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
         # Parallelize image generation for chunks of non-matching compounds
 
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
             futures = {executor.submit(generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, "NonMatchingSmiles"): chunk_idx for chunk_idx in range(0, len(matching_compounds_list), chunk_size)}
             for future in as_completed(futures):
                 out_file = future.result()
