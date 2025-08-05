@@ -37,6 +37,7 @@ import umap
 import pacmap
 
 # Machine learning packages
+from sklearn.base import clone
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
@@ -1845,7 +1846,7 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
 
                 # Perform classifiers with cross-validation
                 for cname in classifiers:
-                    clf = classifiers[cname]
+                    o_clf = classifiers[cname]
 
                     with execution_timer(title=f"Classifier: {subset} / {cname}"):
                         print(f"\n--------------------------------------------------------------------------------")
@@ -1857,6 +1858,9 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
 
                         # Perform 5-fold cross-validation
                         for fold, (train_idx, test_idx) in enumerate(cross_validation.split(trainSubset_X, trainSubset_y_gt)):
+                            # Not necessary, since the previous training is alwasy overwritten when using fit, but cleaner for anybody reading the code
+                            # Clone current model instance to have a fresh model for each fold
+                            clf = clone(o_clf)  
                             print("")
 
                             trainSubset_train_useInds, trainSubset_test_useInds = (
