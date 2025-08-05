@@ -38,6 +38,7 @@ import colorama
 from colorama import Fore, Style
 
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 def download_file_if_not_exists(url, dest_folder, file_name=None):
@@ -1131,7 +1132,7 @@ def filter_smiles(smarts_strings, check_fun):
     return filtered_smiles, non_matching_smiles, errored_smiles
 
 
-def draw_smiles(smiles_strings, legends=None, max_draw=10, molsPerRow=10):
+def draw_smiles(smiles_strings, legends=None, max_draw=10, molsPerRow=10, use_smarts=False):
     """
     Draws a grid of SMILES strings as images.
     Args:
@@ -1149,14 +1150,19 @@ def draw_smiles(smiles_strings, legends=None, max_draw=10, molsPerRow=10):
     mols = []
     for s in smiles_strings:
         add = []
-        if type(s) is list or type(s) is rdkit.Chem.rdchem.Mol:
+        if type(s) is list:
             add.extend(s)
+        elif type(s) is rdkit.Chem.rdchem.Mol:
+            add.append(s)
         else:
             add = [s]
 
         for x in add:
             if type(x) == str:
-                mol = rdkit.Chem.MolFromSmiles(x)
+                if use_smarts:
+                    mol = rdkit.Chem.MolFromSmarts(x)
+                else:
+                    mol = rdkit.Chem.MolFromSmiles(x)
             elif type(x) is rdkit.Chem.rdchem.Mol:
                 mol = x
             else:
@@ -1179,6 +1185,20 @@ def draw_smiles(smiles_strings, legends=None, max_draw=10, molsPerRow=10):
         maxMols=min(max_draw, len(selected_mols)),
         useSVG=False,
     )
+
+
+def draw_smarts(smarts_strings, legends=None, max_draw=10, molsPerRow=10):
+    """
+    Draws a grid of SMARTS strings as images.
+    Args:
+        smarts_strings (list): List of SMARTS strings to draw.
+        legends (list, optional): List of legends for each SMARTS string.
+        max_draw (int): Maximum number of SMARTS strings to draw.
+        molsPerRow (int): Number of molecules per row in the grid.
+    Returns:
+        Image: An RDKit image object containing the drawn SMARTS strings.
+    """
+    return draw_smiles(smarts_strings, legends, max_draw, molsPerRow, use_smarts=True)
 
 
 def draw_names(compounds, blocks, name_field, smiles_field, max_draw=10, molsPerRow=10):
@@ -1260,6 +1280,25 @@ def prep_smarts_key(smart, replace=True):
         smart = smart.replace("c", "C").replace("o", "O").replace("C", "[C,c]").replace("O", "[O,o]")
     return rdkit.Chem.MolFromSmarts(smart)
 
+
+def generate_and_save_image(chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, typ):
+    chunk_compounds = matching_compounds_list[chunk_idx : chunk_idx + chunk_size]
+    try:
+        img = draw_names(
+            chunk_compounds,
+            spectra,
+            name_field,
+            smiles_field,
+            max_draw=chunk_size,
+        )
+        out_file = f"{output_folder}/{database_name}___{typ}_chunk{chunk_idx}.png"
+        with open(out_file, "wb") as f:
+            f.write(img.data)
+        print(f"   - Exported images {chunk_idx}-{chunk_idx + chunk_size} for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+        return out_file
+    except Exception as e:
+        print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
+    return None
 
 def process_database(
     database_name,
@@ -1391,6 +1430,9 @@ def process_database(
     unique_smiles_strings = sorted(list(set([block[smiles_field] for block in spectra if smiles_field in block.keys() and smiles_field != ""])))
     print(f"\n   6. Found {Fore.YELLOW}{len(unique_smiles_strings)}{Style.RESET_ALL} unique smiles strings")
 
+    # process each check, and export matching compounds and spectra
+    all_non_matching_smiles = set(unique_smiles_strings)
+    chunk_size = 500
     for check_name, subs in smart_checks.items():
         found_results[check_name] = {}
 
@@ -1400,55 +1442,67 @@ def process_database(
         matching_smiles, non_matching_smiles, errored_smiles = filter_smiles(unique_smiles_strings, lambda x: substructure_fn(x, subs))
         found_results[check_name]["matching_smiles"] = matching_smiles
 
-        for typ in ["MatchingSmiles", "NonMatchingSmiles"]:
-            smiles_set = matching_smiles if typ == "MatchingSmiles" else non_matching_smiles
+        if len(matching_smiles) > 0:
+            matching_compounds = set()
+            matching_blocks = []
+            for spectrum in spectra:
+                if smiles_field in spectrum.keys() and spectrum[smiles_field] in matching_smiles:
+                    matching_compounds.add(spectrum[name_field])
+                    matching_blocks.append(spectrum)
 
-            if len(smiles_set) > 0:
-                matching_compounds = set()
-                matching_blocks = []
-                for spectrum in spectra:
-                    if smiles_field in spectrum.keys() and spectrum[smiles_field] in smiles_set:
-                        matching_compounds.add(spectrum[name_field])
-                        matching_blocks.append(spectrum)
+            print(f"   - Found {Fore.YELLOW}{len(matching_compounds)}{Style.RESET_ALL} compounds with {Fore.YELLOW}matching{Style.RESET_ALL} SMILES for {Fore.YELLOW}{check_name}{Style.RESET_ALL}")
+            for name in natsort.natsorted(matching_compounds, key=lambda x: x.lower()):
+                table_data[name][f"C_{check_name}"] = "substructure match"
+                if verbose:
+                    print(f"      * {name}")
+            found_results[check_name]["matching_compounds"] = matching_compounds
 
-                print(
-                    f"   - Found {Fore.YELLOW}{len(matching_compounds)}{Style.RESET_ALL} compounds with {Fore.YELLOW}{'' if typ == 'MatchingSmiles' else 'non-'}matching{Style.RESET_ALL} SMILES for {Fore.YELLOW}{check_name}{Style.RESET_ALL}"
-                )
-                for name in natsort.natsorted(matching_compounds, key=lambda x: x.lower()):
-                    table_data[name][f"C_{check_name}"] = "detected"
-                    if verbose:
-                        print(f"      * {name}")
-                found_results[check_name]["matching_compounds"] = matching_compounds
+            out_file = f"{output_folder}/{database_name}___{check_name}__MatchingSmiles.mgf"
+            export_mgf_file(matching_blocks, out_file)
+            print(f"   - Exported spectra to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+            generated_files.append(out_file)
 
-                if len(smiles_set) > 0:
-                    # Partition matching_compounds and spectra into chunks of 500
-                    matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
-                    chunk_size = 500
-                    for chunk_idx in range(0, len(matching_compounds_list), chunk_size):
-                        chunk_compounds = matching_compounds_list[chunk_idx : chunk_idx + chunk_size]
-                        try:
-                            img = draw_names(
-                                chunk_compounds,
-                                spectra,
-                                name_field,
-                                smiles_field,
-                                max_draw=chunk_size,
-                            )
-                            out_file = f"{output_folder}/{database_name}___{check_name}__{typ}_chunk{chunk_idx}.png"
-                            with open(out_file, "wb") as f:
-                                f.write(img.data)
-                            print(f"   - Exported images {chunk_idx}-{chunk_idx + chunk_size} for substructures to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
-                            generated_files.append(out_file)
-                        except Exception as e:
-                            print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
+            # Partition matching_compounds and spectra into chunks of 500
+            matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
 
-                out_file = f"{output_folder}/{database_name}___{check_name}__{typ}.mgf"
-                export_mgf_file(matching_blocks, out_file)
-                print(f"   - Exported spectra to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
-                generated_files.append(out_file)
+            with ThreadPoolExecutor() as executor:
+                futures = {executor.submit(generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, f"{check_name}__MatchingSmiles"): chunk_idx for chunk_idx in range(0, len(matching_compounds_list), chunk_size)}
+                for future in as_completed(futures):
+                    out_file = future.result()
+                    if out_file:
+                        generated_files.append(out_file)
 
-            else:
-                print("   - No matches found")
+        else:
+            print("   - No matches found")
+
+        all_non_matching_smiles = all_non_matching_smiles.intersection(set(non_matching_smiles))
+
+    # export all compounds and structures that did not match any of the substructure checks
+    if len(all_non_matching_smiles) > 0:
+        matching_compounds = set()
+        matching_blocks = []
+        for spectrum in spectra:
+            if smiles_field in spectrum.keys() and spectrum[smiles_field] in all_non_matching_smiles:
+                matching_compounds.add(spectrum[name_field])
+                matching_blocks.append(spectrum)
+
+        print(f"   - Found {Fore.YELLOW}{len(matching_compounds)}{Style.RESET_ALL} compounds not {Fore.YELLOW}matching{Style.RESET_ALL} and substructure filter")
+
+        out_file = f"{output_folder}/{database_name}___NonMatchingSmiles.mgf"
+        export_mgf_file(matching_blocks, out_file)
+        print(f"   - Exported spectra to {Fore.YELLOW}{out_file}{Style.RESET_ALL}")
+        generated_files.append(out_file)
+
+        # Partition matching_compounds and spectra into chunks of 500
+        matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
+        # Parallelize image generation for chunks of non-matching compounds
+
+        with ThreadPoolExecutor() as executor:
+            futures = {executor.submit(generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, "NonMatchingSmiles"): chunk_idx for chunk_idx in range(0, len(matching_compounds_list), chunk_size)}
+            for future in as_completed(futures):
+                out_file = future.result()
+                if out_file:
+                    generated_files.append(out_file)
 
     # write the table to an Excel file
     out_file = f"{output_folder}/{database_name}___table.xlsx"
