@@ -1300,6 +1300,7 @@ def generate_and_save_image(chunk_idx, matching_compounds_list, spectra, name_fi
         print(f"ERROR: image generation failed, continuing without plotting substructures: {e}")
     return None
 
+
 def process_database(
     database_name,
     mgf_file,
@@ -1312,7 +1313,7 @@ def process_database(
     include_compound_plots=None,
     filter_fn=None,
     verbose=False,
-    parallel_threads_plotting=24
+    parallel_threads_plotting=24,
 ):
     """
     Processes an MGF file, standardizes the blocks, checks if these contain the necessary substructures, and generates a summary table with compound information.
@@ -1406,16 +1407,16 @@ def process_database(
 
         # get unique smiles for the compound
         csmiles = set(smiles[name])  # use set to ensure uniqueness
-        table_data[name]["A_uniqueSmiles"] = str(csmiles) if len(csmiles) == 1 else f"{len(csmiles)}: {csmiles}"
+        table_data[name]["A_uniqueSmiles"] = str(csmiles.pop()) if len(csmiles) == 1 else f"{len(csmiles)}: {csmiles}"
 
         # get unique sum formulas
         cformulas = set(formulas[name])  # use set to ensure uniqueness
-        table_data[name]["A_SumFormula"] = str(cformulas) if len(cformulas) == 1 else f"{len(cformulas)}: {str(cformulas)}"
+        table_data[name]["A_SumFormula"] = str(cformulas.pop()) if len(cformulas) == 1 else f"{len(cformulas)}: {str(cformulas)}"
 
         # draw structure if possible
         if include_compound_plots is None or include_compound_plots:
             try:
-                img = draw_smiles(smiles[name], max_draw=500)
+                img = draw_smiles(set(smiles[name]), max_draw=500)
                 open(
                     f"{temp_dir.name}/img_{i}.png",
                     "wb",
@@ -1467,7 +1468,12 @@ def process_database(
             matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
 
             with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
-                futures = {executor.submit(generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, f"{check_name}__MatchingSmiles"): chunk_idx for chunk_idx in range(0, len(matching_compounds_list), chunk_size)}
+                futures = {
+                    executor.submit(
+                        generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, f"{check_name}__MatchingSmiles"
+                    ): chunk_idx
+                    for chunk_idx in range(0, len(matching_compounds_list), chunk_size)
+                }
                 for future in as_completed(futures):
                     out_file = future.result()
                     if out_file:
@@ -1499,7 +1505,12 @@ def process_database(
         # Parallelize image generation for chunks of non-matching compounds
 
         with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
-            futures = {executor.submit(generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, "NonMatchingSmiles"): chunk_idx for chunk_idx in range(0, len(matching_compounds_list), chunk_size)}
+            futures = {
+                executor.submit(
+                    generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, "NonMatchingSmiles"
+                ): chunk_idx
+                for chunk_idx in range(0, len(matching_compounds_list), chunk_size)
+            }
             for future in as_completed(futures):
                 out_file = future.result()
                 if out_file:
