@@ -1787,10 +1787,11 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
     writer.close()
 
     labels = ["relevant", "other"]
-    trained_classifiers = []
+    trained_classifiers_per_subset = {}
     metrics_df = []
     with execution_timer(title="Classifiers with Cross-Validation"):
         for subset in subsets:
+            trained_classifiers = []
             with execution_timer(title=f"Subset: {subset}"):
                 print(f"\n\n\n********************************************************************************")
                 print(f"Subset: {subset}")
@@ -1971,11 +1972,81 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
                         print(f"Average duration: {avg_duration:.2f} seconds")
                         print("Average Confusion Matrix (Percentages, rows: ground-truth, columns: predictions):")
                         print(avg_conf_matrix_percent_df)
-
+    
+            trained_classifiers_per_subset[subset] = (subsets[subset], trained_classifiers)
+    
     # collapse df_conf_matrices to a single dataframe
     metrics_df = pd.concat(metrics_df, ignore_index=True) if metrics_df else pd.DataFrame()
 
-    return train_df, vali_df, infe_df, metrics_df
+    return train_df, vali_df, infe_df, metrics_df, trained_classifiers_per_subset
+
+
+def predict(df, classifiers, subset_name = None, subset_fn = None):
+    """
+    Predicts the classes for the given DataFrame using the specified classifiers.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing embeddings and associated metadata.
+        subsets (dict, optional): Dictionary specifying subsets of the data to use for training and evaluation.
+        classifiers (dict of list): Dictionary of classifiers to use for prediction
+
+    Returns:
+        dict: Dictionary containing the results of the classification experiments.
+    """
+
+    print("\n\nPredicting")
+    print("#######################################################")
+
+    if "$$UUID" not in df.columns:
+        df["$$UUID"] = [f"$${i}" for i in range(df.shape[0])]
+
+    # Filter the dataframe and ms2_embeddings for inference
+    # for inference
+    infe_df = df[df["type"].isin(["inference"])].reset_index(drop = True)
+    infe_X = np.array(infe_df["embeddings"].tolist())
+    infe_df = infe_df.drop(columns=["cleaned_spectra", "embeddings"])
+    infe_df["prediction_results"] = [[] for _ in range(len(infe_df))]
+    infe_df["used"] = [False for _ in range(len(infe_df))]
+    print(f"Size of inference dataset: {Fore.YELLOW}{infe_X.shape[0]}{Style.RESET_ALL}")
+
+    with execution_timer(title=f"Inference for subset: {subset_name}"):
+        print(f"\n\n\n********************************************************************************")
+        print(f"Subset: {subset_name}")
+
+        # subset the data
+        infeSubset_useInds = infe_df[infe_df.apply(subset_fn, axis=1)].index.tolist()
+        if len(infeSubset_useInds) > 0:
+            df.loc[infeSubset_useInds, "used_for_inference"] = True
+
+            # Subselect the inference embeddings
+            infeSubset_X = None
+            if len(infeSubset_useInds) > 0:
+                infeSubset_X = infe_X[infeSubset_useInds, :]
+                infe_df.loc[infeSubset_useInds, "used"] = True
+            
+            # Perform classifiers with cross-validation
+            for clf_index, (clf_name, clf) in enumerate(classifiers):
+                with execution_timer(title=f"Classifier: {clf_name}"):
+                    print(f"\n--------------------------------------------------------------------------------")    
+                    print(f"Classifier: {clf_name}")
+                    # process inference dataset
+                    # Predict on the inference embeddings
+                    infeSubset_y_pred = clf.predict(infeSubset_X)
+
+                    # Count the number of 'relevant' and 'other' compounds in the inference predictions
+                    infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
+                    infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
+
+                    print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
+                    print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
+
+                    # Store the results in the inference_results dictionary
+                    for idx in range(infeSubset_X.shape[0]):
+                        if infeSubset_y_pred[idx] == "relevant":
+                            idx = infeSubset_useInds[idx]
+                            infe_df.iloc[idx]["prediction_results"].append(f"{clf_name}")
+                    
+    return infe_df
 
 
 def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "", min_prediction_threshold = 120):
