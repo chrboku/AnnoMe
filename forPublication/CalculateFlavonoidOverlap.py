@@ -1,23 +1,23 @@
-ex_1 = ["resources/libraries_filtered/flavonoids_compounds/BOKU_iBAM___table.xlsx"]
+ex_1 = ["resources/libraries_filtered/IsoFlavonoids/BOKU_iBAM___table.xlsx"]
 ex_2 = [
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_enamdisc_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_enamdisc_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_enammol_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_enammol_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_mcebio_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_mcebio_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_mcedrug_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_mcedrug_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_mcescaf_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_mcescaf_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_nihnp_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_nihnp_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_otavapep_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20241003_otavapep_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20250228_mcediv_50k_sub_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20250228_mcediv_50k_sub_pos_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20250228_targetmolnphts_np_neg_ms2___table.xlsx",
-    "resources/libraries_filtered/flavonoids_compounds/MSnLib_20250228_targetmolnphts_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_enamdisc_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_enamdisc_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_enammol_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_enammol_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_mcebio_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_mcebio_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_mcedrug_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_mcedrug_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_mcescaf_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_mcescaf_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_nihnp_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_nihnp_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_otavapep_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20241003_otavapep_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20250228_mcediv_50k_sub_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20250228_mcediv_50k_sub_pos_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20250228_targetmolnphts_np_neg_ms2___table.xlsx",
+    "resources/libraries_filtered/IsoFlavonoids/MSnLib_20250228_targetmolnphts_pos_ms2___table.xlsx",
 ]
 
 
@@ -48,6 +48,15 @@ def proc_df(df):
         all_smiles = set()
         for smiles in df:
             if isinstance(smiles, str):
+                try:
+                    # Try to process the SMILES string directly
+                    mol = Chem.MolFromSmiles(smiles)
+                    if mol:
+                        all_smiles.add(Chem.MolToSmiles(mol, canonical=True))
+                    continue
+                except Exception as e:
+                    pass
+
                 if smiles.startswith("{") and smiles.endswith("}"):
                     # Remove curly braces and split by comma
                     items = [item.strip().strip("'") for item in smiles[1:-1].split(",")]
@@ -79,9 +88,9 @@ def proc_df(df):
 set1 = set()
 for file in ex_1:
     df = pd.read_excel(file)
-    if "A_uniqueSmiles" in df.columns and "C_flavonoids" in df.columns:
+    if "A_uniqueSmiles" in df.columns and "C_iso_and_flavonoids" in df.columns:
         df_selected = df[["A_uniqueSmiles"]].dropna()
-        df_selected = df_selected[df["C_flavonoids"].str.contains("substructure match", na=False)]
+        df_selected = df_selected[df["C_iso_and_flavonoids"].str.contains("substructure match", na=False)]
         df_selected = proc_df(df_selected)
         set1.update(df_selected)
 
@@ -89,9 +98,9 @@ for file in ex_1:
 set2 = set()
 for file in ex_2:
     df = pd.read_excel(file)
-    if "A_uniqueSmiles" in df.columns and "C_flavonoids" in df.columns:
+    if "A_uniqueSmiles" in df.columns and "C_iso_and_flavonoids" in df.columns:
         df_selected = df[["A_uniqueSmiles"]].dropna()
-        df_selected = df_selected[df["C_flavonoids"].str.contains("substructure match", na=False)]
+        df_selected = df_selected[df["C_iso_and_flavonoids"].str.contains("substructure match", na=False)]
         df_selected = proc_df(df_selected)
         set2.update(df_selected)
 
