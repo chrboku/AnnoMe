@@ -130,6 +130,7 @@ for database_name in input_data.keys():
         checks,
         standardize_block_functions,
         out_path,
+        include_compound_plots=False,
         filter_fn=filter_fn,
         verbose=include_details,
     )

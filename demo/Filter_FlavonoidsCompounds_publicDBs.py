@@ -83,11 +83,13 @@ input_data = {
 
 # Visualize SMARTS with https://smarts.plus/view/1cf72609-6995-4b25-8a16-42eeeb8c09df
 checks = OrderedDict([
-    ("flavonoids", [[flavone_smart, isoflavone_smart]]),
+    ("flavonoids", [[flavone_smart]]),
+    ("isoflavonoids", [[isoflavone_smart]]),
+    ("iso_and_flavonoids", [[flavone_smart, isoflavone_smart]]),
 ])
 include_details = False
 
-out_path = f"./resources/libraries_filtered/flavonoids_compounds/"
+out_path = f"./resources/libraries_filtered/IsoFlavonoids/"
 
 def evAbs(x):
     match = re.match(r"(\d+(?:\.\d+)?)\s*eV\s*\(absolute\)", str(x), re.IGNORECASE)
@@ -126,6 +128,7 @@ for database_name in input_data.keys():
         checks,
         standardize_block_functions,
         out_path,
+        include_compound_plots=False,
         filter_fn=filter_fn,
         verbose=include_details,
     )

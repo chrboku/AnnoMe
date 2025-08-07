@@ -1390,12 +1390,15 @@ def process_database(
 
     smiles = defaultdict(list)
     formulas = defaultdict(list)
+    cas = defaultdict(list)
     for block in spectra:
         if name_field in block.keys():
             if smiles_field in block.keys() and block[smiles_field]:
                 smiles[block[name_field]].append(block[smiles_field])
             if sf_field in block.keys() and block[sf_field]:
                 formulas[block[name_field]].append(block[sf_field])
+            if "cas" in block.keys() and block["cas"]:
+                cas[block[name_field]].append(block["cas"])
     for i, name in tqdm(
         enumerate(list(natsort.natsorted(names, key=lambda x: x.lower()))),
         position=0,
@@ -1412,6 +1415,10 @@ def process_database(
         # get unique sum formulas
         cformulas = set(formulas[name])  # use set to ensure uniqueness
         table_data[name]["A_SumFormula"] = str(cformulas.pop()) if len(cformulas) == 1 else f"{len(cformulas)}: {str(cformulas)}"
+
+        # get unique cas numbers
+        ccas = set(cas[name])  # use set to ensure uniqueness
+        table_data[name]["A_CAS"] = str(ccas.pop()) if len(ccas) == 1 else f"{len(ccas)}: {str(ccas)}"
 
         # draw structure if possible
         if include_compound_plots is None or include_compound_plots:
@@ -1467,17 +1474,18 @@ def process_database(
             # Partition matching_compounds and spectra into chunks of 500
             matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
 
-            with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
-                futures = {
-                    executor.submit(
-                        generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, f"{check_name}__MatchingSmiles"
-                    ): chunk_idx
-                    for chunk_idx in range(0, len(matching_compounds_list), chunk_size)
-                }
-                for future in as_completed(futures):
-                    out_file = future.result()
-                    if out_file:
-                        generated_files.append(out_file)
+            if include_compound_plots is None or include_compound_plots:
+                with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
+                    futures = {
+                        executor.submit(
+                            generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, f"{check_name}__MatchingSmiles"
+                        ): chunk_idx
+                        for chunk_idx in range(0, len(matching_compounds_list), chunk_size)
+                    }
+                    for future in as_completed(futures):
+                        out_file = future.result()
+                        if out_file:
+                            generated_files.append(out_file)
 
         else:
             print("   - No matches found")
@@ -1504,17 +1512,18 @@ def process_database(
         matching_compounds_list = list(natsort.natsorted(matching_compounds, key=lambda x: x.lower()))
         # Parallelize image generation for chunks of non-matching compounds
 
-        with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
-            futures = {
-                executor.submit(
-                    generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, "NonMatchingSmiles"
-                ): chunk_idx
-                for chunk_idx in range(0, len(matching_compounds_list), chunk_size)
-            }
-            for future in as_completed(futures):
-                out_file = future.result()
-                if out_file:
-                    generated_files.append(out_file)
+        if include_compound_plots is None or include_compound_plots:
+            with ThreadPoolExecutor(max_workers=parallel_threads_plotting) as executor:
+                futures = {
+                    executor.submit(
+                        generate_and_save_image, chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, "NonMatchingSmiles"
+                    ): chunk_idx
+                    for chunk_idx in range(0, len(matching_compounds_list), chunk_size)
+                }
+                for future in as_completed(futures):
+                    out_file = future.result()
+                    if out_file:
+                        generated_files.append(out_file)
 
     # write the table to an Excel file
     out_file = f"{output_folder}/{database_name}___table.xlsx"
