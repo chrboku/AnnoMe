@@ -62,9 +62,18 @@ def download_file_if_not_exists(url, dest_folder, file_name=None):
         filename = os.path.join(dest_folder, file_name)
 
     if not os.path.exists(filename):
-        response = requests.get(url)
-        with open(filename, "wb") as f:
-            f.write(response.content)
+        try:
+            print(f"      - downloading")
+            response = requests.get(url)
+            with open(filename, "wb") as f:
+                f.write(response.content)
+        except Exception as e:
+            print(f"      - Error downloading {url}: {e}")
+            try:
+                os.remove(filename)
+            except Exception as e:
+                print(f"      - Error removing {filename}: {e}")
+            raise RuntimeError(f"Failed to download {url} to {filename}")
 
     return filename
 
