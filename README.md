@@ -27,9 +27,9 @@ The ground truth datasets used for training and testing/validation are
 - an in-house database obtained at BOKU University
 - a wheat ear extract obtained at BOKU University.
 
-The inference dataset are obtained from extracts of fruits from
-- Paulownia tomentosa
-- Glycyrrhizza uralensis
+The inference dataset are obtained from extracts of plants that are known producers of prenylated flavonoid compounds. The plats are:
+- *Paulownia tomentosa* (fruits)
+- *Glycyrrhizza uralensis* (roots)
 plants, which are known to produce prenylated flavonoid compounds.
 
 To execute the respective calculation, please execute the following steps:

@@ -1,6 +1,6 @@
 [project]
 name = "annome"
-version = "0.17.7"
+version = "0.17.8"
 description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
 authors = [
@@ -12,6 +12,7 @@ requires-python = "==3.12.11"
 dependencies = [
     "bokeh>=3.7.3",
     "chardet>=5.2.0",
+    "colorama>=0.4.6",
     "ipykernel>=6.29.5",
     "jupyter>=1.1.1",
     "matchms>=0.30.2",

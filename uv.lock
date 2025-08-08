@@ -13,11 +13,12 @@ wheels = [
 
 [[package]]
 name = "annome"
-version = "0.17.7"
+version = "0.17.8"
 source = { editable = "." }
 dependencies = [
     { name = "bokeh" },
     { name = "chardet" },
+    { name = "colorama" },
     { name = "ipykernel" },
     { name = "jupyter" },
     { name = "matchms" },
@@ -41,6 +42,7 @@ dependencies = [
 requires-dist = [
     { name = "bokeh", specifier = ">=3.7.3" },
     { name = "chardet", specifier = ">=5.2.0" },
+    { name = "colorama", specifier = ">=0.4.6" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "matchms", specifier = ">=0.30.2" },
