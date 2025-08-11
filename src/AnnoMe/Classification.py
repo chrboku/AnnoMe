@@ -2188,8 +2188,8 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         print(f"{Fore.RED}Error while plotting feature map: {e}{Style.RESET_ALL}")
         print("Skipping feature map plot as 'area' column is missing or not suitable for plotting.")
 
-    # Modify the 'name' column to keep only the part after the first underscore
-    subset_df["name"] = subset_df["name"].apply(lambda x: x.split("_", 1)[1] if "_" in x else x)
+    ## Modify the 'name' column to keep only the part after the first underscore
+    #subset_df["name"] = subset_df["name"].apply(lambda x: x.split("_", 1)[1] if "_" in x else x)
 
     ## Save subset_df to an HDF5 file
     #out_file_h5 = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_long.h5")
