@@ -2331,8 +2331,8 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
         + p9theme()
         + p9.labs(title="Distribution of Balanced Accuracy", x="Balanced Accuracy", y="Count")
     )
-    out_file = os.path.join(output_dir, "ML_metrics_balanced_accuracy_histogram.png")
-    p.save(out_file, width=10, height=6, dpi=300)
+    out_file = os.path.join(output_dir, "ML_metrics_balanced_accuracy_histogram.pdf")
+    p.save(out_file, width=10, height=6)
 
     # ROC AUC plot for "weighted roc auc"
     roc_auc_data = df_metrics[df_metrics["metric"] == "weighted roc auc"]
@@ -2355,8 +2355,8 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
         + p9theme()
         + p9.labs(title="Weighted ROC AUC Across Folds", x="Fold", y="Weighted ROC AUC")
     )
-    roc_auc_file = os.path.join(output_dir, "ML_metrics_weighted_roc_auc_plot.png")
-    p_roc_auc.save(roc_auc_file, width=10, height=6, dpi=300)
+    roc_auc_file = os.path.join(output_dir, "ML_metrics_weighted_roc_auc_plot.pdf")
+    p_roc_auc.save(roc_auc_file, width=10, height=6)
     print(f"Weighted ROC AUC plot saved to {roc_auc_file}")
 
     # Filter rows where the metric starts with "confusion matrix percent"
@@ -2391,6 +2391,6 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
             y="Count",
         )
     )
-    confusion_matrix_file = os.path.join(output_dir, "ML_metrics_confusion_matrix_percent_histogram.png")
-    p_confusion_matrix.save(confusion_matrix_file, width=12, height=8, dpi=300)
+    confusion_matrix_file = os.path.join(output_dir, "ML_metrics_confusion_matrix_percent_histogram.pdf")
+    p_confusion_matrix.save(confusion_matrix_file, width=12, height=8)
     print(f"Confusion matrix percent histogram saved to {confusion_matrix_file}")
