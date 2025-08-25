@@ -11,8 +11,8 @@ download_MSMS_libraries()
 
 ## Parameters
 # fmt: off
-flavone_smart = prep_smarts_key("O=C@1@C@C(@O@C2@C@C@C@C@C@1@2)C@3@C@C@C@C@C3")
-isoflavone_smart = prep_smarts_key("O=C@1@C@2@C@C@C@C@C@2@O@C@C@1C@3@C@C@C@C@C@3")
+flavone_smart = ["[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3", "[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3"]
+isoflavone_smart = ["[O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3", "[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3"]
 
 def filter_boku(spectra):
     instrument_regex = re.compile(".*(orbitrap|q-exactive).*", re.IGNORECASE)
@@ -29,9 +29,9 @@ input_data = {
 
 # Visualize SMARTS with https://smarts.plus/view/1cf72609-6995-4b25-8a16-42eeeb8c09df
 checks = OrderedDict([
-    ("flavonoids", [[flavone_smart]]),
-    ("isoflavonoids", [[isoflavone_smart]]),
-    ("iso_and_flavonoids", [[flavone_smart, isoflavone_smart]]),
+    ("flavonoids", [flavone_smart]),
+    ("isoflavonoids", [isoflavone_smart]),
+    ("iso_and_flavonoids", [flavone_smart + isoflavone_smart]),
 ])
 include_details = False
 
