@@ -61,6 +61,15 @@ To use AnnoMe for the classification of a new relevant chemical class, either
 
 ### Filter public repositories
 
+#### GUI-based
+
+The AnnoMe package provides a convenient graphical user interface to load multiple MGF files, filter their contentes for certain substructures, and separate the contained MSMS spectra based on the filtering results. The gui application can be started with (from within the project directory)
+```bash
+uv run annome_filtergui
+```
+
+#### Script-based
+
 - Clone and rename the file **demo/Filter_PrenylatedCompounds_publicDBs.py** to a new directory and open it with an editor of your choice.
 
 - Adapt the **input_data** variable, use all or some of the public respoitories already available there, or add new mgf files to this directory. The following fields are important and necessary:
