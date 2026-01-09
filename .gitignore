@@ -18,4 +18,5 @@ demo/versions
 resources/*
 
 # for publication
-forPublication/*/
+forPublication/
+output/

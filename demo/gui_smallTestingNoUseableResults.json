@@ -1,0 +1,25 @@
+{
+    "mgf_files": [
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_filtered/prenyl_flavonoid_or_chalcones/BOKU_iBAM___NonMatchingSmiles.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_filtered/prenyl_flavonoid_or_chalcones/BOKU_iBAM___prenyl_flavonoid_or_chalcone__MatchingSmiles.mgf",
+            "type": "train - relevant"
+        }
+    ],
+    "output_directory": "./output/classification_results/",
+    "subsets": [
+        {
+            "name": "hcd_neg_step[20,45,70]",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative']"
+        },
+        {
+            "name": "hcd_pos_step[20,45,70]",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive']"
+        }
+    ],
+    "classifier_configuration": "from sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.svm import SVC\nfrom sklearn.gaussian_process import GaussianProcessClassifier\nfrom sklearn.tree import DecisionTreeClassifier\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.neural_network import MLPClassifier\nfrom sklearn.ensemble import AdaBoostClassifier\nfrom sklearn.naive_bayes import GaussianNB\nfrom sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis\nfrom sklearn.discriminant_analysis import LinearDiscriminantAnalysis\nfrom sklearn.ensemble import ExtraTreesClassifier\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.ensemble import BaggingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.linear_model import RidgeClassifier\nfrom sklearn.ensemble import VotingClassifier\n\nclassifiers = {\n    \"Nearest Neighbors n=3\": KNeighborsClassifier(3),\n}",
+    "min_prediction_threshold": 10
+}

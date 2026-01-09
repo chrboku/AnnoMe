@@ -15,6 +15,7 @@ import tempfile
 import re
 import warnings
 from collections import Counter
+import inspect
 
 # Data science packages
 import numpy as np
@@ -38,15 +39,23 @@ import pacmap
 
 # Machine learning packages
 from sklearn.base import clone
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.gaussian_process import GaussianProcessClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.naive_bayes import GaussianNB
 from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.ensemble import AdaBoostClassifier, RandomForestClassifier
-from sklearn.gaussian_process import GaussianProcessClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.svm import SVC
-from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import BaggingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import RidgeClassifier
+from sklearn.ensemble import VotingClassifier
+
 from sklearn.metrics import (
     confusion_matrix,
     balanced_accuracy_score,
@@ -55,14 +64,7 @@ from sklearn.metrics import (
     roc_auc_score,
     recall_score,
 )
-from sklearn.ensemble import (
-    ExtraTreesClassifier,
-    GradientBoostingClassifier,
-    BaggingClassifier,
-)
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
-from sklearn.ensemble import VotingClassifier
-from sklearn.model_selection import StratifiedShuffleSplit, StratifiedKFold
+from sklearn.model_selection import StratifiedKFold
 
 # Other utilities
 from natsort import natsorted
@@ -881,7 +883,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         current_dir = os.path.basename(os.getcwd())
         parent_dir = os.path.basename(os.path.dirname(os.getcwd()))
         if current_dir == "AnnoMe":
-            model_dest_dir = os.path.abspath(os.path.join(os.getcwd(), "models"))
+            model_dest_dir = os.path.abspath(os.path.join(os.getcwd(), "resources", "models"))
         elif current_dir in ["demo", "forPublication"]:
             if parent_dir == "AnnoMe":
                 model_dest_dir = os.path.abspath(os.path.join(os.getcwd(), "../resources/models/"))
@@ -983,7 +985,6 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
 
     spectrum = df["cleaned_spectra"].iloc[0]
-    print(spectrum.metadata_dict().keys(), spectrum.metadata_dict())
 
     # extract metadata from the spectra
     for meta_info_to_add in data_to_add:
@@ -1795,6 +1796,17 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
             with execution_timer(title=f"Subset: {subset}"):
                 print(f"\n\n\n********************************************************************************")
                 print(f"Subset: {subset}")
+                print(f"Function is {inspect.getsource(subsets[subset])}")
+                print("Available columns and values:")
+                for col in df.columns:
+                    try:
+                        unique_values = df[col].unique()
+                        if len(unique_values) <= 5:
+                            print(f"   - {col}: {unique_values}")
+                        else:
+                            print(f"   - {col}: {len(unique_values)} unique values, first are {unique_values[:5]}")
+                    except:
+                        print(f"   - {col}: could not retrieve unique values")
 
                 # subset the data
                 trainSubset_useInds = train_df[train_df.apply(subsets[subset], axis=1)].index.tolist()
@@ -1981,7 +1993,7 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
     return train_df, vali_df, infe_df, metrics_df, trained_classifiers_per_subset
 
 
-def predict(df, classifiers, subset_name = None, subset_fn = None):
+def predict(df, classifiers, subset_name = None, subset_fn = None, print_classification_overview = False):
     """
     Predicts the classes for the given DataFrame using the specified classifiers.
 
@@ -2002,49 +2014,47 @@ def predict(df, classifiers, subset_name = None, subset_fn = None):
 
     # Filter the dataframe and ms2_embeddings for inference
     # for inference
-    infe_df = df[df["type"].isin(["inference"])].reset_index(drop = True)
+    infe_df = df.copy()
     infe_X = np.array(infe_df["embeddings"].tolist())
     infe_df = infe_df.drop(columns=["cleaned_spectra", "embeddings"])
     infe_df["prediction_results"] = [[] for _ in range(len(infe_df))]
     infe_df["used"] = [False for _ in range(len(infe_df))]
-    print(f"Size of inference dataset: {Fore.YELLOW}{infe_X.shape[0]}{Style.RESET_ALL}")
+    df["used_for_inference"] = False
 
-    with execution_timer(title=f"Inference for subset: {subset_name}"):
+    if print_classification_overview:
         print(f"\n\n\n********************************************************************************")
         print(f"Subset: {subset_name}")
 
-        # subset the data
-        infeSubset_useInds = infe_df[infe_df.apply(subset_fn, axis=1)].index.tolist()
+    # subset the data
+    infeSubset_useInds = infe_df[infe_df.apply(subset_fn, axis=1)].index.tolist()
+    if len(infeSubset_useInds) > 0:
+        df.loc[infeSubset_useInds, "used_for_inference"] = True
+
+        # Subselect the inference embeddings
+        infeSubset_X = None
         if len(infeSubset_useInds) > 0:
-            df.loc[infeSubset_useInds, "used_for_inference"] = True
+            infeSubset_X = infe_X[infeSubset_useInds, :]
+            infe_df.loc[infeSubset_useInds, "used"] = True
+        
+        # Perform classifiers with cross-validation
+        for clf_index, (clf_name, clf) in enumerate(classifiers):
+            # process inference dataset
+            # Predict on the inference embeddings
+            infeSubset_y_pred = clf.predict(infeSubset_X)
 
-            # Subselect the inference embeddings
-            infeSubset_X = None
-            if len(infeSubset_useInds) > 0:
-                infeSubset_X = infe_X[infeSubset_useInds, :]
-                infe_df.loc[infeSubset_useInds, "used"] = True
-            
-            # Perform classifiers with cross-validation
-            for clf_index, (clf_name, clf) in enumerate(classifiers):
-                with execution_timer(title=f"Classifier: {clf_name}"):
-                    print(f"\n--------------------------------------------------------------------------------")    
-                    print(f"Classifier: {clf_name}")
-                    # process inference dataset
-                    # Predict on the inference embeddings
-                    infeSubset_y_pred = clf.predict(infeSubset_X)
+            # Count the number of 'relevant' and 'other' compounds in the inference predictions
+            infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
+            infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
 
-                    # Count the number of 'relevant' and 'other' compounds in the inference predictions
-                    infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
-                    infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
+            if print_classification_overview:
+                print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
+                print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
 
-                    print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
-                    print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
-
-                    # Store the results in the inference_results dictionary
-                    for idx in range(infeSubset_X.shape[0]):
-                        if infeSubset_y_pred[idx] == "relevant":
-                            idx = infeSubset_useInds[idx]
-                            infe_df.iloc[idx]["prediction_results"].append(f"{clf_name}")
+            # Store the results in the inference_results dictionary
+            for idx in range(infeSubset_X.shape[0]):
+                if infeSubset_y_pred[idx] == "relevant":
+                    idx = infeSubset_useInds[idx]
+                    infe_df.iloc[idx]["prediction_results"].append(f"{clf_name}")
                     
     return infe_df
 
@@ -2060,7 +2070,10 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     print("#######################################################")
 
     # Subset df to include only rows where both 'source' and 'type' match those in df_predicted
-    mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"])
+    used_for_inference_n = df["used_for_inference"].sum()
+    print(f"Number of rows used for inference: {used_for_inference_n}")
+    print(df["used_for_inference"].value_counts())
+    mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"]) & df["used_for_inference"]
     df = df.copy()[mask]
 
     # Generate the prediction results
@@ -2155,7 +2168,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
 
     # Filter rows annotated as 'relevant' in the prediction column
     subset_df = df[df["classification:relevant"] == "relevant"].copy()
-    subset_df = df.copy()
+    subset_df = df.copy().sort_values(by=["source", "type", "fragmentation_method", "CE", "ionMode", "formula", "name", "CE"]).reset_index(drop=True)
 
     try:
         # Plot the feature map using plotnine
@@ -2204,15 +2217,15 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
                 "source",
                 "type",
                 "fragmentation_method",
+                "CE",
                 "ionMode",
-                "name",
                 "formula",
+                "name",
                 "smiles",
                 "RTINSECONDS",
                 "precursor_mz",
                 #"height",
                 #"area",
-                "CE",
                 "classification:relevant",
             ]
         ]
@@ -2223,8 +2236,8 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
                 "type",
                 "fragmentation_method",
                 "ionMode",
-                "name",
                 "formula",
+                "name",
                 "smiles",
                 "RTINSECONDS",
                 "precursor_mz",
@@ -2236,9 +2249,8 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
                 "classification:relevant": aggClassification,
             },
             fill_value="",
-        )
+        ).sort_index(level=["source", "type", "fragmentation_method", "ionMode", "formula", "name"])
     )
-
     for sumCols, newCol in [
         ("classification:relevant", "annotated_as_times:relevant"),
     ]:
@@ -2261,14 +2273,6 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     for datafile_column in additional_columns:
         pivot_table[datafile_column] = reduced_df[datafile_column].values
 
-    # Sort the pivot_table by 'annotated_as_relevant' in descending order
-    pivot_table = pivot_table.sort_values(
-        by=[
-            "annotated_as_times:relevant",
-        ],
-        ascending=False,
-    )
-
     x = pivot_table.copy()
     x.columns = ['_'.join(filter(None, col)).strip() for col in x.columns.values]
     x.columns = [re.sub(r"_Unnamed: \d+_level_\d+", "", col) for col in x.columns]
@@ -2286,6 +2290,8 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         overall.to_excel(writer, sheet_name='overall', index=False)
     writer.close()
     print(f"Saved table to {out_file}")
+
+    return subset_df, pivot_table
 
 
 def generate_ml_metrics_overview(df_metrics, output_dir):

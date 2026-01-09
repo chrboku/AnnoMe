@@ -89,6 +89,14 @@ uv run annome_filtergui
 
 ### Execute the classifier
 
+#### GUI-based
+The AnnoMe package provides a convenient graphical user interface to load multiple MGF files, assign them as training, validiation or inference datasets and assing the classes relevant and others. The gui application can be started with (from within the project directory)
+```bash
+uv run annome_classificationgui
+```
+
+#### Script-based
+
 - Clone and rename the file **demo/Classification_PrenylatedCompounds_publicDBs.ipynb** to the same new directory as above and open it with an editor of your choice.
 - Adapt the parameters In the second cell with the title **Parameters**.
 -  **output_dir**: Specify where the results shall be saved to.

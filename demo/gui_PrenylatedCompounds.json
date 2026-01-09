@@ -1,0 +1,117 @@
+{
+    "mgf_files": [
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/HCD_neg__sirius.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/HCD_pos__sirius.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_wheat_neg__sirius.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_wheat_pos__sirius.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/Wheat_neg__sirius.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/Wheat_pos__sirius.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_filtered/prenyl_flavonoid_or_chalcones/BOKU_iBAM___NonMatchingSmiles.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_filtered/prenyl_flavonoid_or_chalcones/BOKU_iBAM___prenyl_flavonoid_or_chalcone__MatchingSmiles.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_GU_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_GU_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_PT22_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_PT22_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_PT24_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/n_PT24_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/PT22CH_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/PT22CH_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "I:/Tomas_PrenylatedCompounds/analysis/classification/Package4Paper/AnnoMe/resources/libraries_other/Samp1_neg__sirius.mgf",
+            "type": "inference"
+        }
+    ],
+    "output_directory": "./output/classification_results/",
+    "subsets": [
+        {
+            "name": "hcd_pos",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive']",
+        },
+        {
+            "name": "hcd_neg",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative']",
+        },
+        {
+            "name": "hcd_neg_20.0",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative'] and meta.get('CE') == '20.0'",
+        },
+        {
+            "name": "hcd_neg_30.0",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative'] and meta.get('CE') == '30.0'",
+        },
+        {
+            "name": "hcd_neg_40.0",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative'] and meta.get('CE') == '40.0'",
+        },
+        {
+            "name": "hcd_neg_step[20,45,70]",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative'] and meta.get('CE') in ['45.0', 'stepped20,45,70eV(absolute)']",
+        },
+        {
+            "name": "hcd_pos_20.0",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive'] and meta.get('CE') == '20.0'",
+        },
+        {
+            "name": "hcd_pos_30.0",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive'] and meta.get('CE') == '30.0'",
+        },
+        {
+            "name": "hcd_pos_40.0",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive'] and meta.get('CE') == '40.0'",
+        },
+        {
+            "name": "hcd_pos_step[20,45,70]",
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive'] and meta.get('CE') in ['45.0', 'stepped20,45,70eV(absolute)']",
+        }
+    ],
+    "classifier_configuration": "from sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.svm import SVC\nfrom sklearn.gaussian_process import GaussianProcessClassifier\nfrom sklearn.tree import DecisionTreeClassifier\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.neural_network import MLPClassifier\nfrom sklearn.ensemble import AdaBoostClassifier\nfrom sklearn.naive_bayes import GaussianNB\nfrom sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis\nfrom sklearn.discriminant_analysis import LinearDiscriminantAnalysis\nfrom sklearn.ensemble import ExtraTreesClassifier\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.ensemble import BaggingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.linear_model import RidgeClassifier\nfrom sklearn.ensemble import VotingClassifier\n\nclassifiers = {\n    \"Nearest Neighbors n=3\": KNeighborsClassifier(3),\n    \"Nearest Neighbors n=10\": KNeighborsClassifier(10),\n    \"Linear SVM\": SVC(kernel=\"linear\", C=0.025, random_state=42),\n    #\"RBF SVM\": SVC(gamma=2, C=1, random_state=42),\n    # \"Gaussian Process\": GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),\n    \"Decision Tree\": DecisionTreeClassifier(max_depth=5, random_state=42),\n    \"Random Forest\": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),\n    \"Neural Net\": MLPClassifier(alpha=1, max_iter=1000, random_state=42),\n    \"AdaBoost\": AdaBoostClassifier(random_state=42),\n    \"Naive Bayes\": GaussianNB(),\n    \"QDA\": QuadraticDiscriminantAnalysis(),\n    \"LDA\": LinearDiscriminantAnalysis(solver=\"svd\", store_covariance=True, n_components=1),\n    \"Extra Trees\": ExtraTreesClassifier(n_estimators=100, random_state=42),\n    # \"Gradient Boosting\": GradientBoostingClassifier(random_state=42),\n    \"Bagging Classifier\": BaggingClassifier(random_state=42),\n    \"Logistic Regression\": LogisticRegression(random_state=42, max_iter=1000),\n    \"Ridge Classifier\": RidgeClassifier(random_state=42),\n    \"Voting Classifier (soft)\": VotingClassifier(\n        estimators=[\n            (\"lr\", LogisticRegression(random_state=42, max_iter=1000)),\n            (\"rf\", RandomForestClassifier(random_state=42)),\n            (\"gnb\", GaussianNB()),\n        ],\n        voting=\"soft\",\n    ),\n}",
+    "min_prediction_threshold": 120
+}
