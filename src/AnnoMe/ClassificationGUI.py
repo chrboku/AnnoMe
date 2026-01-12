@@ -37,6 +37,7 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox,
     QTabWidget,
     QAction,
+    QSizePolicy,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from PyQt5.QtGui import QPixmap, QImage, QColor, QBrush
@@ -72,55 +73,6 @@ COLOR_VALIDATION_OTHER = QColor(158, 59, 59)  # Light yellow
 COLOR_INFERENCE = QColor(69, 104, 130)  # Lavender
 
 
-class CollapsibleSection(QWidget):
-    """A collapsible section widget with a toggle button."""
-
-    toggled = pyqtSignal(object)  # Signal emitted when section is toggled
-
-    def __init__(self, title, parent=None):
-        super().__init__(parent)
-        self.toggle_button = QPushButton(f"▼ {title}")
-        self.toggle_button.setCheckable(True)
-        self.toggle_button.setChecked(True)
-        self.toggle_button.clicked.connect(self.toggle)
-
-        self.content_area = QWidget()
-        self.content_layout = QVBoxLayout()
-        self.content_area.setLayout(self.content_layout)
-
-        layout = QVBoxLayout()
-        layout.addWidget(self.toggle_button)
-        layout.addWidget(self.content_area)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.setLayout(layout)
-
-    def toggle(self):
-        checked = self.toggle_button.isChecked()
-        self.content_area.setVisible(checked)
-        text = self.toggle_button.text()
-        self.toggle_button.setText(text.replace("▼" if checked else "▶", "▶" if not checked else "▼"))
-        self.toggled.emit(self)
-
-    def collapse(self):
-        """Collapse this section without emitting signal."""
-        if self.toggle_button.isChecked():
-            self.toggle_button.setChecked(False)
-            self.content_area.setVisible(False)
-            text = self.toggle_button.text()
-            self.toggle_button.setText(text.replace("▼", "▶"))
-
-    def expand(self):
-        """Expand this section without emitting signal."""
-        if not self.toggle_button.isChecked():
-            self.toggle_button.setChecked(True)
-            self.content_area.setVisible(True)
-            text = self.toggle_button.text()
-            self.toggle_button.setText(text.replace("▶", "▼"))
-
-    def add_widget(self, widget):
-        self.content_layout.addWidget(widget)
-
-
 class EmbeddingWorker(QThread):
     """Worker thread for generating embeddings."""
 
@@ -142,30 +94,16 @@ class EmbeddingWorker(QThread):
 
             df = generate_embeddings(self.datasets, self.data_to_add)
 
+            df["AnnoMe_internal_ID"] = ""
+            for idx, row in df.iterrows():
+                source = row.loc["source"]
+                df.at[idx, "AnnoMe_internal_ID"] = f"{source}___{idx}"
+
             self.progress.emit("Adding metadata...")
 
             df = add_all_metadata(self.datasets, df)
 
             self.progress.emit("Adding all MGF metadata fields...")
-
-            # Add all metadata fields from MGF entries to the dataframe
-            # Match by source (filename) and name (feature ID)
-            for idx, row in df.iterrows():
-                source = row.get("source", "")
-                name = row.get("name", "")
-
-                if source in self.mgf_files:
-                    entries = self.mgf_files[source]["entries"]
-                    # Find matching entry by name
-                    for entry in entries:
-                        entry_name = entry.get("name", entry.get("feature_id", entry.get("title", "")))
-                        if entry_name == name:
-                            # Add all fields from entry that aren't already in df
-                            for key, value in entry.items():
-                                # Skip special keys and keys that already exist
-                                if key not in ["$$spectrumdata", "$$spectrumData", "peaks"] and key not in df.columns:
-                                    df.at[idx, key] = value
-                            break
 
             self.finished.emit(df)
         except Exception as e:
@@ -348,7 +286,6 @@ class ClassificationGUI(QMainWindow):
         self.df_metrics = None
         self.trained_classifiers = None
         self.subset_results = {}  # subset_name -> {df_train, df_validation, df_inference, df_metrics, trained_classifiers}
-        self.sections = []
         self.classifiers_config = None  # ML classifiers configuration
         self.min_prediction_threshold = 120  # Default min prediction threshold
         self.pending_config_data = None  # For load_full_configuration workflow
@@ -408,72 +345,38 @@ class ClassificationGUI(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_content = QWidget()
-        scroll.setWidget(scroll_content)
+        # Create tab widget with tabs on the left
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabPosition(QTabWidget.West)
 
-        layout = QVBoxLayout()
-        scroll_content.setLayout(layout)
-
-        # Section 1: Load MGF Files
-        self.section1 = CollapsibleSection("1. Load MGF Files")
-        self.section1.toggled.connect(self.on_section_toggled)
+        # Create sections as tab pages
+        self.section1 = QWidget()
         self.init_section1()
-        layout.addWidget(self.section1)
-        self.sections.append(self.section1)
+        self.tab_widget.addTab(self.section1, "1. Load MGF Files")
 
-        # Section 2: Generate Embeddings
-        self.section2 = CollapsibleSection("2. Generate Embeddings")
-        self.section2.toggled.connect(self.on_section_toggled)
-        self.section2.collapse()
+        self.section2 = QWidget()
         self.init_section2()
-        layout.addWidget(self.section2)
-        self.sections.append(self.section2)
+        self.tab_widget.addTab(self.section2, "2. Generate Embeddings")
 
-        # Section 3: Define Metadata Subsets
-        self.section3 = CollapsibleSection("3. Define Metadata Subsets")
-        self.section3.toggled.connect(self.on_section_toggled)
-        self.section3.collapse()
+        self.section3 = QWidget()
         self.init_section3()
-        layout.addWidget(self.section3)
-        self.sections.append(self.section3)
+        self.tab_widget.addTab(self.section3, "3. Define Metadata Subsets")
 
-        # Section 4: Train Classifiers
-        self.section4 = CollapsibleSection("4. Train Classifiers")
-        self.section4.toggled.connect(self.on_section_toggled)
-        self.section4.collapse()
+        self.section4 = QWidget()
         self.init_section4()
-        layout.addWidget(self.section4)
-        self.sections.append(self.section4)
+        self.tab_widget.addTab(self.section4, "4. Train Classifiers")
 
-        # Section 5: Inspect Classification Results
-        self.section5 = CollapsibleSection("5. Inspect Classification Results")
-        self.section5.toggled.connect(self.on_section_toggled)
-        self.section5.collapse()
+        self.section5 = QWidget()
         self.init_section5()
-        layout.addWidget(self.section5)
-        self.sections.append(self.section5)
+        self.tab_widget.addTab(self.section5, "5. Inspect Classification Results")
 
-        # Section 6: Inspect Individual Spectra
-        self.section6 = CollapsibleSection("6. Inspect Individual Spectra")
-        self.section6.toggled.connect(self.on_section_toggled)
-        self.section6.collapse()
+        self.section6 = QWidget()
         self.init_section6()
-        layout.addWidget(self.section6)
-        self.sections.append(self.section6)
+        self.tab_widget.addTab(self.section6, "6. Inspect Individual Spectra")
 
         main_layout = QVBoxLayout()
-        main_layout.addWidget(scroll)
+        main_layout.addWidget(self.tab_widget)
         main_widget.setLayout(main_layout)
-
-    def on_section_toggled(self, toggled_section):
-        """Handle section toggle to ensure only one section is open at a time."""
-        if toggled_section.toggle_button.isChecked():
-            # Collapse all other sections
-            for section in self.sections:
-                if section != toggled_section:
-                    section.collapse()
 
     def init_section1(self):
         """Initialize the MGF file loading section."""
@@ -556,7 +459,15 @@ class ClassificationGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section1.add_widget(content)
+
+        # Set up scroll area for this section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+
+        section_layout = QVBoxLayout()
+        section_layout.addWidget(scroll)
+        self.section1.setLayout(section_layout)
 
     def init_section2(self):
         """Initialize the embeddings generation section."""
@@ -619,7 +530,15 @@ class ClassificationGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section2.add_widget(content)
+
+        # Set up scroll area for this section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+
+        section_layout = QVBoxLayout()
+        section_layout.addWidget(scroll)
+        self.section2.setLayout(section_layout)
 
     def init_section3(self):
         """Initialize the metadata subset definition section."""
@@ -773,7 +692,15 @@ class ClassificationGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section3.add_widget(content)
+
+        # Set up scroll area for this section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+
+        section_layout = QVBoxLayout()
+        section_layout.addWidget(scroll)
+        self.section3.setLayout(section_layout)
 
     def init_section4(self):
         """Initialize the classifier training section."""
@@ -884,7 +811,15 @@ class ClassificationGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section4.add_widget(content)
+
+        # Set up scroll area for this section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+
+        section_layout = QVBoxLayout()
+        section_layout.addWidget(scroll)
+        self.section4.setLayout(section_layout)
 
     def init_section5(self):
         """Initialize the results inspection section."""
@@ -929,88 +864,130 @@ class ClassificationGUI(QMainWindow):
         main_layout.addWidget(results_widget)
 
         content.setLayout(main_layout)
-        self.section5.add_widget(content)
+
+        # Set up scroll area for this section
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(content)
+
+        section_layout = QVBoxLayout()
+        section_layout.addWidget(scroll)
+        self.section5.setLayout(section_layout)
 
     def init_section6(self):
         """Initialize the individual spectra inspection section."""
         content = QWidget()
-        main_layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
 
-        # Help text on the left (25%)
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
-            <h3>Inspect Individual Spectra</h3>
-            <p>Browse and examine individual MSMS spectra with their metadata and predictions.</p>
-            <h4>Navigation:</h4>
-            <ol>
-                <li>Select an MGF file from the left list</li>
-                <li>Browse spectra in that file from the right list</li>
-                <li>Double-click or click <b>View Details</b> to open viewer</li>
-            </ol>
-            <h4>Spectrum Viewer:</h4>
-            <ul>
-                <li><b>Metadata Tab:</b> All spectrum metadata fields</li>
-                <li><b>Prediction Results:</b> Classification predictions (if available)</li>
-                <li><b>Spectrum Tab:</b> Visualization (future feature)</li>
-            </ul>
-            <h4>Export:</h4>
-            <p>Export individual spectrum data to Excel for external analysis.</p>
-            <p><b>Tip:</b> Use this to investigate misclassified spectra and understand why the classifier made certain predictions.</p>
-        """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(400)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        # Main horizontal splitter for all four panels
+        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Controls on the right (75%)
-        controls = QWidget()
-        layout = QVBoxLayout()
+        # Panel 1: Subset selector and MGF file list (leftmost)
+        file_widget = QWidget()
+        file_layout = QVBoxLayout()
 
-        # Splitter
-        splitter = QSplitter(Qt.Horizontal)
+        # Add subset selector (list)
+        file_layout.addWidget(QLabel("Subset:"))
+        self.spectrum_subset_list = QListWidget()
+        self.spectrum_subset_list.itemSelectionChanged.connect(self.on_subset_selected_for_spectra)
+        file_layout.addWidget(self.spectrum_subset_list)
 
-        # Left: MGF file list
-        left_widget = QWidget()
-        left_layout = QVBoxLayout()
-        left_layout.addWidget(QLabel("Select MGF File:"))
+        file_layout.addWidget(QLabel("MGF Files:"))
         self.spectrum_file_list = QListWidget()
         self.spectrum_file_list.itemSelectionChanged.connect(self.on_spectrum_file_selected)
-        left_layout.addWidget(self.spectrum_file_list)
-        left_widget.setLayout(left_layout)
-        splitter.addWidget(left_widget)
+        file_layout.addWidget(self.spectrum_file_list)
+        file_widget.setLayout(file_layout)
+        main_splitter.addWidget(file_widget)
 
-        # Right: Spectrum list
-        right_widget = QWidget()
-        right_layout = QVBoxLayout()
-        right_layout.addWidget(QLabel("Select Spectrum:"))
-        self.spectrum_list = QListWidget()
-        self.spectrum_list.itemDoubleClicked.connect(self.view_spectrum_details)
-        right_layout.addWidget(self.spectrum_list)
+        # Panel 2: Spectrum table
+        table_widget = QWidget()
+        table_layout = QVBoxLayout()
+        table_layout.addWidget(QLabel("Spectra:"))
+        self.spectrum_table = QTableWidget()
+        self.spectrum_table.setColumnCount(8)
+        self.spectrum_table.setHorizontalHeaderLabels(["ID", "m/z", "RT (s)", "CE", "Source", "Frag. Method", "Ion Mode", "Classification"])
+        self.spectrum_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.spectrum_table.setSortingEnabled(True)
+        self.spectrum_table.itemSelectionChanged.connect(self.on_spectrum_selected)
 
-        view_btn = QPushButton("View Details")
-        view_btn.clicked.connect(self.view_spectrum_details)
-        right_layout.addWidget(view_btn)
+        # Set column resize modes
+        header = self.spectrum_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setSectionResizeMode(3, QHeaderView.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.Interactive)
+        header.setSectionResizeMode(6, QHeaderView.Interactive)
+        header.setSectionResizeMode(7, QHeaderView.Interactive)
 
-        right_widget.setLayout(right_layout)
-        splitter.addWidget(right_widget)
+        table_layout.addWidget(self.spectrum_table)
+        table_widget.setLayout(table_layout)
+        main_splitter.addWidget(table_widget)
 
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 2)
-        layout.addWidget(splitter, 1)  # Stretch to fill available space
+        # Panel 3: Metadata with classification on top
+        meta_widget = QWidget()
+        meta_layout = QVBoxLayout()
+        meta_layout.addWidget(QLabel("Metadata:"))
 
-        # Export button
+        # Classification label on top
+        self.spectrum_classification_label = QLabel("Classification: -")
+        self.spectrum_classification_label.setStyleSheet("font-weight: bold; padding: 5px; background-color: #f0f0f0;")
+        self.spectrum_classification_label.setAlignment(Qt.AlignCenter)
+        meta_layout.addWidget(self.spectrum_classification_label)
+
+        # Metadata text
+        self.spectrum_meta_text = QTextEdit()
+        self.spectrum_meta_text.setReadOnly(True)
+        self.spectrum_meta_text.setHtml("<p>Select a spectrum to view details</p>")
+        meta_layout.addWidget(self.spectrum_meta_text)
+        meta_widget.setLayout(meta_layout)
+        main_splitter.addWidget(meta_widget)
+
+        # Panel 4: Spectrum plot (rightmost)
+        spectrum_widget = QWidget()
+        spectrum_layout = QVBoxLayout()
+        spectrum_layout.addWidget(QLabel("MS/MS Spectrum:"))
+
+        try:
+            import matplotlib
+
+            matplotlib.use("Qt5Agg")
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.figure import Figure
+
+            self.spectrum_figure = Figure(figsize=(6, 4))
+            self.spectrum_canvas = FigureCanvas(self.spectrum_figure)
+            self.spectrum_ax = self.spectrum_figure.add_subplot(111)
+            self.spectrum_ax.text(0.5, 0.5, "Select a spectrum to view", ha="center", va="center", fontsize=12)
+            self.spectrum_ax.set_xlim(0, 1)
+            self.spectrum_ax.set_ylim(0, 1)
+            spectrum_layout.addWidget(self.spectrum_canvas)
+        except ImportError:
+            spectrum_label = QLabel("Matplotlib not available for spectrum visualization")
+            spectrum_label.setAlignment(Qt.AlignCenter)
+            spectrum_layout.addWidget(spectrum_label)
+
+        spectrum_widget.setLayout(spectrum_layout)
+        main_splitter.addWidget(spectrum_widget)
+
+        # Set stretch factors: file list (1), table (2), metadata (2), spectrum (2)
+        main_splitter.setStretchFactor(0, 1)
+        main_splitter.setStretchFactor(1, 2)
+        main_splitter.setStretchFactor(2, 2)
+        main_splitter.setStretchFactor(3, 2)
+
+        # Add splitter with expanding size policy to fill vertical space
+        main_layout.addWidget(main_splitter, stretch=1)
+
+        # Export button at bottom (no stretch)
         export_individual_btn = QPushButton("Export Selected Spectrum to Excel")
         export_individual_btn.clicked.connect(self.export_individual_spectrum)
-        layout.addWidget(export_individual_btn)
+        main_layout.addWidget(export_individual_btn, stretch=0)
 
-        controls.setLayout(layout)
-        main_layout.addWidget(controls, 3)  # 75% width
-
-        content.setLayout(main_layout)
-        self.section6.add_widget(content)
+        # Set layout directly on section6 (no scroll area needed, splitter handles it)
+        self.section6.setLayout(main_layout)
 
     # Section 1 methods
     def load_mgf_files(self):
@@ -1035,6 +1012,11 @@ class ClassificationGUI(QMainWindow):
                 # Parse MGF file
                 entries = parse_mgf_file(file_path, check_required_keys=False)
 
+                # Add unique AnnoMe_internal_ID to each entry
+                filename = os.path.basename(file_path)
+                for entry_idx, entry in enumerate(entries):
+                    entry["AnnoMe_internal_ID"] = f"{filename}___{entry_idx}"
+
                 # Count unique SMILES
                 smiles_set = set()
                 for entry in entries:
@@ -1048,7 +1030,6 @@ class ClassificationGUI(QMainWindow):
                     meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
                     self.all_meta_keys.update(meta_keys)
 
-                filename = os.path.basename(file_path)
                 self.mgf_files[filename] = {
                     "path": file_path,
                     "entries": entries,
@@ -1228,6 +1209,11 @@ class ClassificationGUI(QMainWindow):
                     # Parse MGF file
                     entries = parse_mgf_file(mgf_path, check_required_keys=False)
 
+                    # Add unique AnnoMe_internal_ID to each entry
+                    filename = os.path.basename(mgf_path)
+                    for entry_idx, entry in enumerate(entries):
+                        entry["AnnoMe_internal_ID"] = f"{filename}___{entry_idx}"
+
                     # Count unique SMILES
                     smiles_set = set()
                     for entry in entries:
@@ -1240,7 +1226,6 @@ class ClassificationGUI(QMainWindow):
                         meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
                         self.all_meta_keys.update(meta_keys)
 
-                    filename = os.path.basename(mgf_path)
                     self.mgf_files[filename] = {"path": mgf_path, "entries": entries, "num_entries": len(entries), "unique_smiles": len(smiles_set), "type": file_type}
                     loaded_count += 1
 
@@ -1304,8 +1289,6 @@ class ClassificationGUI(QMainWindow):
 
         # Auto-resize columns to contents
         self.meta_table.resizeColumnsToContents()
-
-        QMessageBox.information(self, "Success", "Metadata overview refreshed from embeddings")
 
     def on_meta_cell_selected(self):
         """Handle meta cell selection to show unique values."""
@@ -1882,6 +1865,11 @@ classifiers = {
                         # Parse MGF file
                         entries = parse_mgf_file(file_path_mgf, check_required_keys=False)
 
+                        # Add unique AnnoMe_internal_ID to each entry
+                        filename = os.path.basename(file_path_mgf)
+                        for entry_idx, entry in enumerate(entries):
+                            entry["AnnoMe_internal_ID"] = f"{filename}___{entry_idx}"
+
                         # Count unique SMILES
                         smiles_set = set()
                         for entry in entries:
@@ -2100,6 +2088,7 @@ classifiers = {
 
         # Start worker thread with subset_name as parameter
         self.current_training_subset = subset_name  # Store in instance variable
+        self.current_subset_filter = subset_func  # Store filter function for later use
         self.training_worker = TrainingWorker(self.df_embeddings, subsets_dict, subset_output_dir, classifiers=self.classifiers_config, min_prediction_threshold=self.min_prediction_threshold)
         self.training_worker.progress.connect(self.on_training_progress)
         self.training_worker.finished.connect(self.on_training_finished)
@@ -2126,6 +2115,7 @@ classifiers = {
             "trained_classifiers": trained_classifiers,
             "long_table": long_tables.get(subset_name),
             "pivot_table": pivot_tables.get(subset_name),
+            "filter_fn": self.current_subset_filter,
         }
 
         self.progress_dialog.close()
@@ -2157,7 +2147,12 @@ classifiers = {
         for subset_name in sorted(self.subset_results.keys()):
             self.subset_results_list.addItem(subset_name)
 
-    # Section 4 methods
+        # Also populate section 6 subset list
+        self.spectrum_subset_list.clear()
+        for subset_name in sorted(self.subset_results.keys()):
+            self.spectrum_subset_list.addItem(subset_name)
+
+    # Section 5 methods
     def on_subset_result_selected(self, item):
         """Handle subset selection to display results."""
         subset_name = item.text()
@@ -2343,41 +2338,297 @@ classifiers = {
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to export classifiers:\n{str(e)}")
 
-    # Section 5 methods
+    # Section 6 methods
+    def on_subset_selected_for_spectra(self):
+        """Handle subset selection for spectrum inspection."""
+        # Update the MGF file list to show files from the selected subset
+        self.populate_spectrum_file_list()
+        # Clear the spectrum table since subset changed
+        self.spectrum_table.setRowCount(0)
+
     def populate_spectrum_file_list(self):
-        """Populate the spectrum file list."""
+        """Populate the spectrum file list based on selected subset."""
         self.spectrum_file_list.clear()
-        for filename in sorted(self.mgf_files.keys()):
-            self.spectrum_file_list.addItem(filename)
 
-    def on_spectrum_file_selected(self):
-        """Handle spectrum file selection."""
-        selected_items = self.spectrum_file_list.selectedItems()
+        # Get selected subset from list
+        selected_items = self.spectrum_subset_list.selectedItems()
         if not selected_items:
+            # No subset selected, don't show any files
             return
 
-        filename = selected_items[0].text()
-        data = self.mgf_files.get(filename)
+        selected_subset = selected_items[0].text()
 
-        if not data:
-            return
+        # Get files that are in the selected subset's dataframes
+        subset_files = set()
+        if selected_subset in self.subset_results:
+            results = self.subset_results[selected_subset]
+            for df_key in ["df_train", "df_validation", "df_inference"]:
+                df = results.get(df_key)
+                if df is not None and not df.empty and "source" in df.columns:
+                    subset_files.update(df["source"].unique())
 
-        self.spectrum_list.clear()
-        entries = data["entries"]
+        # Add files that are in this subset
+        for filename in sorted(self.mgf_files.keys()):
+            if filename in subset_files:
+                self.spectrum_file_list.addItem(filename)
 
-        for i, entry in enumerate(entries):
-            # Keys are stored directly in entry, not nested in params
-            name = entry.get("name", entry.get("title", f"Spectrum {i + 1}"))
-            self.spectrum_list.addItem(name)
-
-    def view_spectrum_details(self):
-        """View details of selected spectrum."""
-        if not self.spectrum_file_list.selectedItems() or not self.spectrum_list.selectedItems():
-            QMessageBox.warning(self, "Warning", "Please select a file and spectrum")
+    def on_spectrum_selected(self):
+        """Update the embedded spectrum viewer when a spectrum is selected."""
+        current_row = self.spectrum_table.currentRow()
+        if current_row < 0 or not self.spectrum_file_list.selectedItems():
             return
 
         filename = self.spectrum_file_list.selectedItems()[0].text()
-        spectrum_idx = self.spectrum_list.currentRow()
+        id_item = self.spectrum_table.item(current_row, 0)
+        if not id_item:
+            return
+
+        spectrum_idx = int(id_item.data(Qt.DisplayRole)) - 1
+        data = self.mgf_files.get(filename)
+        if not data or spectrum_idx < 0 or spectrum_idx >= len(data["entries"]):
+            return
+
+        entry = data["entries"][spectrum_idx]
+        # Extract metadata
+        meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "$$spectrumData", "peaks"]}
+
+        # Get classification from table
+        classification_item = self.spectrum_table.item(current_row, 7)
+        classification = classification_item.text() if classification_item else ""
+
+        # Update classification label with color coding
+        if classification == "relevant":
+            self.spectrum_classification_label.setText(f"Classification: {classification}")
+            self.spectrum_classification_label.setStyleSheet("font-weight: bold; padding: 5px; background-color: #90EE90; color: #000000;")
+        elif classification == "other":
+            self.spectrum_classification_label.setText(f"Classification: {classification}")
+            self.spectrum_classification_label.setStyleSheet("font-weight: bold; padding: 5px; background-color: #FFB6C1; color: #000000;")
+        else:
+            self.spectrum_classification_label.setText("Classification: Not classified")
+            self.spectrum_classification_label.setStyleSheet("font-weight: bold; padding: 5px; background-color: #f0f0f0; color: #666666;")
+
+        # Build detailed prediction info to add to metadata
+        spectrum_name = meta_data.get("name", "")
+        spectrum_source = meta_data.get("source", filename)
+        spectrum_ce = meta_data.get("CE", "")
+        spectrum_rt = meta_data.get("RTINSECONDS", "")
+        spectrum_mz = meta_data.get("precursor_mz", "")
+
+        prediction_info = []
+        for subset_name, results in self.subset_results.items():
+            for df_name, df_key in [("inference", "df_inference"), ("validation", "df_validation"), ("train", "df_train")]:
+                df = results.get(df_key)
+                if df is not None and not df.empty:
+                    mask = (
+                        (df["source"].astype(str) == str(spectrum_source))
+                        & (df["name"].astype(str) == str(spectrum_name))
+                        & (df["CE"].astype(str) == str(spectrum_ce))
+                        & (df["RTINSECONDS"].astype(str) == str(spectrum_rt))
+                        & (df["precursor_mz"].astype(str) == str(spectrum_mz))
+                    )
+                    matching_rows = df[mask]
+                    if not matching_rows.empty:
+                        row = matching_rows.iloc[0]
+                        if "prediction_results" in row:
+                            pred_results = row["prediction_results"]
+                            if pred_results and len(pred_results) > 0:
+                                prediction_info.append(f"<b>{subset_name} ({df_name}):</b> {len(pred_results)} predictions")
+
+        # Update metadata display with classification info included
+        meta_html = "<table border='1' cellpadding='5' style='width:100%'>"
+
+        # Add prediction info at the top if available
+        if prediction_info:
+            meta_html += "<tr style='background-color: #e8f4f8;'><td colspan='2'><b>Prediction Details:</b><br>" + "<br>".join(prediction_info) + "</td></tr>"
+
+        # Add all metadata
+        for key, value in sorted(meta_data.items()):
+            meta_html += f"<tr><td><b>{key}</b></td><td>{value}</td></tr>"
+        meta_html += "</table>"
+        self.spectrum_meta_text.setHtml(meta_html)
+
+        # Update spectrum plot
+        try:
+            import numpy as np
+
+            spectrum_data = entry.get("$$spectrumdata", entry.get("$$spectrumData", None))
+
+            self.spectrum_ax.clear()
+
+            if spectrum_data is not None:
+                # Parse m/z and intensity values as floats
+                if isinstance(spectrum_data, (list, tuple)) and len(spectrum_data) == 2:
+                    # Convert string values to floats
+                    mz_values = [float(x) for x in spectrum_data[0]]
+                    intensity_values = [float(x) for x in spectrum_data[1]]
+                elif hasattr(spectrum_data, "shape") and len(spectrum_data.shape) == 2:
+                    # numpy array - ensure floats
+                    mz_values = spectrum_data[0, :].astype(float)
+                    intensity_values = spectrum_data[1, :].astype(float)
+                else:
+                    # Fallback: assume it's a list of [mz, intensity] pairs
+                    mz_values = [float(peak[0]) for peak in spectrum_data]
+                    intensity_values = [float(peak[1]) for peak in spectrum_data]
+
+                self.spectrum_ax.vlines(mz_values, 0, intensity_values, colors="blue", linewidth=1.5)
+                self.spectrum_ax.set_xlabel("m/z", fontsize=10)
+                self.spectrum_ax.set_ylabel("Intensity", fontsize=10)
+                self.spectrum_ax.set_title(f"MS/MS Spectrum - {spectrum_name}", fontsize=11)
+                self.spectrum_ax.grid(True, alpha=0.3)
+            else:
+                self.spectrum_ax.text(0.5, 0.5, "No spectrum data available", ha="center", va="center", fontsize=12)
+                self.spectrum_ax.set_xlim(0, 1)
+                self.spectrum_ax.set_ylim(0, 1)
+
+            self.spectrum_figure.tight_layout()
+            self.spectrum_canvas.draw()
+        except Exception as e:
+            self.spectrum_ax.clear()
+            self.spectrum_ax.text(0.5, 0.5, f"Error: {str(e)}", ha="center", va="center", fontsize=10, color="red")
+            self.spectrum_ax.set_xlim(0, 1)
+            self.spectrum_ax.set_ylim(0, 1)
+            self.spectrum_canvas.draw()
+
+    def on_spectrum_file_selected(self):
+        """Handle spectrum file selection."""
+        # Check that both subset and file are selected
+        subset_items = self.spectrum_subset_list.selectedItems()
+        file_items = self.spectrum_file_list.selectedItems()
+
+        if not subset_items or not file_items:
+            self.spectrum_table.setRowCount(0)
+            return
+
+        selected_subset = subset_items[0].text()
+        filename = file_items[0].text()
+
+        if selected_subset not in self.subset_results:
+            self.spectrum_table.setRowCount(0)
+            return
+
+        # Disable sorting during population to avoid issues
+        self.spectrum_table.setSortingEnabled(False)
+        self.spectrum_table.setRowCount(0)
+
+        # Get the subset filter function and results
+        results = self.subset_results[selected_subset]
+        subset_filter = results.get("filter_fn")
+
+        if subset_filter is None:
+            self.spectrum_table.setRowCount(0)
+            return
+
+        # Get data directly from the long_table which contains all information
+        long_table = results.get("long_table")
+        if long_table is None or long_table.empty:
+            self.spectrum_table.setRowCount(0)
+            return
+
+        # Filter by source and subset filter
+        df_filtered = long_table[long_table["source"] == filename] if "source" in long_table.columns else long_table
+
+        # Apply the subset filter function
+        if subset_filter is not None:
+            df_filtered = df_filtered[df_filtered.apply(subset_filter, axis=1)]
+
+        # Populate table directly from the filtered long_table
+        for row_idx, (_, row) in enumerate(df_filtered.iterrows()):
+            self.spectrum_table.insertRow(row_idx)
+
+            # Store AnnoMe_internal_ID in the ID column for later retrieval
+            internal_id = row.get("AnnoMe_internal_ID", "")
+            id_item = QTableWidgetItem()
+            id_item.setData(Qt.DisplayRole, row_idx + 1)  # Display row number
+            id_item.setData(Qt.UserRole, internal_id)  # Store internal ID for lookup
+            self.spectrum_table.setItem(row_idx, 0, id_item)
+
+            # m/z (numeric sorting)
+            mz_item = QTableWidgetItem()
+            mz = row.get("precursor_mz", "")
+            try:
+                mz_float = float(mz) if mz else 0.0
+                mz_item.setData(Qt.DisplayRole, mz_float)
+            except (ValueError, TypeError):
+                mz_item.setData(Qt.DisplayRole, str(mz))
+            self.spectrum_table.setItem(row_idx, 1, mz_item)
+
+            # RT (numeric sorting)
+            rt_item = QTableWidgetItem()
+            rt = row.get("RTINSECONDS", "")
+            try:
+                rt_float = float(rt) if rt else 0.0
+                rt_item.setData(Qt.DisplayRole, rt_float)
+            except (ValueError, TypeError):
+                rt_item.setData(Qt.DisplayRole, str(rt))
+            self.spectrum_table.setItem(row_idx, 2, rt_item)
+
+            # CE (numeric sorting)
+            ce_item = QTableWidgetItem()
+            ce = row.get("CE", "")
+            try:
+                ce_float = float(ce) if ce else 0.0
+                ce_item.setData(Qt.DisplayRole, ce_float)
+            except (ValueError, TypeError):
+                ce_item.setData(Qt.DisplayRole, str(ce))
+            self.spectrum_table.setItem(row_idx, 3, ce_item)
+
+            # Source (text)
+            source = row.get("source", "")
+            self.spectrum_table.setItem(row_idx, 4, QTableWidgetItem(str(source)))
+
+            # Fragmentation method (text)
+            frag_method = row.get("fragmentation_method", "")
+            self.spectrum_table.setItem(row_idx, 5, QTableWidgetItem(str(frag_method)))
+
+            # Ion mode (text)
+            ion_mode = row.get("ionMode", row.get("ionmode", ""))
+            self.spectrum_table.setItem(row_idx, 6, QTableWidgetItem(str(ion_mode)))
+
+            # Classification (text with color coding)
+            classification = row.get("classification:relevant", "")
+            if not classification:
+                classification = "other"
+            class_item = QTableWidgetItem(str(classification))
+            if classification == "relevant":
+                class_item.setBackground(QBrush(QColor(144, 238, 144)))  # Light green
+            elif classification == "other":
+                class_item.setBackground(QBrush(QColor(255, 182, 193)))  # Light pink
+            self.spectrum_table.setItem(row_idx, 7, class_item)
+
+            # Color the entire row based on classification
+            row_color = None
+            if classification == "relevant":
+                row_color = QColor(240, 255, 240)  # Very light green
+            elif classification == "other":
+                row_color = QColor(255, 240, 240)  # Very light pink
+
+            if row_color:
+                for col in range(8):
+                    item = self.spectrum_table.item(row_idx, col)
+                    if item:
+                        item.setBackground(QBrush(row_color))
+
+        # Re-enable sorting
+        self.spectrum_table.setSortingEnabled(True)
+        self.spectrum_table.resizeColumnsToContents()
+
+    def view_spectrum_details(self):
+        """View details of selected spectrum."""
+        if not self.spectrum_file_list.selectedItems():
+            QMessageBox.warning(self, "Warning", "Please select a file")
+            return
+
+        current_row = self.spectrum_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Warning", "Please select a spectrum")
+            return
+
+        filename = self.spectrum_file_list.selectedItems()[0].text()
+        # Get spectrum index from the ID column (first column)
+        id_item = self.spectrum_table.item(current_row, 0)
+        if not id_item:
+            return
+        spectrum_idx = int(id_item.data(Qt.DisplayRole)) - 1  # Convert back to 0-based index
 
         data = self.mgf_files.get(filename)
         if not data or spectrum_idx < 0 or spectrum_idx >= len(data["entries"]):
@@ -2387,29 +2638,70 @@ classifiers = {
         # Extract metadata directly from entry (keys are not nested in params)
         meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "$$spectrumData", "peaks"]}
 
-        # Get spectrum data - stored in $$spectrumData with [0,:] = m/z and [1,:] = intensity
-        spectrum_data = entry.get("$$spectrumData", entry.get("$$spectrumdata", None))
+        # Get spectrum data - stored in $$spectrumdata (case insensitive check)
+        spectrum_data = entry.get("$$spectrumdata", entry.get("$$spectrumData", None))
+
+        # Get classification result from table
+        classification_item = self.spectrum_table.item(current_row, 7)
+        classification = classification_item.text() if classification_item else ""
 
         # Get prediction data if available from subset results
         prediction_data = {}
+        if classification:
+            prediction_data["Classification Result"] = classification
+
+        # Find detailed prediction results for this spectrum
+        spectrum_name = meta_data.get("name", "")
+        spectrum_source = meta_data.get("source", filename)
+        spectrum_ce = meta_data.get("CE", "")
+        spectrum_rt = meta_data.get("RTINSECONDS", "")
+        spectrum_mz = meta_data.get("precursor_mz", "")
+
         for subset_name, results in self.subset_results.items():
-            for df_name, df in [("train", results["df_train"]), ("validation", results["df_validation"]), ("inference", results["df_inference"])]:
+            # Check long_table and all dataframes
+            for df_name, df_key in [("long_table", "long_table"), ("train", "df_train"), ("validation", "df_validation"), ("inference", "df_inference")]:
+                df = results.get(df_key)
                 if df is not None and not df.empty:
                     # Try to find this spectrum in the dataframe
-                    # This is a placeholder - actual matching would depend on how data is structured
-                    prediction_data[f"{subset_name} ({df_name})"] = "Results would appear here"
+                    mask = (
+                        (df["source"] == spectrum_source)
+                        & (df["name"] == spectrum_name)
+                        & (df["CE"].astype(str) == str(spectrum_ce))
+                        & (df["RTINSECONDS"].astype(str) == str(spectrum_rt))
+                        & (df["precursor_mz"].astype(str) == str(spectrum_mz))
+                    )
+                    matching_rows = df[mask]
+                    if not matching_rows.empty:
+                        row = matching_rows.iloc[0]
+                        # Extract classification info
+                        if "classification:relevant" in row:
+                            prediction_data[f"{subset_name} ({df_name})"] = row["classification:relevant"]
+                        # Extract prediction results if available
+                        if "prediction_results" in row:
+                            pred_results = row["prediction_results"]
+                            if pred_results and len(pred_results) > 0:
+                                prediction_data[f"{subset_name} ({df_name}) - Details"] = "; ".join(str(p) for p in pred_results[:10])  # Show first 10
 
         dialog = SpectrumViewer(spectrum_data, meta_data, prediction_data, self)
         dialog.exec_()
 
     def export_individual_spectrum(self):
         """Export individual spectrum to Excel."""
-        if not self.spectrum_file_list.selectedItems() or not self.spectrum_list.selectedItems():
-            QMessageBox.warning(self, "Warning", "Please select a file and spectrum")
+        if not self.spectrum_file_list.selectedItems():
+            QMessageBox.warning(self, "Warning", "Please select a file")
+            return
+
+        current_row = self.spectrum_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "Warning", "Please select a spectrum")
             return
 
         filename = self.spectrum_file_list.selectedItems()[0].text()
-        spectrum_idx = self.spectrum_list.currentRow()
+        # Get spectrum index from the ID column
+        id_item = self.spectrum_table.item(current_row, 0)
+        if not id_item:
+            return
+        spectrum_idx = int(id_item.data(Qt.DisplayRole)) - 1
 
         data = self.mgf_files.get(filename)
         if not data or spectrum_idx < 0 or spectrum_idx >= len(data["entries"]):
@@ -2417,7 +2709,12 @@ classifiers = {
 
         entry = data["entries"][spectrum_idx]
         # Extract metadata directly from entry
-        meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "peaks"]}
+        meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "$$spectrumData", "peaks"]}
+
+        # Add classification from table
+        classification_item = self.spectrum_table.item(current_row, 7)
+        if classification_item:
+            meta_data["classification"] = classification_item.text()
 
         file_path, _ = QFileDialog.getSaveFileName(self, "Save Spectrum", "", "Excel Files (*.xlsx);;All Files (*)")
 
@@ -2433,10 +2730,20 @@ classifiers = {
 
     # Helper methods
     def go_to_section(self, section):
-        """Navigate to a specific section."""
-        for s in self.sections:
-            s.collapse()
-        section.expand()
+        """Navigate to a specific section (tab)."""
+        # Find the index of the section widget in the tab widget
+        if section == self.section1:
+            self.tab_widget.setCurrentIndex(0)
+        elif section == self.section2:
+            self.tab_widget.setCurrentIndex(1)
+        elif section == self.section3:
+            self.tab_widget.setCurrentIndex(2)
+        elif section == self.section4:
+            self.tab_widget.setCurrentIndex(3)
+        elif section == self.section5:
+            self.tab_widget.setCurrentIndex(4)
+        elif section == self.section6:
+            self.tab_widget.setCurrentIndex(5)
 
 
 def main():
