@@ -701,11 +701,15 @@ def parse_mgf_file(file_path, check_required_keys=True):
     ]
 
     incomplete_blocks = defaultdict(int)
+    cur_id = 0
+    filename = os.path.basename(file_path)
     for line in lines:
         line = line.strip()
         if line == "BEGIN IONS":
             current_block_primary = OrderedDict()
             current_block_secondary = OrderedDict()
+            current_block_secondary["AnnoMe_internal_ID"] = f"{filename}___{cur_id}"
+            cur_id += 1
 
         elif line == "END IONS":
             # Track missing keys in the current block for later display
@@ -841,6 +845,9 @@ def parse_mgf_file(file_path, check_required_keys=True):
                 key = "name"
                 is_primary = True
 
+            elif key.lower() in ["mslevel", "ms_level"]:
+                key = "MSLEVEL"
+
             if is_primary:
                 current_block_primary[key] = str(value)
             else:
@@ -868,6 +875,8 @@ def parse_mgf_file(file_path, check_required_keys=True):
         print(f"{Fore.RED}")
         print(f"   - Warning: {blocks_not_used} blocks were not used due to missing required keys.")
         print(f"{Style.RESET_ALL}")
+
+    blocks = [block for block in blocks if ("MSLEVEL" in block and block["MSLEVEL"] != "1") or "MSLEVEL" not in block]
 
     return blocks
 

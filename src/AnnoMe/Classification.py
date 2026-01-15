@@ -969,6 +969,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         "type": [],
         "cleaned_spectra": [],
         "embeddings": [],
+        "AnnoMe_internal_ID": []
     }
     # add each dataset
     for ds in datasets:
@@ -976,15 +977,14 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         df["type"].extend([ds["type"]] * len(ds["embeddings"]))
         df["cleaned_spectra"].extend(ds["cleaned_spectra"])
         df["embeddings"].extend(ds["embeddings"])
+        df["AnnoMe_internal_ID"].extend([spectrum.metadata_dict().get("annome_internal_id", "") for spectrum in ds["cleaned_spectra"]])
     df = pd.DataFrame(df)
-
+    
     # add extra columns from each spectra (extract common keys from the MS/MS spectra)
     if data_to_add is None:
         data_to_add = {}
     if "MSLEVEL" not in data_to_add.keys():
         data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
-
-    spectrum = df["cleaned_spectra"].iloc[0]
 
     # extract metadata from the spectra
     for meta_info_to_add in data_to_add:
@@ -2118,25 +2118,18 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     plot.save(out_file, width=16, height=12)
     print(f"plot saved as {out_file}")
 
-
     # Add a new column 'prediction' to df with default value 'NA'
     df["classification:relevant"] = ""
 
     # Update the 'prediction' column for rows present in aggregated_df
     for _, row in aggregated_df.iterrows():
+        # Create a mask to identify matching rows in df
+        mask = (df["AnnoMe_internal_ID"] == row["AnnoMe_internal_ID"])
         if row["prediction_count"] >= 1:
-            # Create a mask to identify matching rows in df
-            mask = (
-                (df["source"] == row["source"])
-                & (df["name"] == row["name"])
-                & (df["CE"] == row["CE"])
-                & (df["fragmentation_method"] == row["fragmentation_method"])
-                & (df["ionMode"] == row["ionMode"])
-                & (df["precursor_mz"] == row["precursor_mz"])
-                & (df["RTINSECONDS"] == row["RTINSECONDS"])
-            )
             # Set the prediction value to "relevant" for matching rows
             df.loc[mask, "classification:relevant"] = "relevant"
+        else:
+            df.loc[mask, "classification:relevant"] = "other"
 
     
 

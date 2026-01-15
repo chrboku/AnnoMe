@@ -50,6 +50,8 @@ import tempfile
 from pprint import pprint
 import pickle
 import inspect
+import traceback
+
 
 # Import classification functions
 from .Classification import (
@@ -92,12 +94,33 @@ class EmbeddingWorker(QThread):
         try:
             self.progress.emit("Generating embeddings...")
 
+            # copy input file to avoid any problems between matching MS2Spectra imported data and parse_mgf_file imported data
+            xxx = {}
+
+            for ds in self.datasets:
+                xxx[ds["name"]] = ds["file"]
+
+                cur_id = 0
+                filename = os.path.basename(ds["file"])
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
+                with open(ds["file"], "r") as fin:
+                    for line in fin:
+                        temp_file.write(line)
+                        if line.lower().startswith("begin ions"):
+                            temp_file.write(f"AnnoMe_internal_ID={filename}___{cur_id}\n")
+                            cur_id += 1
+                temp_file.close()
+
+                ds["file"] = temp_file.name
+
+                print(f"Added internal ID to {cur_id} entries in {filename}")
+
             df = generate_embeddings(self.datasets, self.data_to_add)
 
-            df["AnnoMe_internal_ID"] = ""
-            for idx, row in df.iterrows():
-                source = row.loc["source"]
-                df.at[idx, "AnnoMe_internal_ID"] = f"{source}___{idx}"
+            # Clean up temporary files
+            for ds in self.datasets:
+                os.remove(ds["file"])
+                ds["file"] = xxx[ds["name"]]
 
             self.progress.emit("Adding metadata...")
 
@@ -106,6 +129,7 @@ class EmbeddingWorker(QThread):
             self.progress.emit("Adding all MGF metadata fields...")
 
             self.finished.emit(df)
+
         except Exception as e:
             error_msg = f"Error generating embeddings: {str(e)}\n{traceback.format_exc()}"
             print(error_msg)
@@ -407,6 +431,7 @@ class ClassificationGUI(QMainWindow):
                 <li>Remove unwanted files with <b>Remove Selected File(s)</b></li>
             </ol>
             <p><b>Tip:</b> You need both training data (train-relevant and train-other) and validation data for proper classifier training.</p>
+            <p><b>Note:</b> Not all spectra will be used, due to limitations in the embedding generation. Once the embeddings have been generated, only those spectra will remain, for which an embedding was successfully calculated. Other will be removed. This table will not be updated retrospectively.</p>
         """)
         help_layout.addWidget(help_text)
         help_group.setLayout(help_layout)
@@ -1012,11 +1037,6 @@ class ClassificationGUI(QMainWindow):
                 # Parse MGF file
                 entries = parse_mgf_file(file_path, check_required_keys=False)
 
-                # Add unique AnnoMe_internal_ID to each entry
-                filename = os.path.basename(file_path)
-                for entry_idx, entry in enumerate(entries):
-                    entry["AnnoMe_internal_ID"] = f"{filename}___{entry_idx}"
-
                 # Count unique SMILES
                 smiles_set = set()
                 for entry in entries:
@@ -1208,11 +1228,6 @@ class ClassificationGUI(QMainWindow):
                 try:
                     # Parse MGF file
                     entries = parse_mgf_file(mgf_path, check_required_keys=False)
-
-                    # Add unique AnnoMe_internal_ID to each entry
-                    filename = os.path.basename(mgf_path)
-                    for entry_idx, entry in enumerate(entries):
-                        entry["AnnoMe_internal_ID"] = f"{filename}___{entry_idx}"
 
                     # Count unique SMILES
                     smiles_set = set()
@@ -1678,9 +1693,41 @@ class ClassificationGUI(QMainWindow):
 
     def on_embeddings_generated(self, df):
         """Handle embeddings generation completion."""
-        self.df_embeddings = df
         self.progress_dialog.close()
-        self.embedding_status.setText(f"Status: Embeddings generated ({len(df)} entries)")
+
+        # Verify that the number of rows matches the total number of MGF entries
+        total_mgf_entries = sum(data["num_entries"] for data in self.mgf_files.values())
+
+        if len(df) != total_mgf_entries:
+            self.embedding_status.setText("Status: Error - Data integrity check failed ✗")
+            QMessageBox.warning(
+                self,
+                "Warning",
+                f"Data integrity check failed:\nExpected {total_mgf_entries} entries from parsing the MGF files, but got {len(df)} entries in embeddings. Only those spectra with valid embeddings are included further.",
+            )
+
+            # get list of all ids to use from df
+            ids_to_use = set(df["AnnoMe_internal_ID"].tolist())
+            # remove all spectra where a corresponding internal id is not present in the embeddings
+            for mgf_file in self.mgf_files.values():
+                original_count = mgf_file["num_entries"]
+                mgf_file["entries"] = [entry for entry in mgf_file["entries"] if entry["AnnoMe_internal_ID"] in ids_to_use]
+                mgf_file["num_entries"] = len(mgf_file["entries"])
+                # recalculate unique smiles
+                smiles_set = set()
+                for entry in mgf_file["entries"]:
+                    smiles = entry.get("smiles", "")
+                    if smiles:
+                        smiles_set.add(smiles)
+                mgf_file["unique_smiles"] = len(smiles_set)
+
+                print(
+                    f"{mgf_file['path']} had {original_count} entries, but it was possible to calculate the MS2DeepScore embeddings for only {mgf_file['num_entries']} entries. The other entries will be removed."
+                )
+
+        # All checks passed, proceed normally
+        self.df_embeddings = df
+        self.embedding_status.setText(f"Status: Embeddings generated ({len(df)} entries) - Data integrity verified ✓")
         self.train_btn.setEnabled(True)
         self.generate_embeddings_btn.setEnabled(True)
 
@@ -1864,11 +1911,6 @@ classifiers = {
                     try:
                         # Parse MGF file
                         entries = parse_mgf_file(file_path_mgf, check_required_keys=False)
-
-                        # Add unique AnnoMe_internal_ID to each entry
-                        filename = os.path.basename(file_path_mgf)
-                        for entry_idx, entry in enumerate(entries):
-                            entry["AnnoMe_internal_ID"] = f"{filename}___{entry_idx}"
 
                         # Count unique SMILES
                         smiles_set = set()
@@ -2105,6 +2147,7 @@ classifiers = {
         """Handle training completion."""
         subset_name = self.current_training_subset
         long_tables, pivot_tables = tables
+        output_dir = self.output_dir_input.text()
 
         # Store results for this subset including long_table and pivot_table
         self.subset_results[subset_name] = {
@@ -2118,11 +2161,14 @@ classifiers = {
             "filter_fn": self.current_subset_filter,
         }
 
+        # Export filtered MGF files for this subset
+        subset_output_dir = os.path.join(output_dir, subset_name.replace(" ", "_"))
+        self.export_filtered_mgf_files(subset_name, subset_output_dir)
+
         self.progress_dialog.close()
 
         # Move to next subset
         self.current_subset_index += 1
-        output_dir = self.output_dir_input.text()
         self.train_next_subset(output_dir)
 
         # Populate spectrum file list for section 5 after all training
@@ -2140,6 +2186,112 @@ classifiers = {
         self.current_subset_index += 1
         output_dir = self.output_dir_input.text()
         self.train_next_subset(output_dir)
+
+    def export_filtered_mgf_files(self, subset_name, subset_output_dir):
+        """Export filtered MGF files based on classification results.
+
+        For each input MGF file in the subset:
+        - Creates two output files with suffix: '_relevant.mgf' and '_other.mgf'
+        - Saves to the subset output directory
+        """
+        from .Filters import export_mgf_file
+
+        if subset_name not in self.subset_results:
+            print(f"Warning: No results found for subset '{subset_name}'")
+            return
+
+        results = self.subset_results[subset_name]
+        long_table = results.get("long_table")
+
+        if long_table is None or long_table.empty:
+            print(f"Warning: No long_table data available for subset '{subset_name}'")
+            return
+
+        if "classification:relevant" not in long_table.columns:
+            print(f"Warning: 'classification:relevant' column not found in long_table for subset '{subset_name}'")
+            return
+
+        print(f"\nExporting filtered MGF files for subset '{subset_name}'...")
+        print(f"Long table shape: {long_table.shape}")
+        print(f"Values of column classification:relevant: {long_table['classification:relevant'].value_counts().to_dict()}")
+
+        # Get all unique source files that were used in this subset
+        source_files = long_table["source"].unique()
+        print(f"Source files to process: {len(source_files)}")
+
+        for source_file in source_files:
+            if source_file not in self.mgf_files:
+                print(f"Warning: Source file '{source_file}' not found in loaded MGF files")
+                continue
+
+            mgf_data = self.mgf_files[source_file]
+            original_entries = mgf_data["entries"]
+            print(f"\nProcessing {source_file}: {len(original_entries)} total entries")
+
+            # Get all rows from long_table for this source file
+            source_data = long_table[long_table["source"] == source_file].copy()
+            print(f"  Found {len(source_data)} entries in long_table for this file")
+
+            # Build a classification lookup by AnnoMe_internal_ID
+            classification_lookup = {}
+            if "AnnoMe_internal_ID" in source_data.columns:
+                for _, row in source_data.iterrows():
+                    internal_id = row["AnnoMe_internal_ID"]
+                    classification = row.get("classification:relevant", "")
+                    classification_lookup[internal_id] = classification
+                print(f"  Built lookup using AnnoMe_internal_ID: {len(classification_lookup)} entries")
+            else:
+                print(f"  Warning: AnnoMe_internal_ID not found in long_table")
+
+            # Separate entries by classification
+            relevant_entries = []
+            other_entries = []
+            no_classification_entries = []
+
+            for entry in original_entries:
+                # Check if entry has AnnoMe_internal_ID
+                internal_id = entry.get("AnnoMe_internal_ID", "")
+                classification = classification_lookup.get(internal_id, "")
+
+                # print(f"   - processing internal_id {internal_id}: classification = '{classification}'")
+
+                if classification == "relevant":
+                    relevant_entries.append(entry)
+                elif classification == "other":
+                    other_entries.append(entry)
+                else:
+                    no_classification_entries.append(entry)
+
+            print(f"  Classified: {len(relevant_entries)} relevant, {len(other_entries)} other, {len(no_classification_entries)} unclassified")
+
+            # Generate output filenames with suffix
+            base_filename = os.path.basename(source_file)
+            name_without_ext, ext = os.path.splitext(base_filename)
+
+            # Always export both files, even if empty
+            relevant_filename = f"{name_without_ext}_relevant{ext}"
+            other_filename = f"{name_without_ext}_other{ext}"
+            no_classification_filename = f"{name_without_ext}_unclassified{ext}"
+
+            relevant_output_path = os.path.join(subset_output_dir, relevant_filename)
+            other_output_path = os.path.join(subset_output_dir, other_filename)
+            no_classification_output_path = os.path.join(subset_output_dir, no_classification_filename)
+
+            # Export relevant entries
+            try:
+                export_mgf_file(relevant_entries, relevant_output_path)
+                print(f"  ✓ Exported {len(relevant_entries)} relevant entries to {relevant_filename}")
+            except Exception as e:
+                print(f"  ✗ Error exporting relevant entries: {e}")
+                traceback.print_exc()
+
+            # Export other entries
+            try:
+                export_mgf_file(other_entries, other_output_path)
+                print(f"  ✓ Exported {len(other_entries)} other entries to {other_filename}")
+            except Exception as e:
+                print(f"  ✗ Error exporting other entries: {e}")
+                traceback.print_exc()
 
     def populate_subset_results_list(self):
         """Populate the subset results list."""
