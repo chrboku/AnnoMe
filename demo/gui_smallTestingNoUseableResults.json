@@ -13,13 +13,20 @@
     "subsets": [
         {
             "name": "hcd_neg_step[20,45,70]",
-            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative']"
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['-', 'neg', 'negative']",
+            "counts": {
+                "train - other": 2808,
+                "train - relevant": 605
+            }
         },
         {
             "name": "hcd_pos_step[20,45,70]",
-            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive']"
+            "expression": "meta.get('fragmentation_method').lower() in ['hcd'] and meta.get('ionMode').lower() in ['+', 'pos', 'positive']",
+            "counts": {
+                "train - other": 4958,
+                "train - relevant": 605
+            }
         }
     ],
-    "classifier_configuration": "from sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.svm import SVC\nfrom sklearn.gaussian_process import GaussianProcessClassifier\nfrom sklearn.tree import DecisionTreeClassifier\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.neural_network import MLPClassifier\nfrom sklearn.ensemble import AdaBoostClassifier\nfrom sklearn.naive_bayes import GaussianNB\nfrom sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis\nfrom sklearn.discriminant_analysis import LinearDiscriminantAnalysis\nfrom sklearn.ensemble import ExtraTreesClassifier\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.ensemble import BaggingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.linear_model import RidgeClassifier\nfrom sklearn.ensemble import VotingClassifier\n\nclassifiers = {\n    \"Nearest Neighbors n=3\": KNeighborsClassifier(3),\n}",
-    "min_prediction_threshold": 10
+    "classifier_configuration": "from sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.svm import SVC\nfrom sklearn.gaussian_process import GaussianProcessClassifier\nfrom sklearn.tree import DecisionTreeClassifier\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.neural_network import MLPClassifier\nfrom sklearn.ensemble import AdaBoostClassifier\nfrom sklearn.naive_bayes import GaussianNB\nfrom sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis\nfrom sklearn.discriminant_analysis import LinearDiscriminantAnalysis\nfrom sklearn.ensemble import ExtraTreesClassifier\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.ensemble import BaggingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.linear_model import RidgeClassifier\nfrom sklearn.ensemble import VotingClassifier\nfrom sklearn.model_selection import StratifiedKFold\n\nclassifiers_to_compare = {\n    \"knn_variants\": {\n        \"description\": \"KNNs with different k values are used\", \n        \"classifiers\": {\n            \"KNN n=3\": KNeighborsClassifier(3),\n            \"KNN n=5\": KNeighborsClassifier(5),\n            \"KNN n=10\": KNeighborsClassifier(10),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=5, random_state=42, shuffle=True),  # 5-fold CV\n        \"min_prediction_threshold\": 20,\n    },\n    \"tree_based\": {\n        \"description\": \"Tree-based methods are used\", \n        \"classifiers\": {\n            \"Decision Tree\": DecisionTreeClassifier(max_depth=5, random_state=42),\n            \"Random Forest\": RandomForestClassifier(max_depth=5, n_estimators=10, random_state=42),\n            \"Extra Trees\": ExtraTreesClassifier(n_estimators=100, random_state=42),\n        },\n        # \"cross_validation\": None,  # Optional: if omitted or None, uses default StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 20,\n    },\n    \"linear_models\": {\n        \"description\": \"Linear models are used\", \n        \"classifiers\": {\n            \"Linear SVM\": SVC(kernel=\"linear\", C=0.025, random_state=42),\n            \"Logistic Regression\": LogisticRegression(random_state=42, max_iter=1000),\n            \"Ridge Classifier\": RidgeClassifier(random_state=42),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=3, random_state=42, shuffle=True),  # 3-fold CV\n        \"min_prediction_threshold\": 20,\n    }\n}"
 }

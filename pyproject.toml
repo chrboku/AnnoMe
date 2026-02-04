@@ -1,6 +1,6 @@
 [project]
 name = "annome"
-version = "0.21.0"
+version = "0.22.0"
 description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
 authors = [
@@ -35,6 +35,7 @@ dependencies = [
 ]
 
 [project.scripts]
+annome_downloadresources = "AnnoMe.DownloadResources:main"
 annome_filtergui = "AnnoMe.FilterGUI:main"
 annome_classificationgui = "AnnoMe.ClassificationGUI:main"
 

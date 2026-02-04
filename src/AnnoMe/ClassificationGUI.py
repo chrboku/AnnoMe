@@ -144,13 +144,12 @@ class TrainingWorker(QThread):
     progress = pyqtSignal(str)
     log = pyqtSignal(str)  # Emits log messages
 
-    def __init__(self, df_subset, subsets, output_dir, classifiers=None, min_prediction_threshold=120):
+    def __init__(self, df_subset, subsets, output_dir, classifiers_to_compare=None):
         super().__init__()
         self.df_subset = df_subset
         self.subsets = subsets
         self.output_dir = output_dir
-        self.classifiers = classifiers
-        self.min_prediction_threshold = min_prediction_threshold
+        self.classifiers_to_compare = classifiers_to_compare
 
     def run(self):
         import sys
@@ -158,17 +157,40 @@ class TrainingWorker(QThread):
         try:
             self.progress.emit("Training classifiers and predicting...\nSee console for further details")
 
-            df_train, df_validation, df_inference, df_metrics, trained_classifiers = train_and_classify(self.df_subset, subsets=self.subsets, output_dir=self.output_dir, classifiers=self.classifiers)
+            df_train, df_validation, df_inference, df_metrics, trained_classifiers = train_and_classify(
+                self.df_subset, subsets=self.subsets, output_dir=self.output_dir, classifiers_to_compare=self.classifiers_to_compare
+            )
 
             # Generate prediction overviews and capture long and pivot tables
+            # Create separate results for each classifier_set // subset combination
             long_tables = {}
             pivot_tables = {}
-            for subset_name in self.subsets:
+
+            # Iterate through all keys in trained_classifiers (format: "classifier_set_name / subset_name")
+            for combined_key in trained_classifiers.keys():
                 xxx = self.df_subset.copy()
-                df_subset_infe = predict(xxx, trained_classifiers[subset_name][1], subset_name, trained_classifiers[subset_name][0])
-                long_table, pivot_table = generate_prediction_overview(xxx, df_subset_infe, self.output_dir, file_prefix=subset_name, min_prediction_threshold=self.min_prediction_threshold)
-                long_tables[subset_name] = long_table
-                pivot_tables[subset_name] = pivot_table
+
+                # Extract classifier_set_name and subset_name from the key
+                parts = combined_key.split(" / ")
+                if len(parts) >= 2:
+                    classifier_set_name = parts[0]
+                    subset_name = parts[1]
+                    # Create combined key with " // " separator for GUI display (capitalized)
+                    display_key = f"{classifier_set_name} // {subset_name}"
+                else:
+                    # Fallback for backward compatibility
+                    subset_name = combined_key
+                    display_key = subset_name
+
+                # Extract min_prediction_threshold from the trained_classifiers tuple (index 2)
+                subset_fn = trained_classifiers[combined_key][0]
+                classifiers_list = trained_classifiers[combined_key][1]
+                min_threshold = trained_classifiers[combined_key][2] if len(trained_classifiers[combined_key]) > 2 else 120
+
+                df_subset_infe = predict(xxx, classifiers_list, subset_name, subset_fn)
+                long_table, pivot_table = generate_prediction_overview(xxx, df_subset_infe, self.output_dir, file_prefix=display_key.replace(" // ", "_"), min_prediction_threshold=min_threshold)
+                long_tables[display_key] = long_table
+                pivot_tables[display_key] = pivot_table
 
             self.finished.emit(df_train, df_validation, df_inference, df_metrics, trained_classifiers, (long_tables, pivot_tables))
         except Exception as e:
@@ -295,7 +317,7 @@ class SpectrumViewer(QDialog):
 
 
 class ClassificationGUI(QMainWindow):
-    """Main GUI for Flavonoid Compound Classification."""
+    """Main GUI for AnnoMe Classification."""
 
     def __init__(self):
         super().__init__()
@@ -309,9 +331,9 @@ class ClassificationGUI(QMainWindow):
         self.df_inference = None
         self.df_metrics = None
         self.trained_classifiers = None
-        self.subset_results = {}  # subset_name -> {df_train, df_validation, df_inference, df_metrics, trained_classifiers}
+        self.subset_results = {}  # combined_key (classifier_set // subset) -> {df_train, df_validation, df_inference, df_metrics, trained_classifiers, long_table, pivot_table, filter_fn}
+        self.subset_filter_functions = {}  # subset_name -> filter_function
         self.classifiers_config = None  # ML classifiers configuration
-        self.min_prediction_threshold = 120  # Default min prediction threshold
         self.pending_config_data = None  # For load_full_configuration workflow
 
         set_random_seeds(42)
@@ -336,7 +358,7 @@ class ClassificationGUI(QMainWindow):
 
     def init_ui(self):
         version = self.get_version()
-        self.setWindowTitle(f"Flavonoid Compound Classification GUI (v{version})")
+        self.setWindowTitle(f"AnnoMe Classification (v{version})")
         self.setGeometry(50, 50, 1600, 900)
 
         # Create menu bar
@@ -506,7 +528,8 @@ class ClassificationGUI(QMainWindow):
         help_text.setReadOnly(True)
         help_text.setHtml("""
             <h3>Generate Embeddings</h3>
-            <p>Convert MSMS spectra to numerical vectors using the MS2DeepScore deep learning model.</p>
+            <p>Convert MSMS spectra to numerical vectors using the MS2DeepScore [1] deep learning model.</p>
+                          
             <h4>What are Embeddings?</h4>
             <p>Embeddings are numerical representations of spectra that capture their chemical similarity. 
             They enable machine learning classifiers to learn patterns and make predictions.</p>
@@ -520,6 +543,9 @@ class ClassificationGUI(QMainWindow):
             <h4>Performance:</h4>
             <p>Generation may take several minutes for large datasets. Progress will be displayed.</p>
             <p><b>Note:</b> Once generated, embeddings are saved and can be reused without regeneration.</p>
+            <br>
+            <h4>References:</h4>
+            <p>[1] MS2DeepScore - a novel deep learning similarity measure to compare tandem mass spectra<br> Florian Huber, Sven van der Burg, Justin J.J. van der Hooft, Lars Ridder, 13, Article number: 84 (2021), Journal of Cheminformatics, doi: <a href = \"https://doi.org/10.1186/s13321-021-00558-4\">https://doi.org/10.1186/s13321-021-00558-4</a></p>
         """)
         help_layout.addWidget(help_text)
         help_group.setLayout(help_layout)
@@ -588,7 +614,7 @@ class ClassificationGUI(QMainWindow):
             </ul>
             <h4>Custom Subsets:</h4>
             <p>Define subsets using Python syntax. All metadata is in the <code>meta</code> dictionary.</p>
-            <p><b>Examples:</b></p>
+            <p><b>Examples:</b></p><br>
             <code>meta.get('ionmode') == 'positive'</code><br>
             <code>abs(float(meta.get('CE', 0)) - 20) < 1</code><br>
             <code>meta.get('fragmentation_method') == 'hcd' and meta.get('ionmode') == 'positive'</code>
@@ -600,6 +626,8 @@ class ClassificationGUI(QMainWindow):
                 <li>View match counts across file types</li>
                 <li>Edit or delete subsets as needed</li>
             </ol>
+            <br>
+            <p><b>Tip:</b>Save and load pre-defined sets using the 'Export Subsets' and 'Import Subsets' buttons in the right, bottom corner</p>
         """)
         help_layout.addWidget(help_text)
         help_group.setLayout(help_layout)
@@ -743,13 +771,55 @@ class ClassificationGUI(QMainWindow):
             <h4>Prerequisites:</h4>
             <ul>
                 <li>Embeddings must be generated (Section 2)</li>
-                <li>Optionally define metadata subsets (Section 3)</li>
+                <li>metadata subsets are defined (Section 3)</li>
             </ul>
             <h4>Configuration:</h4>
             <ol>
                 <li><b>Classifier Configuration:</b> Define which ML algorithms to use (or use defaults)</li>
-                <li><b>Min Prediction Threshold:</b> Minimum votes needed for relevant classification</li>
             </ol>
+            <h4>Writing Classifier Code:</h4>
+            <p>The classifier configuration must generate a Python dictionary named <code>classifiers_to_compare</code> with the following structure:</p>
+            <ul>
+                <li><b>Keys:</b> Classifier set names (strings, e.g., "default_set", "tree_based")</li>
+                <li><b>Values:</b> Dictionaries containing classifier configuration with required fields</li>
+            </ul>
+            <p><b>Required fields for each classifier set dictionary:</b></p>
+            <ul>
+                <li><b>"description":</b> String describing the classifier set</li>
+                <li><b>"classifiers":</b> Dictionary mapping classifier names to initialized sklearn classifier objects</li>
+                <li><b>"cross_validation":</b> sklearn cross-validation object (e.g., StratifiedKFold), or None for default (StratifiedKFold with 10 splits). Each classifier will be trained n times, where n is the number of splits defined in the cross-validation object (e.g., n_splits=10 means each classifier is trained 10 times)</li>
+                <li><b>"min_prediction_threshold":</b> Integer threshold for minimum predictions required</li>
+            </ul>
+            <p><b>Example structure:</b></p>
+            <pre>
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold
+
+classifiers_to_compare = {
+    "default_set": {
+        "description": "Default set of classifiers",
+        "classifiers": {
+            "Random Forest": RandomForestClassifier(n_estimators=100),
+            "SVM": SVC(kernel='rbf'),
+            "Logistic Regression": LogisticRegression()
+        },
+        "cross_validation": StratifiedKFold(n_splits=10, shuffle=True),
+        "min_prediction_threshold": 100
+    },
+    "tree_based": {
+        "description": "Tree-based methods",
+        "classifiers": {
+            "Random Forest": RandomForestClassifier(),
+            "Extra Trees": ExtraTreesClassifier()
+        },
+        "cross_validation": None,  # Uses default
+        "min_prediction_threshold": 50
+    }
+}
+            </pre>
+            <p><b>Available sklearn algorithms:</b> Any classifier from scikit-learn can be used, including RandomForestClassifier, SVC, LogisticRegression, KNeighborsClassifier, GradientBoostingClassifier, MLPClassifier, DecisionTreeClassifier, etc.</p>
             <h4>Training Process:</h4>
             <ul>
                 <li>Splits data into training/validation sets</li>
@@ -757,6 +827,13 @@ class ClassificationGUI(QMainWindow):
                 <li>Generates predictions and performance metrics</li>
                 <li>Saves trained models and results</li>
             </ul>
+            <h4>Prediction Logic:</h4>
+            <p>With <b>n</b> classifier objects and a cross-validation fold of <b>k</b>, there will be <b>n × k</b> models total. For prediction:</p>
+            <ul>
+                <li>If at least <b>min_prediction_threshold</b> of these models predict a "relevant" class, the spectrum is classified as <b>relevant</b></li>
+                <li>Otherwise, the spectrum is classified as <b>other</b></li>
+            </ul>
+            <p><b>Example:</b> With 3 classifiers and StratifiedKFold(n_splits=10), you get 3 × 10 = 30 models. If min_prediction_threshold=15, a spectrum needs at least 15 models to predict "relevant" to be classified as relevant.</p>
             <p><b>Note:</b> Training can take time depending on dataset size and number of classifiers.</p>
         """)
         help_layout.addWidget(help_text)
@@ -784,7 +861,7 @@ class ClassificationGUI(QMainWindow):
 
         self.classifiers_config_text = QTextEdit()
         self.classifiers_config_text.setPlaceholderText(
-            "Leave empty to use default configuration, or enter Python dict code here. The variable 'classifiers' as a dictionary of sklearn classifiers must be generated."
+            "Leave empty to use default configuration, or enter Python dict code here. The variable 'classifiers_to_compare' as a dictionary of classifier sets must be generated. Each key is a set name, and each value is a dict of sklearn classifiers."
         )
         self.classifiers_config_text.setMinimumHeight(150)
         font = self.classifiers_config_text.font()
@@ -792,19 +869,6 @@ class ClassificationGUI(QMainWindow):
         self.classifiers_config_text.setFont(font)
         self.classifiers_config_text.setEnabled(False)  # Disabled until embeddings are generated
         layout.addWidget(self.classifiers_config_text, 1)  # Stretch to fill available space
-
-        # Min Prediction Threshold
-        threshold_layout = QHBoxLayout()
-        threshold_layout.addWidget(QLabel("Min Prediction Threshold:"))
-        self.min_prediction_threshold_input = QSpinBox()
-        self.min_prediction_threshold_input.setMinimum(1)
-        self.min_prediction_threshold_input.setMaximum(1000)
-        self.min_prediction_threshold_input.setValue(120)
-        self.min_prediction_threshold_input.setToolTip("Minimum number of classifier votes needed to classify a compound as relevant")
-        self.min_prediction_threshold_input.setEnabled(False)  # Disabled until embeddings are generated
-        threshold_layout.addWidget(self.min_prediction_threshold_input)
-        threshold_layout.addStretch()
-        layout.addLayout(threshold_layout)
 
         # Save/Load Configuration buttons
         config_buttons_layout = QHBoxLayout()
@@ -849,24 +913,9 @@ class ClassificationGUI(QMainWindow):
     def init_section5(self):
         """Initialize the results inspection section."""
         content = QWidget()
-        main_layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
 
-        # Subset list on the left
-        subset_widget = QWidget()
-        subset_layout = QVBoxLayout()
-        subset_layout.addWidget(QLabel("<b>Trained Subsets:</b>"))
-        self.subset_results_list = QListWidget()
-        self.subset_results_list.itemClicked.connect(self.on_subset_result_selected)
-        subset_layout.addWidget(self.subset_results_list)
-        subset_widget.setLayout(subset_layout)
-        subset_widget.setMaximumWidth(250)
-        main_layout.addWidget(subset_widget)
-
-        # Results display on the right
-        results_widget = QWidget()
-        results_layout = QVBoxLayout()
-
-        # Export buttons
+        # Export buttons at the top
         button_layout = QHBoxLayout()
         export_results_btn = QPushButton("Export Results to Excel")
         export_results_btn.clicked.connect(self.export_results)
@@ -876,17 +925,12 @@ class ClassificationGUI(QMainWindow):
         export_classifiers_btn.clicked.connect(self.export_classifiers)
         button_layout.addWidget(export_classifiers_btn)
         button_layout.addStretch()
-        results_layout.addLayout(button_layout)
+        main_layout.addLayout(button_layout)
 
-        # Results table
-        self.current_subset_label = QLabel("Select a subset to view results")
-        results_layout.addWidget(self.current_subset_label)
+        # Results table - shows all combinations
         self.results_table = QTableWidget()
         self.results_table.setSortingEnabled(True)
-        results_layout.addWidget(self.results_table, 1)  # Stretch to fill available space
-
-        results_widget.setLayout(results_layout)
-        main_layout.addWidget(results_widget)
+        main_layout.addWidget(self.results_table, 1)  # Stretch to fill available space
 
         content.setLayout(main_layout)
 
@@ -1050,6 +1094,7 @@ class ClassificationGUI(QMainWindow):
                     meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
                     self.all_meta_keys.update(meta_keys)
 
+                filename = os.path.basename(file_path)
                 self.mgf_files[filename] = {
                     "path": file_path,
                     "entries": entries,
@@ -1241,6 +1286,7 @@ class ClassificationGUI(QMainWindow):
                         meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
                         self.all_meta_keys.update(meta_keys)
 
+                    filename = file_info["filename"]
                     self.mgf_files[filename] = {"path": mgf_path, "entries": entries, "num_entries": len(entries), "unique_smiles": len(smiles_set), "type": file_type}
                     loaded_count += 1
 
@@ -1734,7 +1780,6 @@ class ClassificationGUI(QMainWindow):
         # Enable classifier configuration inputs
         self.classifiers_config_text.setEnabled(True)
         self.load_default_classifiers_btn.setEnabled(True)
-        self.min_prediction_threshold_input.setEnabled(True)
 
         # Save embeddings
         output_dir = self.output_dir_input.text()
@@ -1775,34 +1820,76 @@ from sklearn.ensemble import BaggingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.linear_model import RidgeClassifier
 from sklearn.ensemble import VotingClassifier
+from sklearn.model_selection import StratifiedKFold
 
-classifiers = {
-    "Nearest Neighbors n=3": KNeighborsClassifier(3),
-    "Nearest Neighbors n=10": KNeighborsClassifier(10),
-    "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
-    #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
-    # "Gaussian Process": GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
-    "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
-    "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
-    "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
-    "AdaBoost": AdaBoostClassifier(random_state=42),
-    "Naive Bayes": GaussianNB(),
-    "QDA": QuadraticDiscriminantAnalysis(),
-    "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
-    "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
-    # "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-    "Bagging Classifier": BaggingClassifier(random_state=42),
-    "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-    "Ridge Classifier": RidgeClassifier(random_state=42),
-    "Voting Classifier (soft)": VotingClassifier(
-        estimators=[
-            ("lr", LogisticRegression(random_state=42, max_iter=1000)),
-            ("rf", RandomForestClassifier(random_state=42)),
-            ("gnb", GaussianNB()),
-        ],
-        voting="soft",
-    ),
-}"""
+classifiers_to_compare = {
+    "default_set": {
+        "description": "Default set of diverse classifiers for comparison",
+        "classifiers": {
+            "Nearest Neighbors n=3": KNeighborsClassifier(3),
+            "Nearest Neighbors n=10": KNeighborsClassifier(10),
+            "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
+            #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
+            # "Gaussian Process": GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
+            "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
+            "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
+            "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
+            "AdaBoost": AdaBoostClassifier(random_state=42),
+            "Naive Bayes": GaussianNB(),
+            "QDA": QuadraticDiscriminantAnalysis(),
+            "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
+            "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
+            # "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+            "Bagging Classifier": BaggingClassifier(random_state=42),
+            "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+            "Ridge Classifier": RidgeClassifier(random_state=42),
+            "Voting Classifier (soft)": VotingClassifier(
+                estimators=[
+                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
+                    ("rf", RandomForestClassifier(random_state=42)),
+                    ("gnb", GaussianNB()),
+                ],
+                voting="soft",
+            ),
+        },
+        "cross_validation": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits
+        "min_prediction_threshold": 100,
+    }
+}
+
+# Example with multiple classifier sets for comparison:
+# classifiers_to_compare = {
+#     "knn_variants": {
+#         "description": "KNNs with different k values are used", 
+#         "classifiers": {
+#             "KNN n=3": KNeighborsClassifier(3),
+#             "KNN n=5": KNeighborsClassifier(5),
+#             "KNN n=10": KNeighborsClassifier(10),
+#         },
+#         "cross_validation": StratifiedKFold(n_splits=5, random_state=42, shuffle=True),  # 5-fold CV
+#         "min_prediction_threshold": 12,
+#     },
+#     "tree_based": {
+#         "description": "Tree-based methods are used", 
+#         "classifiers": {
+#             "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
+#             "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, random_state=42),
+#             "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
+#         },
+#         # "cross_validation": None,  # Optional: if omitted or None, uses default StratifiedKFold with 10 splits
+#         "min_prediction_threshold": 25,
+#     },
+#     "linear_models": {
+#         "description": "Linear models are used", 
+#         "classifiers": {
+#             "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
+#             "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+#             "Ridge Classifier": RidgeClassifier(random_state=42),
+#         },
+#         "cross_validation": StratifiedKFold(n_splits=3, random_state=42, shuffle=True),  # 3-fold CV
+#         "min_prediction_threshold": 7,
+#     }
+# }"""
         self.classifiers_config_text.setPlainText(default_config)
 
     def save_classifier_configuration(self):
@@ -1813,7 +1900,7 @@ classifiers = {
             return
 
         try:
-            config_data = {"classifier_configuration": self.classifiers_config_text.toPlainText(), "min_prediction_threshold": self.min_prediction_threshold_input.value()}
+            config_data = {"classifier_configuration": self.classifiers_config_text.toPlainText()}
 
             with open(file_path, "w") as f:
                 json.dump(config_data, f, indent=4)
@@ -1837,10 +1924,6 @@ classifiers = {
             if "classifier_configuration" in config_data:
                 self.classifiers_config_text.setPlainText(config_data["classifier_configuration"])
 
-            # Load min prediction threshold
-            if "min_prediction_threshold" in config_data:
-                self.min_prediction_threshold_input.setValue(config_data["min_prediction_threshold"])
-
             QMessageBox.information(self, "Success", f"Configuration loaded from:\n{file_path}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
@@ -1863,7 +1946,6 @@ classifiers = {
                 "output_directory": self.output_dir_input.text(),
                 "subsets": self.subsets,
                 "classifier_configuration": self.classifiers_config_text.toPlainText(),
-                "min_prediction_threshold": self.min_prediction_threshold_input.value(),
             }
 
             # Save MGF file paths and types
@@ -2003,9 +2085,6 @@ classifiers = {
             if "classifier_configuration" in config_data:
                 self.classifiers_config_text.setPlainText(config_data["classifier_configuration"])
 
-            if "min_prediction_threshold" in config_data:
-                self.min_prediction_threshold_input.setValue(config_data["min_prediction_threshold"])
-
             # Navigate to training section
             self.go_to_section(self.section4)
 
@@ -2028,10 +2107,10 @@ classifiers = {
     def show_about(self):
         """Show about dialog with GUI description and version."""
         version = self.get_version()
-        about_text = f"""<h2>Flavonoid Compound Classification GUI</h2>
+        about_text = f"""<h2>AnnoMe Classification</h2>
         <p><b>Version:</b> {version}</p>
         
-        <p>This application provides a complete workflow for classifying flavonoid compounds using mass spectrometry data:</p>
+        <p>This application provides a complete workflow for classifying compounds using mass spectrometry data:</p>
         
         <ol>
         <li><b>Load MGF Files:</b> Import mass spectrometry data files and assign dataset types</li>
@@ -2064,22 +2143,48 @@ classifiers = {
                 # Evaluate the user's config
                 exec(classifiers_config_text)
 
-                if "classifiers" not in locals().keys():
-                    QMessageBox.warning(self, "Error", "Classifiers configuration must define a 'classifiers' variable")
+                if "classifiers_to_compare" not in locals().keys():
+                    QMessageBox.warning(
+                        self,
+                        "Error",
+                        "Classifiers configuration must define a 'classifiers_to_compare' variable.\n\nclassifiers_to_compare should be a dict where each key is a classifier set name and each value is a dict of sklearn classifiers.\n\nExample:\nclassifiers_to_compare = {\n    'set1': {\n        'RandomForest': RandomForestClassifier(),\n        'SVM': SVC()\n    },\n    'set2': {\n        'KNN': KNeighborsClassifier()\n    }\n}",
+                    )
                     return
-                self.classifiers_config = locals()["classifiers"]
+
+                self.classifiers_config = locals()["classifiers_to_compare"]
                 if not isinstance(self.classifiers_config, dict):
-                    QMessageBox.warning(self, "Error", "Classifiers configuration must be a dictionary")
+                    QMessageBox.warning(self, "Error", "classifiers_to_compare must be a dictionary")
                     return
+
+                # Validate that each value is a dict with required keys
+                for set_name, classifier_set in self.classifiers_config.items():
+                    if not isinstance(classifier_set, dict):
+                        QMessageBox.warning(self, "Error", f"Each value in classifiers_to_compare must be a dictionary.\\nThe value for '{set_name}' is not a dictionary.")
+                        return
+
+                    # Check for new format with 'classifiers' key
+                    if "classifiers" in classifier_set:
+                        if not isinstance(classifier_set["classifiers"], dict):
+                            QMessageBox.warning(self, "Error", f"The 'classifiers' entry in set '{set_name}' must be a dictionary of sklearn classifiers.")
+                            return
+                        if "min_prediction_threshold" not in classifier_set:
+                            QMessageBox.warning(self, "Error", f"The set '{set_name}' must include a 'min_prediction_threshold' value.")
+                            return
+                        if not isinstance(classifier_set["min_prediction_threshold"], (int, float)):
+                            QMessageBox.warning(self, "Error", f"The 'min_prediction_threshold' in set '{set_name}' must be a number.")
+                            return
+                        # Validate cross_validation if present
+                        if "cross_validation" in classifier_set:
+                            cv = classifier_set["cross_validation"]
+                            if cv is not None and not hasattr(cv, "split"):
+                                QMessageBox.warning(self, "Error", f"The 'cross_validation' in set '{set_name}' must be None or an sklearn cross-validation object with a 'split' method.")
+                                return
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Invalid classifiers configuration:\n{str(e)}")
                 return
         else:
             # Use default (None will trigger default in train_and_classify)
             self.classifiers_config = None
-
-        # Get min prediction threshold
-        self.min_prediction_threshold = self.min_prediction_threshold_input.value()
 
         output_dir = self.output_dir_input.text()
         os.makedirs(output_dir, exist_ok=True)
@@ -2092,35 +2197,39 @@ classifiers = {
         self.train_next_subset(output_dir)
 
     def train_next_subset(self, output_dir):
-        """Train classifiers for the next subset in the queue."""
-        if self.current_subset_index >= len(self.subsets):
-            # All subsets trained
-            self.training_status.setText(f"Status: Training completed for {len(self.subsets)} subset(s), output written to {output_dir}.")
-            self.train_btn.setEnabled(True)
-            self.populate_subset_results_list()
-            QMessageBox.information(self, "Success", f"Classifiers trained for all {len(self.subsets)} subset(s)\nOutput written to {output_dir}.")
+        """Train classifiers for all subsets and classifier sets (creates n×m combinations)."""
+        if self.current_subset_index > 0:
+            # Training already completed (this method should only run once)
             return
 
-        subset_data = self.subsets[self.current_subset_index]
-        subset_name = subset_data["name"]
-        subset_expr = subset_data["expression"]
+        # Mark as started
+        self.current_subset_index = 1
 
-        # Create subset function
-        def subset_func(row):
-            meta = {k: v for k, v in row.items() if k not in ["$$spectrumdata", "peaks", "embeddings"]}
-            try:
-                compiled = compile(subset_expr, "<string>", "eval")
-                res = eval(compiled, {"meta": meta, "abs": abs, "float": float, "int": int, "str": str})
-                # print(f"Evaluating subset '{subset_name}' for row {meta} => {res} with function {inspect.getsource(subset_func)}")
-                return res
-            except Exception as ex:
-                print(f"Error evaluating subset expression for row {meta}: {ex}")
-                return False
+        # Create subset functions for all subsets
+        subsets_dict = {}
+        self.subset_filter_functions = {}  # Store for later use
 
-        subsets_dict = {subset_name: subset_func}
+        for subset_data in self.subsets:
+            subset_name = subset_data["name"]
+            subset_expr = subset_data["expression"]
 
-        subset_output_dir = os.path.join(output_dir, subset_name.replace(" ", "_"))
-        os.makedirs(subset_output_dir, exist_ok=True)
+            # Create a closure to capture the current subset_expr
+            def make_subset_func(expr):
+                def subset_func(row):
+                    meta = {k: v for k, v in row.items() if k not in ["$$spectrumdata", "peaks", "embeddings"]}
+                    try:
+                        compiled = compile(expr, "<string>", "eval")
+                        res = eval(compiled, {"meta": meta, "abs": abs, "float": float, "int": int, "str": str})
+                        return res
+                    except Exception as ex:
+                        print(f"Error evaluating subset expression for row {meta}: {ex}")
+                        return False
+
+                return subset_func
+
+            subset_func = make_subset_func(subset_expr)
+            subsets_dict[subset_name] = subset_func
+            self.subset_filter_functions[subset_name] = subset_func
 
         # Create progress dialog
         self.progress_dialog = QProgressDialog(f"Training classifiers", "Cancel", 0, 0, self)
@@ -2128,10 +2237,8 @@ classifiers = {
         self.progress_dialog.setMinimumDuration(0)
         self.progress_dialog.setValue(0)
 
-        # Start worker thread with subset_name as parameter
-        self.current_training_subset = subset_name  # Store in instance variable
-        self.current_subset_filter = subset_func  # Store filter function for later use
-        self.training_worker = TrainingWorker(self.df_embeddings, subsets_dict, subset_output_dir, classifiers=self.classifiers_config, min_prediction_threshold=self.min_prediction_threshold)
+        # Start worker thread with all subsets
+        self.training_worker = TrainingWorker(self.df_embeddings, subsets_dict, output_dir, classifiers_to_compare=self.classifiers_config)
         self.training_worker.progress.connect(self.on_training_progress)
         self.training_worker.finished.connect(self.on_training_finished)
         self.training_worker.error.connect(self.on_training_error)
@@ -2145,35 +2252,47 @@ classifiers = {
 
     def on_training_finished(self, df_train, df_validation, df_inference, df_metrics, trained_classifiers, tables):
         """Handle training completion."""
-        subset_name = self.current_training_subset
         long_tables, pivot_tables = tables
         output_dir = self.output_dir_input.text()
 
-        # Store results for this subset including long_table and pivot_table
-        self.subset_results[subset_name] = {
-            "df_train": df_train,
-            "df_validation": df_validation,
-            "df_inference": df_inference,
-            "df_metrics": df_metrics,
-            "trained_classifiers": trained_classifiers,
-            "long_table": long_tables.get(subset_name),
-            "pivot_table": pivot_tables.get(subset_name),
-            "filter_fn": self.current_subset_filter,
-        }
+        # Store results for each combination (classifier_set // subset)
+        # The long_tables and pivot_tables keys are in format "classifier_set // subset"
+        for combined_key in long_tables.keys():
+            # Extract subset_name from combined_key to get the filter function
+            parts = combined_key.split(" // ")
+            if len(parts) >= 2:
+                subset_name = parts[1]
+            else:
+                subset_name = combined_key
 
-        # Export filtered MGF files for this subset
-        subset_output_dir = os.path.join(output_dir, subset_name.replace(" ", "_"))
-        self.export_filtered_mgf_files(subset_name, subset_output_dir)
+            filter_fn = self.subset_filter_functions.get(subset_name)
+
+            self.subset_results[combined_key] = {
+                "df_train": df_train,
+                "df_validation": df_validation,
+                "df_inference": df_inference,
+                "df_metrics": df_metrics,
+                "trained_classifiers": trained_classifiers,
+                "long_table": long_tables.get(combined_key),
+                "pivot_table": pivot_tables.get(combined_key),
+                "filter_fn": filter_fn,
+            }
+
+            # Export filtered MGF files for this combination
+            combo_output_dir = os.path.join(output_dir, combined_key.replace(" // ", "_").replace(" ", "_"))
+            os.makedirs(combo_output_dir, exist_ok=True)
+            self.export_filtered_mgf_files(combined_key, combo_output_dir)
 
         self.progress_dialog.close()
 
-        # Move to next subset
-        self.current_subset_index += 1
-        self.train_next_subset(output_dir)
+        # Calculate total combinations
+        num_combinations = len(long_tables)
+        self.training_status.setText(f"Status: Training completed for {num_combinations} combination(s), output written to {output_dir}.")
+        self.train_btn.setEnabled(True)
+        self.populate_subset_results_list()
+        self.populate_spectrum_file_list()
 
-        # Populate spectrum file list for section 5 after all training
-        if self.current_subset_index >= len(self.subsets):
-            self.populate_spectrum_file_list()
+        QMessageBox.information(self, "Success", f"Classifiers trained for {num_combinations} combination(s)\nOutput written to {output_dir}.")
 
     def on_training_error(self, error_msg):
         """Handle training error."""
@@ -2182,36 +2301,35 @@ classifiers = {
         self.train_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", error_msg)
 
-        # Continue with next subset despite error
-        self.current_subset_index += 1
-        output_dir = self.output_dir_input.text()
-        self.train_next_subset(output_dir)
-
-    def export_filtered_mgf_files(self, subset_name, subset_output_dir):
+    def export_filtered_mgf_files(self, combined_key, subset_output_dir):
         """Export filtered MGF files based on classification results.
 
-        For each input MGF file in the subset:
+        For each input MGF file in the combination:
         - Creates two output files with suffix: '_relevant.mgf' and '_other.mgf'
-        - Saves to the subset output directory
+        - Saves to the combination output directory
+
+        Args:
+            combined_key: Key in format "classifier_set // subset" or just "subset"
+            subset_output_dir: Output directory for this combination
         """
         from .Filters import export_mgf_file
 
-        if subset_name not in self.subset_results:
-            print(f"Warning: No results found for subset '{subset_name}'")
+        if combined_key not in self.subset_results:
+            print(f"Warning: No results found for combination '{combined_key}'")
             return
 
-        results = self.subset_results[subset_name]
+        results = self.subset_results[combined_key]
         long_table = results.get("long_table")
 
         if long_table is None or long_table.empty:
-            print(f"Warning: No long_table data available for subset '{subset_name}'")
+            print(f"Warning: No long_table data available for combination '{combined_key}'")
             return
 
         if "classification:relevant" not in long_table.columns:
-            print(f"Warning: 'classification:relevant' column not found in long_table for subset '{subset_name}'")
+            print(f"Warning: 'classification:relevant' column not found in long_table for combination '{combined_key}'")
             return
 
-        print(f"\nExporting filtered MGF files for subset '{subset_name}'...")
+        print(f"\nExporting filtered MGF files for combination '{combined_key}'...")
         print(f"Long table shape: {long_table.shape}")
         print(f"Values of column classification:relevant: {long_table['classification:relevant'].value_counts().to_dict()}")
 
@@ -2294,68 +2412,75 @@ classifiers = {
                 traceback.print_exc()
 
     def populate_subset_results_list(self):
-        """Populate the subset results list."""
-        self.subset_results_list.clear()
-        for subset_name in sorted(self.subset_results.keys()):
-            self.subset_results_list.addItem(subset_name)
-
-        # Also populate section 6 subset list
+        """Populate the spectrum subset list (step 6) and refresh the results table (step 5)."""
+        # Populate section 6 subset list
         self.spectrum_subset_list.clear()
-        for subset_name in sorted(self.subset_results.keys()):
-            self.spectrum_subset_list.addItem(subset_name)
+        for combined_key in sorted(self.subset_results.keys()):
+            self.spectrum_subset_list.addItem(combined_key)
+
+        # Refresh the results table in step 5 to show all combinations
+        self.refresh_all_results_table()
 
     # Section 5 methods
-    def on_subset_result_selected(self, item):
-        """Handle subset selection to display results."""
-        subset_name = item.text()
-        if subset_name not in self.subset_results:
+    def refresh_all_results_table(self):
+        """Refresh the results table to show all combinations at once."""
+        if not self.subset_results:
+            self.results_table.setRowCount(0)
             return
-
-        self.current_subset_label.setText(f"<b>Results for Subset: {subset_name}</b>")
-        self.refresh_results_table_for_subset(subset_name)
-
-    def refresh_results_table_for_subset(self, subset_name):
-        """Refresh the results table for a specific subset using the long table from generate_prediction_overview."""
-        if subset_name not in self.subset_results:
-            return
-
-        results = self.subset_results[subset_name]
-        long_table = results.get("long_table")
-
-        if long_table is None or long_table.empty:
-            QMessageBox.warning(self, "Warning", "No long table results available for this subset")
-            return
-
-        # Use the long table which has the "classification:relevant" column
-        df = long_table.copy()
-
-        # Ensure the classification:relevant column exists
-        if "classification:relevant" not in df.columns:
-            QMessageBox.warning(self, "Warning", "The long table does not contain 'classification:relevant' column")
-            return
-
-        # Aggregate by source and type, counting relevant vs not relevant
-        # Create a binary relevant flag: relevant if "classification:relevant" == "relevant", otherwise not relevant
-        df["is_relevant"] = df["classification:relevant"] == "relevant"
-
-        # Group by source and type, then count relevant and not relevant
-        summary = df.groupby(["source", "type"]).agg(total=("is_relevant", "count"), relevant_count=("is_relevant", "sum")).reset_index()
-
-        # Calculate not relevant count
-        summary["not_relevant_count"] = summary["total"] - summary["relevant_count"]
 
         # Get file types for display
         file_types = {}
         for filename, data in self.mgf_files.items():
             file_types[filename] = data["type"]
 
-        # Set up the table
-        self.results_table.setRowCount(len(summary))
-        self.results_table.setColumnCount(6)
-        self.results_table.setHorizontalHeaderLabels(["MGF File", "Type", "Prediction: Other (Count)", "Prediction: Other (%)", "Prediction: Relevant (Count)", "Prediction: Relevant (%)"])
+        # Collect all rows from all combinations
+        all_rows = []
+
+        for combined_key in sorted(self.subset_results.keys()):
+            results = self.subset_results[combined_key]
+            long_table = results.get("long_table")
+
+            if long_table is None or long_table.empty:
+                continue
+
+            # Use the long table which has the "classification:relevant" column
+            df = long_table.copy()
+
+            # Ensure the classification:relevant column exists
+            if "classification:relevant" not in df.columns:
+                continue
+
+            # Aggregate by source and type, counting relevant vs not relevant
+            # Create a binary relevant flag: relevant if "classification:relevant" == "relevant", otherwise not relevant
+            df["is_relevant"] = df["classification:relevant"] == "relevant"
+
+            # Group by source and type, then count relevant and not relevant
+            summary = df.groupby(["source", "type"]).agg(total=("is_relevant", "count"), relevant_count=("is_relevant", "sum")).reset_index()
+
+            # Calculate not relevant count
+            summary["not_relevant_count"] = summary["total"] - summary["relevant_count"]
+
+            # Add combination name to each row
+            summary["combination"] = combined_key
+            all_rows.append(summary)
+
+        if not all_rows:
+            self.results_table.setRowCount(0)
+            return
+
+        # Combine all summaries
+        combined_summary = pd.concat(all_rows, ignore_index=True)
+
+        # Set up the table with 8 columns (classifier and subset as separate columns)
+        self.results_table.setRowCount(len(combined_summary))
+        self.results_table.setColumnCount(8)
+        self.results_table.setHorizontalHeaderLabels(
+            ["Classifier", "Subset", "MGF File", "Type", "Prediction: Other (Count)", "Prediction: Other (%)", "Prediction: Relevant (Count)", "Prediction: Relevant (%)"]
+        )
 
         # Populate the table
-        for row_idx, row in summary.iterrows():
+        for row_idx, row in combined_summary.iterrows():
+            combination = row["combination"]
             source = row["source"]
             file_type = file_types.get(source, "unknown")
             total = row["total"]
@@ -2369,8 +2494,21 @@ classifiers = {
             is_inference = "inference" in file_type
             expected_type = "relevant" if "relevant" in file_type else "other"
 
+            # Split combination into classifier and subset
+            parts = combination.split(" // ")
+            classifier = parts[0] if len(parts) >= 1 else combination
+            subset = parts[1] if len(parts) >= 2 else ""
+
+            # Classifier column (first column)
+            self.results_table.setItem(row_idx, 0, QTableWidgetItem(classifier))
+
+            # Subset column (second column)
+            self.results_table.setItem(row_idx, 1, QTableWidgetItem(subset))
+            # Subset column (second column)
+            self.results_table.setItem(row_idx, 1, QTableWidgetItem(subset))
+
             # Source column
-            self.results_table.setItem(row_idx, 0, QTableWidgetItem(source))
+            self.results_table.setItem(row_idx, 2, QTableWidgetItem(source))
 
             # Type column with color coding
             type_item = QTableWidgetItem(file_type)
@@ -2384,7 +2522,7 @@ classifiers = {
                 type_item.setBackground(QBrush(COLOR_VALIDATION_OTHER))
             elif "inference" in file_type:
                 type_item.setBackground(QBrush(COLOR_INFERENCE))
-            self.results_table.setItem(row_idx, 1, type_item)
+            self.results_table.setItem(row_idx, 3, type_item)
 
             # Define match/mismatch colors
             COLOR_MATCH = QColor(144, 238, 144)  # Light green
@@ -2398,7 +2536,7 @@ classifiers = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 2, item)
+            self.results_table.setItem(row_idx, 4, item)
 
             # Not relevant %
             item = QTableWidgetItem(f"{not_relevant_pct:.1f}%")
@@ -2408,7 +2546,7 @@ classifiers = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 3, item)
+            self.results_table.setItem(row_idx, 5, item)
 
             # Relevant count
             item = QTableWidgetItem(str(int(relevant)))
@@ -2418,7 +2556,7 @@ classifiers = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 4, item)
+            self.results_table.setItem(row_idx, 6, item)
 
             # Relevant %
             item = QTableWidgetItem(f"{relevant_pct:.1f}%")
@@ -2428,7 +2566,7 @@ classifiers = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 5, item)
+            self.results_table.setItem(row_idx, 7, item)
 
         # Auto-resize columns
         self.results_table.resizeColumnsToContents()

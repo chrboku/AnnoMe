@@ -41,7 +41,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-def download_file_if_not_exists(url, dest_folder, file_name=None):
+def download_file_if_not_exists(url, dest_folder, file_name=None, print_intention=0, status_bar_update_func=None, status_bar_max_func=None):
     """
     Downloads a file from a given URL to a specified destination folder.
 
@@ -61,19 +61,53 @@ def download_file_if_not_exists(url, dest_folder, file_name=None):
     else:
         filename = os.path.join(dest_folder, file_name)
 
-    if not os.path.exists(filename):
-        try:
-            print(f"      - downloading")
-            response = requests.get(url)
-            with open(filename, "wb") as f:
-                f.write(response.content)
-        except Exception as e:
-            print(f"      - Error downloading {url}: {e}")
-            try:
+    try:
+        response = requests.get(url, stream=True)
+
+        # show a ajax loader animation with an update every second
+        total_size = int(response.headers.get("content-length", 0))
+
+        # check if the file is present in this size
+        if os.path.exists(filename):
+            existing_size = os.path.getsize(filename)
+            if existing_size == total_size:
+                print(f"{' ' * print_intention}- File already downloaded.")
+                return filename
+            else:
+                print(f"{' ' * print_intention}{Fore.RED}- Partial file found, re-downloading...{Style.RESET_ALL}")
                 os.remove(filename)
-            except Exception as e:
-                print(f"      - Error removing {filename}: {e}")
-            raise RuntimeError(f"Failed to download {url} to {filename}")
+
+        if total_size > 100_000_000:  # > 100MB
+            print_size = total_size / (1000 * 1000)
+            print_size_unit = "MB"
+            if print_size > 1000:
+                print_size = print_size / 1000
+                print_size_unit = "GB"
+            print(f"{' ' * print_intention}{Fore.YELLOW}Warning: File is large ({print_size:.2f} {print_size_unit}), this may take a while...{Style.RESET_ALL}")
+
+        block_size = 1000  # 1 Kibibyte
+
+        t = tqdm(total=total_size, unit="iB", unit_scale=True)
+        if status_bar_update_func is not None:
+            status_bar_max_func(total_size)
+
+        total_size_loaded = 0
+        with open(filename, "wb") as f:
+            for data in response.iter_content(block_size):
+                f.write(data)
+
+                total_size_loaded += len(data)
+                t.update(len(data))
+                if status_bar_update_func is not None:
+                    status_bar_update_func(total_size_loaded)
+
+    except Exception as e:
+        print(f"{' ' * print_intention}- Error downloading {url}: {e}")
+        try:
+            os.remove(filename)
+        except Exception as e:
+            print(f"{' ' * print_intention}- Error removing {filename}: {e}")
+        raise RuntimeError(f"Failed to download {url} to {filename}")
 
     return filename
 
@@ -212,11 +246,18 @@ def get_config_value(key, config_location=None):
     Retrieves a configuration value from a specified location or the default config file.
 
     Args:
-        key (str): The key for which to retrieve the value.
+        key (str or list of str): The key(s) for which to retrieve the value.
+            - If str: Returns the value from the top-level dictionary.
+            - If list of str: Navigates through nested levels and returns the final value.
         config_location (str, optional): The path to the configuration file. If None, uses the default location.
 
     Returns:
-        str: The value associated with the key, or None if not found.
+        The value associated with the key, or None if not found.
+
+    Examples:
+        get_config_value("MONA") -> returns the MONA dictionary
+        get_config_value(["MONA", "url"]) -> returns the URL within the MONA dictionary
+        get_config_value(["MSnLib_files", "1", "file_name"]) -> returns the file_name in entry "1"
     """
     if config_location is None:
         config_location = os.path.join(os.path.dirname(__file__), "../../config.json")
@@ -226,11 +267,91 @@ def get_config_value(key, config_location=None):
 
     with open(config_location, "r") as f:
         config = json.load(f)
-        if key not in config:
-            raise KeyError(f"Key '{key}' not found in configuration file at {config_location}")
-        return config.get(key, None)
+
+        # Handle single string key (top-level access)
+        if isinstance(key, str):
+            if key not in config:
+                raise KeyError(f"Key '{key}' not found in configuration file at {config_location}")
+            return config.get(key, None)
+
+        # Handle list of keys (nested access)
+        elif isinstance(key, list):
+            current = config
+            for i, k in enumerate(key):
+                if not isinstance(current, dict):
+                    raise TypeError(f"Cannot access key '{k}' at level {i}: current value is not a dictionary")
+                if k not in current:
+                    key_path = " -> ".join(key[: i + 1])
+                    raise KeyError(f"Key path '{key_path}' not found in configuration file at {config_location}")
+                current = current[k]
+            return current
+
+        else:
+            raise TypeError(f"Key must be a string or list of strings, got {type(key)}")
 
     raise RuntimeError(f"Failed to retrieve value for key '{key}' from configuration file at {config_location}, unknown error")
+
+
+def get_config_keys(key=None, config_location=None):
+    """
+    Returns all keys at a particular level in the configuration file.
+
+    Args:
+        key (str, list of str, or None): The key(s) specifying which level to query.
+            - If None: Returns all keys from the top-level dictionary.
+            - If str: Returns all keys within the specified top-level dictionary.
+            - If list of str: Navigates through nested levels and returns keys at that level.
+        config_location (str, optional): The path to the configuration file. If None, uses the default location.
+
+    Returns:
+        list: A list of keys at the specified level.
+
+    Examples:
+        get_config_keys() -> returns all top-level keys ["MONA", "GNPS_Wine_DB_Orbitrap", ...]
+        get_config_keys("MONA") -> returns keys within MONA ["url", "size"]
+        get_config_keys(["MSnLib_files"]) -> returns keys within MSnLib_files ["base_url", "1", "2", ...]
+        get_config_keys(["MSnLib_files", "1"]) -> returns keys within entry "1" ["file_name", "size"]
+    """
+    if config_location is None:
+        config_location = os.path.join(os.path.dirname(__file__), "../../config.json")
+
+    if not os.path.exists(config_location):
+        raise FileNotFoundError(f"Configuration file not found at {config_location}")
+
+    with open(config_location, "r") as f:
+        config = json.load(f)
+
+        # Handle None (return top-level keys)
+        if key is None:
+            return list(config.keys())
+
+        # Handle single string key
+        if isinstance(key, str):
+            if key not in config:
+                raise KeyError(f"Key '{key}' not found in configuration file at {config_location}")
+            value = config[key]
+            if not isinstance(value, dict):
+                raise TypeError(f"Value at key '{key}' is not a dictionary, cannot retrieve keys")
+            return list(value.keys())
+
+        # Handle list of keys (nested access)
+        elif isinstance(key, list):
+            current = config
+            for i, k in enumerate(key):
+                if not isinstance(current, dict):
+                    raise TypeError(f"Cannot access key '{k}' at level {i}: current value is not a dictionary")
+                if k not in current:
+                    key_path = " -> ".join(key[: i + 1])
+                    raise KeyError(f"Key path '{key_path}' not found in configuration file at {config_location}")
+                current = current[k]
+
+            if not isinstance(current, dict):
+                key_path = " -> ".join(key)
+                raise TypeError(f"Value at key path '{key_path}' is not a dictionary, cannot retrieve keys")
+            return list(current.keys())
+
+        else:
+            raise TypeError(f"Key must be None, a string, or list of strings, got {type(key)}")
 
 
 def unzip_file(zip_file_path, dest_folder):
@@ -249,7 +370,7 @@ def unzip_file(zip_file_path, dest_folder):
         zip_ref.extractall(dest_folder)
 
 
-def download_MSMS_libraries(dest_folder=None):
+def download_MSMS_libraries(dest_folder=None, status_bar_update_func=None, status_bar_max_func=None, status_bar_description_func=None):
     """
     Downloads common MS/MS libraries to the specified destination folder.
 
@@ -263,64 +384,102 @@ def download_MSMS_libraries(dest_folder=None):
     c_dest_folder = os.path.join(dest_folder, "libraries")
 
     print(f"Downloading (if necessary) public datasets for MS/MS libraries, to {c_dest_folder}...")
-    print("   - MONA")
-    download_file_if_not_exists(get_config_value("url:MONA"), c_dest_folder)
-    print("   - GNPS Wine DB Orbitrap")
-    download_file_if_not_exists(get_config_value("url:GNPS_Wine_DB_Orbitrap"), c_dest_folder)
-    print("   - GNPS cleaned")
-    download_file_if_not_exists(get_config_value("url:GNPS_Cleaned"), c_dest_folder)
-    print("   - MassSpecGym")
-    download_file_if_not_exists(
-        get_config_value("url:MassSpecGym"),
-        c_dest_folder,
-    )
-    print("      - processing")
-    tsv_to_mgf(
-        os.path.join(c_dest_folder, "MassSpecGym.tsv"),
-        os.path.join(c_dest_folder, "MassSpecGym.mgf"),
-    )
-    fix_massspecgym_nameandid(os.path.join(c_dest_folder, "MassSpecGym.mgf"))
-    print("   - MassBank Riken")
-    download_file_if_not_exists(
-        get_config_value("url:MB_Riken"),
-        c_dest_folder,
-    )
-    print("      - processing")
-    msp_to_mgf(
-        os.path.join(c_dest_folder, "MassBank.msp_RIKEN"),
-        os.path.join(c_dest_folder, "MassBank_RIKEN.mgf"),
-    )
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading MS/MS libraries...")
 
-    files = get_config_value("MSnLib_files")
-    print("   - MSnLib files:")
-    for file_name in files:
-        print(f"      - {file_name}")
-        download_file_if_not_exists(
-            get_config_value("url:MSnLib_base").format(file_name=file_name),
-            c_dest_folder,
-            file_name=file_name,
+    # Mona
+    print(f"{Fore.GREEN}   - MONA{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading MONA library...")
+    download_file_if_not_exists(get_config_value(["MONA", "url"]), c_dest_folder, print_intention=6, status_bar_update_func=status_bar_update_func, status_bar_max_func=status_bar_max_func)
+
+    # GNPS datasets
+    print(f"{Fore.GREEN}   - GNPS Wine DB Orbitrap{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading GNPS Wine DB Orbitrap library...")
+    download_file_if_not_exists(
+        get_config_value(["GNPS_Wine_DB_Orbitrap", "url"]), c_dest_folder, print_intention=6, status_bar_update_func=status_bar_update_func, status_bar_max_func=status_bar_max_func
+    )
+    print(f"{Fore.GREEN}   - GNPS cleaned{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading GNPS cleaned library...")
+    download_file_if_not_exists(get_config_value(["GNPS_Cleaned", "url"]), c_dest_folder, print_intention=6, status_bar_update_func=status_bar_update_func, status_bar_max_func=status_bar_max_func)
+
+    # MassSpecGym and conversion thereof to mgf file
+    print(f"{Fore.GREEN}   - MassSpecGym{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading MassSpecGym library...")
+    download_file_if_not_exists(get_config_value(["MassSpecGym", "url"]), c_dest_folder, print_intention=6, status_bar_update_func=status_bar_update_func, status_bar_max_func=status_bar_max_func)
+    if os.path.exists(os.path.join(c_dest_folder, "MassSpecGym.mgf")):
+        print("      - File already processeded")
+    else:
+        print("      - processing")
+        tsv_to_mgf(
+            os.path.join(c_dest_folder, "MassSpecGym.tsv"),
+            os.path.join(c_dest_folder, "MassSpecGym.mgf"),
+        )
+        fix_massspecgym_nameandid(os.path.join(c_dest_folder, "MassSpecGym.mgf"))
+
+    # MassBank Riken and conversion thereof to mgf file
+    print(f"{Fore.GREEN}   - MassBank Riken{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading MassBank Riken library...")
+    download_file_if_not_exists(get_config_value(["MB_Riken", "url"]), c_dest_folder, print_intention=6, status_bar_update_func=status_bar_update_func, status_bar_max_func=status_bar_max_func)
+    if os.path.exists(os.path.join(c_dest_folder, "MassBank_RIKEN.mgf")):
+        print("      - File already processeded")
+    else:
+        print("      - processing")
+        msp_to_mgf(
+            os.path.join(c_dest_folder, "MassBank.msp_RIKEN"),
+            os.path.join(c_dest_folder, "MassBank_RIKEN.mgf"),
         )
 
-    print("   - BOKU iBAM")
+    # MSnLib
+    base_url = get_config_value(["MSnLib_files", "base_url"])
+    files = get_config_value("MSnLib_files")
+    print(f"{Fore.GREEN}   - MSnLib files:{Style.RESET_ALL}")
+    for file_name in files:
+        if file_name == "base_url":
+            continue
+        print(f"{Fore.GREEN}      - {file_name}{Style.RESET_ALL}")
+        if status_bar_description_func is not None:
+            status_bar_description_func(f"Downloading MSnLib file {file_name}...")
+        download_file_if_not_exists(
+            base_url.format(file_name=f"{file_name}.mgf"),
+            c_dest_folder,
+            file_name=f"{file_name}.mgf",
+            print_intention=9,
+            status_bar_update_func=status_bar_update_func,
+            status_bar_max_func=status_bar_max_func,
+        )
+
+    # BOKU iBAM in-house database (more specific towards example dataset)
+    print(f"{Fore.GREEN}   - BOKU iBAM{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading BOKU iBAM library...")
     download_file_if_not_exists(
-        get_config_value("url:BOKU_iBAM"),
-        c_dest_folder,
-        file_name="BOKU_iBAM.mgf",
+        get_config_value(["BOKU_iBAM", "url"]), c_dest_folder, file_name="BOKU_iBAM.mgf", print_intention=6, status_bar_update_func=status_bar_update_func, status_bar_max_func=status_bar_max_func
     )
 
     c_dest_folder = os.path.join(dest_folder, "libraries_other")
 
-    print("   - other MSMS datasets")
+    # other libraries
+    print(f"{Fore.GREEN}   - other MSMS datasets{Style.RESET_ALL}")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading other MSMS datasets...")
     download_file_if_not_exists(
-        get_config_value("url:BOKU_other_MSMS_datasets"),
+        get_config_value(["BOKU_other_MSMS_datasets", "url"]),
         c_dest_folder,
         file_name="other_MSMS_datasets.zip",
+        print_intention=6,
+        status_bar_update_func=status_bar_update_func,
+        status_bar_max_func=status_bar_max_func,
     )
     # Unzip the downloaded file if it is a zip file
     unzip_file(os.path.join(c_dest_folder, "other_MSMS_datasets.zip"), c_dest_folder)
 
 
-def download_MS2DeepScore_model(dest_folder=None):
+def download_MS2DeepScore_model(dest_folder=None, status_bar_update_func=None, status_bar_max_func=None, status_bar_description_func=None):
     """
     Downloads the MS2DeepScore model to the specified destination folder.
     """
@@ -328,8 +487,17 @@ def download_MS2DeepScore_model(dest_folder=None):
     if dest_folder is None:
         dest_folder = os.path.join(".", "resources", "models")
 
-    print(f"Downloading (if necessary) MS2DeepScore model, to {dest_folder}...")
-    download_file_if_not_exists(get_config_value("url:MS2DeepScore_model"), dest_folder, file_name="ms2deepscore_model.pt")
+    print(f"Downloading (if necessary) {Fore.GREEN}MS2DeepScore model{Style.RESET_ALL}, to {dest_folder}...")
+    if status_bar_description_func is not None:
+        status_bar_description_func("Downloading MS2DeepScore model...")
+    download_file_if_not_exists(
+        get_config_value(["MS2DeepScore_model", "url"]),
+        dest_folder,
+        file_name="ms2deepscore_model.pt",
+        print_intention=3,
+        status_bar_update_func=status_bar_update_func,
+        status_bar_max_func=status_bar_max_func,
+    )
 
 
 def CE_parser(ce_str):

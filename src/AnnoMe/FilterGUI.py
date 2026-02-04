@@ -3,6 +3,7 @@ import os
 from collections import defaultdict, OrderedDict
 import io
 import json
+import tomllib
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -29,8 +30,9 @@ from PyQt5.QtWidgets import (
     QAbstractItemView,
     QSlider,
     QMenu,
+    QTabWidget,
 )
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QThread
 from PyQt5.QtGui import QPixmap, QImage
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
@@ -389,6 +391,52 @@ class StructureViewerWindow(QMainWindow):
         event.accept()
 
 
+class DownloadThread(QThread):
+    """Thread for downloading resources in the background."""
+
+    progress_update = pyqtSignal(int)
+    max_update = pyqtSignal(int)
+    description_update = pyqtSignal(str)
+    download_complete = pyqtSignal()
+    download_error = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._is_cancelled = False
+
+    def cancel(self):
+        """Cancel the download operation."""
+        self._is_cancelled = True
+
+    def run(self):
+        """Run the download in a separate thread."""
+
+        def update_progress(value):
+            self.progress_update.emit(int(value))
+            return True
+
+        def set_max_progress(max_value):
+            self.max_update.emit(int(max_value))
+
+        def set_description(description):
+            self.description_update.emit(description)
+
+        try:
+            # Download MSMS libraries
+            set_description("Downloading MS/MS libraries...")
+            Filters.download_MSMS_libraries(status_bar_update_func=update_progress, status_bar_max_func=set_max_progress, status_bar_description_func=set_description)
+
+            # Download MS2DeepScore model
+            set_description("Downloading MS2DeepScore model...")
+            Filters.download_MS2DeepScore_model(status_bar_update_func=update_progress, status_bar_max_func=set_max_progress, status_bar_description_func=set_description)
+
+            self.download_complete.emit()
+
+        except Exception as e:
+            print(str(e))
+            self.download_error.emit(str(e))
+
+
 class MGFFilterGUI(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -398,11 +446,29 @@ class MGFFilterGUI(QMainWindow):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.sections = []  # List to keep track of all sections
         self.structure_windows = []  # Keep track of open structure viewer windows
+        # Track meta-field selections per file: {file_path: {meta_field: {selected_values}}}
+        self.meta_field_selections = {}
 
         # Define predefined SMARTS filters
         self.predefined_filters = self.get_predefined_filters()
 
         self.init_ui()
+
+    def get_version(self):
+        """Read version from pyproject.toml"""
+        try:
+            # Get the path to pyproject.toml (go up from src/AnnoMe to project root)
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            project_root = os.path.dirname(os.path.dirname(current_dir))
+            toml_path = os.path.join(project_root, "pyproject.toml")
+
+            if os.path.exists(toml_path):
+                with open(toml_path, "rb") as f:
+                    data = tomllib.load(f)
+                    return data.get("project", {}).get("version", "unknown")
+        except Exception:
+            pass
+        return "unknown"
 
     def get_predefined_filters(self):
         """Get dictionary of predefined SMARTS filters."""
@@ -437,67 +503,57 @@ class MGFFilterGUI(QMainWindow):
         )
 
     def init_ui(self):
-        self.setWindowTitle("MGF SMARTS Filter Wizard")
+        version = self.get_version()
+        self.setWindowTitle(f"AnnoMe MGF SMARTS Filter Wizard v{version}")
         self.setGeometry(100, 100, 1400, 800)
 
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll_content = QWidget()
-        scroll.setWidget(scroll_content)
-
-        layout = QVBoxLayout()
-        scroll_content.setLayout(layout)
+        # Create tab widget with tabs on the left
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabPosition(QTabWidget.West)
 
         # Section 1: Load MGF Files
-        self.section1 = CollapsibleSection("1. Load MGF Files")
-        self.section1.toggled.connect(self.on_section_toggled)
-        self.init_section1()
-        layout.addWidget(self.section1)
-        self.sections.append(self.section1)
+        section1_widget = QWidget()
+        section1_scroll = QScrollArea()
+        section1_scroll.setWidgetResizable(True)
+        section1_scroll.setWidget(section1_widget)
+        self.init_section1(section1_widget)
+        self.tab_widget.addTab(section1_scroll, "1. Load MGF Files")
 
         # Section 2: Canonicalization
-        self.section2 = CollapsibleSection("2. SMILES Canonicalization")
-        self.section2.toggled.connect(self.on_section_toggled)
-        self.section2.collapse()  # Start collapsed
-        self.init_section2()
-        layout.addWidget(self.section2)
-        self.sections.append(self.section2)
+        section2_widget = QWidget()
+        section2_scroll = QScrollArea()
+        section2_scroll.setWidgetResizable(True)
+        section2_scroll.setWidget(section2_widget)
+        self.init_section2(section2_widget)
+        self.tab_widget.addTab(section2_scroll, "2. SMILES Canonicalization")
 
         # Section 3: SMARTS Filters
-        self.section3 = CollapsibleSection("3. Define SMARTS Filters")
-        self.section3.toggled.connect(self.on_section_toggled)
-        self.section3.collapse()  # Start collapsed
-        self.init_section3()
-        layout.addWidget(self.section3)
-        self.sections.append(self.section3)
+        section3_widget = QWidget()
+        section3_scroll = QScrollArea()
+        section3_scroll.setWidgetResizable(True)
+        section3_scroll.setWidget(section3_widget)
+        self.init_section3(section3_widget)
+        self.tab_widget.addTab(section3_scroll, "3. Define SMARTS Filters")
 
         # Section 4: Export Results
-        self.section4 = CollapsibleSection("4. Export Filtered Results")
-        self.section4.toggled.connect(self.on_section_toggled)
-        self.section4.collapse()  # Start collapsed
-        self.init_section4()
-        layout.addWidget(self.section4)
-        self.sections.append(self.section4)
-
-        layout.addStretch()
+        section4_widget = QWidget()
+        section4_scroll = QScrollArea()
+        section4_scroll.setWidgetResizable(True)
+        section4_scroll.setWidget(section4_widget)
+        self.init_section4(section4_widget)
+        self.tab_widget.addTab(section4_scroll, "4. Export Filtered Results")
 
         main_layout = QVBoxLayout()
-        main_layout.addWidget(scroll)
+        main_layout.addWidget(self.tab_widget)
         main_widget.setLayout(main_layout)
 
-    def on_section_toggled(self, toggled_section):
-        """Handle section toggle to ensure only one section is open at a time."""
-        if toggled_section.toggle_button.isChecked():
-            # Collapse all other sections
-            for section in self.sections:
-                if section != toggled_section:
-                    section.collapse()
-
-    def init_section1(self):
+    def init_section1(self, parent_widget=None):
         """Initialize the MGF file loading section."""
+        if parent_widget is None:
+            parent_widget = QWidget()
         content = QWidget()
         main_layout = QHBoxLayout()
 
@@ -527,16 +583,16 @@ class MGFFilterGUI(QMainWindow):
         controls = QWidget()
         layout = QVBoxLayout()
 
-        # Load button and SMILES required checkbox
+        # Load button and Download libraries button
         load_layout = QHBoxLayout()
         load_btn = QPushButton("Load MGF File(s)")
         load_btn.clicked.connect(self.load_mgf_file)
         load_layout.addWidget(load_btn)
 
-        self.smiles_required_checkbox = QCheckBox("SMILES Required")
-        self.smiles_required_checkbox.setChecked(False)
-        self.smiles_required_checkbox.stateChanged.connect(self.on_smiles_required_changed)
-        load_layout.addWidget(self.smiles_required_checkbox)
+        download_btn = QPushButton("Download default libraries")
+        download_btn.clicked.connect(self.download_default_libraries)
+        load_layout.addWidget(download_btn)
+
         load_layout.addStretch()
         layout.addLayout(load_layout)
 
@@ -566,7 +622,7 @@ class MGFFilterGUI(QMainWindow):
         details_group = QGroupBox("File Details (applies to selected files)")
         details_layout = QVBoxLayout()
 
-        # SMILES field selection
+        # SMILES field selection with SMILES Required checkbox
         smiles_layout = QHBoxLayout()
         smiles_layout.addWidget(QLabel("SMILES Field:"))
         self.smiles_field_combo = QComboBox()
@@ -575,6 +631,10 @@ class MGFFilterGUI(QMainWindow):
         apply_smiles_btn = QPushButton("Apply to Selected")
         apply_smiles_btn.clicked.connect(self.apply_smiles_field_to_selected)
         smiles_layout.addWidget(apply_smiles_btn)
+        self.smiles_required_checkbox = QCheckBox("SMILES Required")
+        self.smiles_required_checkbox.setChecked(False)
+        self.smiles_required_checkbox.stateChanged.connect(self.on_smiles_required_changed)
+        smiles_layout.addWidget(self.smiles_required_checkbox)
         details_layout.addLayout(smiles_layout)
 
         # Meta-field filtering
@@ -595,10 +655,13 @@ class MGFFilterGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section1.add_widget(content)
+        parent_widget.setLayout(QVBoxLayout())
+        parent_widget.layout().addWidget(content)
 
-    def init_section2(self):
+    def init_section2(self, parent_widget=None):
         """Initialize the canonicalization section."""
+        if parent_widget is None:
+            parent_widget = QWidget()
         content = QWidget()
         main_layout = QHBoxLayout()
 
@@ -646,10 +709,13 @@ class MGFFilterGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section2.add_widget(content)
+        parent_widget.setLayout(QVBoxLayout())
+        parent_widget.layout().addWidget(content)
 
-    def init_section3(self):
+    def init_section3(self, parent_widget=None):
         """Initialize the SMARTS filter section."""
+        if parent_widget is None:
+            parent_widget = QWidget()
         content = QWidget()
         main_layout = QHBoxLayout()
 
@@ -692,52 +758,44 @@ class MGFFilterGUI(QMainWindow):
         controls = QWidget()
         layout = QVBoxLayout()
 
-        # Add/Edit filter
-        add_layout = QHBoxLayout()
-        add_layout.addWidget(QLabel("Filter Name:"))
+        # Filter Name input - first line
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Filter Name:"))
         self.filter_name_input = QLineEdit()
-        add_layout.addWidget(self.filter_name_input)
+        name_layout.addWidget(self.filter_name_input)
+        layout.addLayout(name_layout)
 
-        add_layout.addWidget(QLabel("SMARTS (AND/OR logic):"))
+        # SMARTS input - second line
+        smarts_layout = QHBoxLayout()
+        smarts_layout.addWidget(QLabel("SMARTS (AND/OR logic):"))
         self.smarts_input = QLineEdit()
         self.smarts_input.returnPressed.connect(self.add_smarts_filter)
-        add_layout.addWidget(self.smarts_input)
+        smarts_layout.addWidget(self.smarts_input)
+        layout.addLayout(smarts_layout)
 
+        # Buttons - third line
+        buttons_layout = QHBoxLayout()
         add_btn = QPushButton("Add/Update Filter")
         add_btn.clicked.connect(self.add_smarts_filter)
-        add_layout.addWidget(add_btn)
+        buttons_layout.addWidget(add_btn)
 
-        # Predefined filters button
         predefined_btn = QPushButton("Predefined Filters")
         predefined_btn.clicked.connect(self.show_predefined_filters_menu)
-        add_layout.addWidget(predefined_btn)
+        buttons_layout.addWidget(predefined_btn)
 
-        # Load from JSON button
         load_json_btn = QPushButton("Load Filters from JSON")
         load_json_btn.clicked.connect(self.load_filters_from_json)
-        add_layout.addWidget(load_json_btn)
+        buttons_layout.addWidget(load_json_btn)
 
-        # Save to JSON button
         save_json_btn = QPushButton("Save Defined Filters")
         save_json_btn.clicked.connect(self.save_filters_to_json)
-        add_layout.addWidget(save_json_btn)
+        buttons_layout.addWidget(save_json_btn)
 
-        layout.addLayout(add_layout)
+        buttons_layout.addStretch()
+        layout.addLayout(buttons_layout)
 
-        # Filter table with control buttons
-        filter_control_layout = QHBoxLayout()
-        filter_control_layout.addWidget(QLabel("Defined Filters:"))
-        edit_filter_btn = QPushButton("Edit Selected")
-        edit_filter_btn.clicked.connect(self.edit_selected_filter)
-        filter_control_layout.addWidget(edit_filter_btn)
-        delete_filter_btn = QPushButton("Delete Selected")
-        delete_filter_btn.clicked.connect(self.delete_selected_filter)
-        filter_control_layout.addWidget(delete_filter_btn)
-        view_structures_btn = QPushButton("View Structures")
-        view_structures_btn.clicked.connect(self.view_structures)
-        filter_control_layout.addWidget(view_structures_btn)
-        filter_control_layout.addStretch()
-        layout.addLayout(filter_control_layout)
+        # Filter table label (no control buttons here anymore)
+        layout.addWidget(QLabel("Defined Filters (right-click for options):"))
 
         # Filter table
         self.filter_table = QTableWidget()
@@ -748,6 +806,8 @@ class MGFFilterGUI(QMainWindow):
         self.filter_table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.filter_table.itemDoubleClicked.connect(self.edit_selected_filter)
         self.filter_table.itemSelectionChanged.connect(self.on_filter_selection_changed)
+        self.filter_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.filter_table.customContextMenuRequested.connect(self.show_filter_table_context_menu)
 
         # Adjust column widths
         header = self.filter_table.horizontalHeader()
@@ -776,7 +836,8 @@ class MGFFilterGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section3.add_widget(content)
+        parent_widget.setLayout(QVBoxLayout())
+        parent_widget.layout().addWidget(content)
 
     def show_predefined_filters_menu(self):
         """Show a context menu with predefined SMARTS filters."""
@@ -790,14 +851,39 @@ class MGFFilterGUI(QMainWindow):
         sender = self.sender()
         menu.exec_(sender.mapToGlobal(sender.rect().bottomLeft()))
 
+    def show_filter_table_context_menu(self, position):
+        """Show context menu for filter table."""
+        # Check if a row is selected
+        selected_rows = self.filter_table.selectedItems()
+        if not selected_rows:
+            return
+
+        menu = QMenu(self)
+
+        edit_action = menu.addAction("Edit Selected")
+        edit_action.triggered.connect(self.edit_selected_filter)
+
+        view_action = menu.addAction("View Structures")
+        view_action.triggered.connect(self.view_structures)
+
+        menu.addSeparator()
+
+        delete_action = menu.addAction("Delete Selected")
+        delete_action.triggered.connect(self.delete_selected_filter)
+
+        # Show menu at cursor position
+        menu.exec_(self.filter_table.viewport().mapToGlobal(position))
+
     def load_predefined_filter(self, filter_name, smarts_pattern):
         """Load a predefined filter into the input fields."""
         self.filter_name_input.setText(filter_name)
         self.smarts_input.setText(smarts_pattern)
         QMessageBox.information(self, "Filter Loaded", f"Predefined filter '{filter_name}' has been loaded.\n\nYou can modify the name or SMARTS pattern before adding it.")
 
-    def init_section4(self):
+    def init_section4(self, parent_widget=None):
         """Initialize the export section."""
+        if parent_widget is None:
+            parent_widget = QWidget()
         content = QWidget()
         main_layout = QHBoxLayout()
 
@@ -867,7 +953,8 @@ class MGFFilterGUI(QMainWindow):
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
-        self.section4.add_widget(content)
+        parent_widget.setLayout(QVBoxLayout())
+        parent_widget.layout().addWidget(content)
 
     def load_mgf_file(self):
         """Load one or more MGF files."""
@@ -937,6 +1024,67 @@ class MGFFilterGUI(QMainWindow):
             msg += f"\n{error_count} file(s) failed to load"
 
         QMessageBox.information(self, "Load Complete", msg)
+
+    def download_default_libraries(self):
+        """Download default MS/MS libraries and models."""
+        # Show information dialog
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Question)
+        msg.setWindowTitle("Download Resources")
+        msg.setText("This will download necessary MS/MS libraries and models for AnnoMe.")
+        msg.setInformativeText(
+            "Please note that some of these resources are rather large and in total are approximately 11 gigabytes in size.\n\n"
+            "Make sure you have sufficient disk space and a stable internet connection before proceeding.\n\n"
+            "Furthermore, please be aware that downloading these resources may take a considerable amount of time depending on your internet speed.\n\n"
+            "Please do not proceed if you are on a metered connection.\n\n"
+            "Do you wish to continue?"
+        )
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.No)
+
+        if msg.exec_() != QMessageBox.Yes:
+            return
+
+        # Create progress dialog
+        progress = QProgressDialog("Preparing download...", "Cancel", 0, 100, self)
+        progress.setWindowTitle("Downloading Resources")
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        # Create and configure download thread
+        download_thread = DownloadThread()
+
+        # Connect thread signals to progress dialog updates
+        download_thread.progress_update.connect(progress.setValue)
+        download_thread.max_update.connect(progress.setMaximum)
+        download_thread.description_update.connect(progress.setLabelText)
+
+        # Handle download completion
+        def on_download_complete():
+            progress.setValue(progress.maximum())
+            progress.canceled.disconnect(on_cancel)  # Disconnect cancel handler
+            progress.close()
+            QMessageBox.information(self, "Download Complete", "All resources have been downloaded successfully!")
+
+        # Handle download error
+        def on_download_error(error_msg):
+            progress.close()
+            QMessageBox.critical(self, "Download Error", f"An error occurred during download:\n{error_msg}")
+
+        # Handle cancellation
+        def on_cancel():
+            download_thread.cancel()
+            download_thread.terminate()  # Forcefully kill the thread
+            download_thread.wait()  # Wait for thread cleanup
+            QMessageBox.warning(self, "Download Cancelled", "Download was cancelled by user.")
+
+        download_thread.download_complete.connect(on_download_complete)
+        download_thread.download_error.connect(on_download_error)
+        progress.canceled.connect(on_cancel)
+
+        # Start the download thread
+        download_thread.start()
 
     def on_smiles_required_changed(self, state):
         """Handle SMILES required checkbox state change."""
@@ -1160,9 +1308,12 @@ class MGFFilterGUI(QMainWindow):
         if not selected_rows:
             return
 
+        # Temporarily block signals to prevent on_meta_values_changed from firing during setup
+        self.meta_values_list.blockSignals(True)
         self.meta_values_list.clear()
 
         if not field_name:
+            self.meta_values_list.blockSignals(False)
             return
 
         # Collect all unique values from all selected files
@@ -1183,9 +1334,82 @@ class MGFFilterGUI(QMainWindow):
         for value in sorted(all_values):
             self.meta_values_list.addItem(value)
 
-        # Select all by default
-        for i in range(self.meta_values_list.count()):
-            self.meta_values_list.item(i).setSelected(True)
+        # Restore previous selections if they exist for any selected file
+        # For single file selection, restore that file's selections
+        # For multiple files, use intersection of selections (common selected values)
+        if len(selected_rows) == 1:
+            # Single file: restore its specific selections
+            row = list(selected_rows)[0]
+            file_name = self.file_table.item(row, 0).text()
+            file_path = self.get_file_path_by_name(file_name)
+
+            if file_path and file_path in self.meta_field_selections:
+                if field_name in self.meta_field_selections[file_path]:
+                    # Restore saved selections
+                    saved_selections = self.meta_field_selections[file_path][field_name]
+                    for i in range(self.meta_values_list.count()):
+                        item = self.meta_values_list.item(i)
+                        if item.text() in saved_selections:
+                            item.setSelected(True)
+                else:
+                    # No saved selections for this field, select all by default
+                    for i in range(self.meta_values_list.count()):
+                        self.meta_values_list.item(i).setSelected(True)
+                    # Save this initial "select all" state
+                    self._save_current_selections_for_file(file_path, field_name)
+            else:
+                # No saved selections for this file, select all by default
+                for i in range(self.meta_values_list.count()):
+                    self.meta_values_list.item(i).setSelected(True)
+                # Save this initial "select all" state
+                self._save_current_selections_for_file(file_path, field_name)
+        else:
+            # Multiple files: find common selections or select all if no common history
+            common_selections = None
+            has_any_saved = False
+
+            for row in selected_rows:
+                file_name = self.file_table.item(row, 0).text()
+                file_path = self.get_file_path_by_name(file_name)
+
+                if file_path and file_path in self.meta_field_selections:
+                    if field_name in self.meta_field_selections[file_path]:
+                        has_any_saved = True
+                        saved = self.meta_field_selections[file_path][field_name]
+                        if common_selections is None:
+                            common_selections = saved.copy()
+                        else:
+                            # Intersection of selections
+                            common_selections &= saved
+
+            if has_any_saved and common_selections is not None:
+                # Use common selections
+                for i in range(self.meta_values_list.count()):
+                    item = self.meta_values_list.item(i)
+                    if item.text() in common_selections:
+                        item.setSelected(True)
+            else:
+                # No saved selections, select all by default
+                for i in range(self.meta_values_list.count()):
+                    self.meta_values_list.item(i).setSelected(True)
+                # Save this initial "select all" state for all selected files
+                for row in selected_rows:
+                    file_name = self.file_table.item(row, 0).text()
+                    file_path = self.get_file_path_by_name(file_name)
+                    if file_path:
+                        self._save_current_selections_for_file(file_path, field_name)
+
+        # Re-enable signals and trigger the filter application
+        self.meta_values_list.blockSignals(False)
+        # Manually trigger the changed handler to apply filters
+        self.on_meta_values_changed()
+
+    def _save_current_selections_for_file(self, file_path, field_name):
+        """Helper method to save current selections for a specific file and field."""
+        selected_values = {item.text() for item in self.meta_values_list.selectedItems()}
+        if file_path not in self.meta_field_selections:
+            self.meta_field_selections[file_path] = {}
+        self.meta_field_selections[file_path][field_name] = selected_values.copy()
 
     def on_meta_values_changed(self):
         """Handle meta-value selection changes - applies to all selected files."""
@@ -1208,25 +1432,49 @@ class MGFFilterGUI(QMainWindow):
 
             file_data = self.mgf_files[file_path]
 
-            # Start with original blocks or SMILES-filtered blocks
-            base_blocks = file_data["original_blocks"]
-            if file_data.get("smiles_required", False):
-                # Apply SMILES filter first
-                self.apply_smiles_filter_to_file(file_path)
-                base_blocks = file_data["filtered_blocks"]
+            # Save the current selection state for this file and field
+            if file_path not in self.meta_field_selections:
+                self.meta_field_selections[file_path] = {}
+            self.meta_field_selections[file_path][field_name] = selected_values.copy()
 
-            # Filter blocks by meta-field
-            filtered_blocks = []
-            for block in base_blocks:
-                if field_name not in block:
-                    continue
-                if str(block[field_name]) in selected_values:
-                    filtered_blocks.append(block)
-
-            file_data["filtered_blocks"] = filtered_blocks
+            # Update meta_filters to match selections
             file_data["meta_filters"][field_name] = selected_values
 
+            # Apply all meta-filters cumulatively
+            self.apply_all_meta_filters_to_file(file_path)
+
             self.update_file_in_table(file_path)
+
+    def apply_all_meta_filters_to_file(self, file_path):
+        """Apply all saved meta-filters cumulatively to a file."""
+        file_data = self.mgf_files[file_path]
+
+        # Start with original blocks or SMILES-filtered blocks
+        base_blocks = file_data["original_blocks"]
+        if file_data.get("smiles_required", False):
+            # Apply SMILES filter first
+            self.apply_smiles_filter_to_file(file_path)
+            base_blocks = file_data["filtered_blocks"].copy()
+
+        # Apply all meta-filters cumulatively
+        filtered_blocks = base_blocks.copy()
+
+        # Get all saved meta-filters for this file
+        if file_path in self.meta_field_selections:
+            for field_name, selected_values in self.meta_field_selections[file_path].items():
+                if not selected_values:
+                    # If no values selected for this field, filter out all blocks with this field
+                    filtered_blocks = []
+                    break
+
+                # Filter blocks to only include those matching the selected values for this field
+                temp_filtered = []
+                for block in filtered_blocks:
+                    if field_name in block and str(block[field_name]) in selected_values:
+                        temp_filtered.append(block)
+                filtered_blocks = temp_filtered
+
+        file_data["filtered_blocks"] = filtered_blocks
 
     def apply_canonicalization(self):
         """Apply SMILES canonicalization to all loaded files."""

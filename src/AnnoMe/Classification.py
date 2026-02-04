@@ -1667,15 +1667,16 @@ def generate_embedding_plots(df, output_dir, colors=None):
         ## TODO include heatmap here
 
 
-def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, cross_validation=None):
+def train_and_classify(df, subsets = None, output_dir = ".", classifiers_to_compare=None, cross_validation=None):
     """
     Trains various classifiers on the embeddings and evaluates their performance.
 
     Args:
         df (pd.DataFrame): DataFrame containing embeddings and associated metadata.
         subsets (dict, optional): Dictionary specifying subsets of the data to use for training and evaluation.
-        classifiers (dict, optional): Dictionary of classifiers to use for training and evaluation.
-        cross_validation (object, optional): Cross-validation strategy to use for training and evaluation.
+        classifiers_to_compare (dict, optional): Dictionary where each key is a classifier set name and each value is a dictionary of classifiers to train and compare.
+            Each classifier set can optionally include a 'cross_validation' key with an sklearn cross-validation object.
+        cross_validation (object, optional): Deprecated - use per-set cross_validation in classifiers_to_compare instead. If provided, it will be ignored.
 
     Returns:
         dict: Dictionary containing the results of the classification experiments.
@@ -1692,36 +1693,46 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
     df["used_for_inference"] = False
 
     # Setup different classifiers if not specified by the user
-    if classifiers is None:
-        classifiers = {
-            "Nearest Neighbors n=3": KNeighborsClassifier(3),
-            "Nearest Neighbors n=10": KNeighborsClassifier(10),
-            "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
-            #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
-            # "Gaussian Process":         GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
-            "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
-            "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
-            "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
-            "AdaBoost": AdaBoostClassifier(random_state=42),
-            "Naive Bayes": GaussianNB(),
-            "QDA": QuadraticDiscriminantAnalysis(),
-            "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
-            "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
-            # "Gradient Boosting":        GradientBoostingClassifier(random_state=42),
-            "Bagging Classifier": BaggingClassifier(random_state=42),
-            "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-            "Ridge Classifier": RidgeClassifier(random_state=42),
-            "Voting Classifier (soft)": VotingClassifier(
-                estimators=[
-                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
-                    ("rf", RandomForestClassifier(random_state=42)),
-                    ("gnb", GaussianNB()),
-                ],
-                voting="soft",
-            ),
+    if classifiers_to_compare is None:
+        classifiers_to_compare = {
+            "default_set": {
+                "classifiers": {
+                    "Nearest Neighbors n=3": KNeighborsClassifier(3),
+                    "Nearest Neighbors n=10": KNeighborsClassifier(10),
+                    "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
+                    #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
+                    # "Gaussian Process":         GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
+                    "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
+                    "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
+                    "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
+                    "AdaBoost": AdaBoostClassifier(random_state=42),
+                    "Naive Bayes": GaussianNB(),
+                    "QDA": QuadraticDiscriminantAnalysis(),
+                    "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
+                    "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
+                    # "Gradient Boosting":        GradientBoostingClassifier(random_state=42),
+                    "Bagging Classifier": BaggingClassifier(random_state=42),
+                    "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+                    "Ridge Classifier": RidgeClassifier(random_state=42),
+                    "Voting Classifier (soft)": VotingClassifier(
+                        estimators=[
+                            ("lr", LogisticRegression(random_state=42, max_iter=1000)),
+                            ("rf", RandomForestClassifier(random_state=42)),
+                            ("gnb", GaussianNB()),
+                        ],
+                        voting="soft",
+                    ),
+                },
+                "cross_validation": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),
+                "min_prediction_threshold": 120,
+                "description": "Default set of diverse classifiers for comparison",
+
+            }
         }
 
-    print(f"   - {len(classifiers)} different models will be trained")
+    # Count total models across all sets
+    total_models = sum(len(clf_set.get("classifiers", clf_set)) for clf_set in classifiers_to_compare.values())
+    print(f"   - {len(classifiers_to_compare)} classifier set(s) with {total_models} total models will be trained")
 
     if subsets is None:
         subsets = {
@@ -1730,14 +1741,6 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
         }
     if callable(subsets):
         subsets = {"provided_function": subsets}
-    
-
-    # Setup crossvalidation if not specified by the user
-    if cross_validation is None:
-        #cross_validation = StratifiedShuffleSplit(n_splits=10, test_size=0.8, train_size=0.2, random_state=42)
-        cross_validation = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
-        print(f"   - Using StratifiedKFold cross-validation with {cross_validation.n_splits} folds")
-        print(f"   - Using {cross_validation.n_splits} folds for cross-validation")
 
     # Filter the dataframe and ms2_embeddings for training and inference
     # for training
@@ -1791,176 +1794,197 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
     trained_classifiers_per_subset = {}
     metrics_df = []
     with execution_timer(title="Classifiers with Cross-Validation"):
-        for subset in subsets:
-            trained_classifiers = []
-            with execution_timer(title=f"Subset: {subset}"):
-                print(f"\n\n\n********************************************************************************")
-                print(f"Subset: {subset}")
-                print(f"Function is {inspect.getsource(subsets[subset])}")
-                print("Available columns and values:")
-                for col in df.columns:
-                    try:
-                        unique_values = df[col].unique()
-                        if len(unique_values) <= 5:
-                            print(f"   - {col}: {unique_values}")
-                        else:
-                            print(f"   - {col}: {len(unique_values)} unique values, first are {unique_values[:5]}")
-                    except:
-                        print(f"   - {col}: could not retrieve unique values")
+        for classifier_set_name, classifier_set_config in classifiers_to_compare.items():
+            # Extract configuration from the classifier set
+            classifiers = classifier_set_config["classifiers"]
+            description = classifier_set_config.get("description", "No description provided")
+            min_prediction_threshold = classifier_set_config.get("min_prediction_threshold", 120)
+            cross_validation = classifier_set_config.get("cross_validation", None)
+                        
+            # Setup cross-validation if not specified for this classifier set
+            if cross_validation is None:
+                cross_validation = StratifiedKFold(n_splits=10, random_state=42, shuffle=True)
 
-                # subset the data
-                trainSubset_useInds = train_df[train_df.apply(subsets[subset], axis=1)].index.tolist()
-                valiSubset_useInds = vali_df[vali_df.apply(subsets[subset], axis=1)].index.tolist()
-                infeSubset_useInds = infe_df[infe_df.apply(subsets[subset], axis=1)].index.tolist()
+            print(f"\n\n\n{'='*80}")
+            print(f"CLASSIFIER SET: {classifier_set_name}")
+            print(f"{'='*80}")
+            print(f"   - Description: {description}")
+            print(f"   - Min prediction threshold: {min_prediction_threshold}")
+            print(f"   - Using cross-validation: {type(cross_validation).__name__}")
+            print(f"   - This set contains {len(classifiers)} different models")
+            
+            for subset in subsets:
+                trained_classifiers = []
+                with execution_timer(title=f"Classifier Set: {classifier_set_name} / Subset: {subset}"):
+                    print(f"\n\n\n********************************************************************************")
+                    print(f"Classifier Set: {classifier_set_name} / Subset: {subset}")
+                    print(f"Function is {inspect.getsource(subsets[subset])}")
+                    print("Available columns and values:")
+                    for col in df.columns:
+                        try:
+                            unique_values = df[col].unique()
+                            if len(unique_values) <= 5:
+                                print(f"   - {col}: {unique_values}")
+                            else:
+                                print(f"   - {col}: {len(unique_values)} unique values, first are {unique_values[:5]}")
+                        except:
+                            print(f"   - {col}: could not retrieve unique values")
 
-                df.loc[trainSubset_useInds, "used_for_training"] = True
-                df.loc[valiSubset_useInds, "used_for_validation"] = True
-                df.loc[infeSubset_useInds, "used_for_inference"] = True
+                    # subset the data
+                    trainSubset_useInds = train_df[train_df.apply(subsets[subset], axis=1)].index.tolist()
+                    valiSubset_useInds = vali_df[vali_df.apply(subsets[subset], axis=1)].index.tolist()
+                    infeSubset_useInds = infe_df[infe_df.apply(subsets[subset], axis=1)].index.tolist()
 
-                if len(trainSubset_useInds) == 0:
-                    print(f"{Fore.RED}Skipping subset '{subset}' because df_train is empty.{Style.RESET_ALL}")
-                    continue
-                print(f"Number of spectra in subset (train): {len(trainSubset_useInds)}, these are {len(trainSubset_useInds) / len(train_df) * 100:.2f}% of the total spectra.")
+                    df.loc[trainSubset_useInds, "used_for_training"] = True
+                    df.loc[valiSubset_useInds, "used_for_validation"] = True
+                    df.loc[infeSubset_useInds, "used_for_inference"] = True
 
-                # Subselect the training embeddings
-                trainSubset_X, trainSubset_y_gt = (
-                    train_X[trainSubset_useInds, :],
-                    train_df["type"].values[trainSubset_useInds],
-                )
-                trainSubset_y_gt = np.array(["relevant" if s.lower() == "train - relevant" else "other" for s in trainSubset_y_gt])
-                train_df.loc[trainSubset_useInds, "used"] = True
+                    if len(trainSubset_useInds) == 0:
+                        print(f"{Fore.RED}Skipping subset '{subset}' because df_train is empty.{Style.RESET_ALL}")
+                        continue
+                    print(f"Number of spectra in subset (train): {len(trainSubset_useInds)}, these are {len(trainSubset_useInds) / len(train_df) * 100:.2f}% of the total spectra.")
 
-                # Subselect the validation embeddings
-                valiSubset_X, vali_y_gt = None, None
-                if len(valiSubset_useInds) > 0:
-                    valiSubset_X, vali_y_gt = ( 
-                        vali_X[valiSubset_useInds, :],
-                        vali_df["type"].values[valiSubset_useInds],
+                    # Subselect the training embeddings
+                    trainSubset_X, trainSubset_y_gt = (
+                        train_X[trainSubset_useInds, :],
+                        train_df["type"].values[trainSubset_useInds],
                     )
-                    valiSubset_y_gt = np.array(["relevant" if s.lower() == "validation - relevant" else "other" for s in vali_y_gt])
-                    vali_df.loc[valiSubset_useInds, "used"] = True
+                    trainSubset_y_gt = np.array(["relevant" if s.lower() == "train - relevant" else "other" for s in trainSubset_y_gt])
+                    train_df.loc[trainSubset_useInds, "used"] = True
 
-                # Subselect the inference embeddings
-                infeSubset_X = None
-                if len(infeSubset_useInds) > 0:
-                    infeSubset_X = infe_X[infeSubset_useInds, :]
-                    infe_df.loc[infeSubset_useInds, "used"] = True
-                
-                # Show an overview of trainSubset_y_gt
-                unique, counts = np.unique(trainSubset_y_gt, return_counts=True)
-                print("Overview of trainSubset_y_gt (ground-truth labels):")
-                for label, count in zip(unique, counts):
-                    print(f"   - {label}: {count}")
+                    # Subselect the validation embeddings
+                    valiSubset_X, vali_y_gt = None, None
+                    if len(valiSubset_useInds) > 0:
+                        valiSubset_X, vali_y_gt = ( 
+                            vali_X[valiSubset_useInds, :],
+                            vali_df["type"].values[valiSubset_useInds],
+                        )
+                        valiSubset_y_gt = np.array(["relevant" if s.lower() == "validation - relevant" else "other" for s in vali_y_gt])
+                        vali_df.loc[valiSubset_useInds, "used"] = True
 
-                # Only continue if there are at least two different labels in trainSubset_y_gt
-                if len(np.unique(trainSubset_y_gt)) < 2:
-                    print(f"{Fore.RED}Skipping subset '{subset}' because only one class present in trainSubset_y_gt: {np.unique(trainSubset_y_gt)}{Style.RESET_ALL}")
-                    continue
+                    # Subselect the inference embeddings
+                    infeSubset_X = None
+                    if len(infeSubset_useInds) > 0:
+                        infeSubset_X = infe_X[infeSubset_useInds, :]
+                        infe_df.loc[infeSubset_useInds, "used"] = True
+                    
+                    # Show an overview of trainSubset_y_gt
+                    unique, counts = np.unique(trainSubset_y_gt, return_counts=True)
+                    print("Overview of trainSubset_y_gt (ground-truth labels):")
+                    for label, count in zip(unique, counts):
+                        print(f"   - {label}: {count}")
 
-                # Perform classifiers with cross-validation
-                for cname in classifiers:
-                    o_clf = classifiers[cname]
+                    # Only continue if there are at least two different labels in trainSubset_y_gt
+                    if len(np.unique(trainSubset_y_gt)) < 2:
+                        print(f"{Fore.RED}Skipping subset '{subset}' because only one class present in trainSubset_y_gt: {np.unique(trainSubset_y_gt)}{Style.RESET_ALL}")
+                        continue
 
-                    with execution_timer(title=f"Classifier: {subset} / {cname}"):
-                        print(f"\n--------------------------------------------------------------------------------")
-                        print(f"Classifier: {cname}")
+                    # Perform classifiers with cross-validation
+                    for cname in classifiers:
+                        o_clf = classifiers[cname]
 
-                        fold_scores = []
-                        fold_durations = []
-                        fold_conf_matrices = []
+                        with execution_timer(title=f"Classifier: {classifier_set_name} / {subset} / {cname}"):
+                            print(f"\n--------------------------------------------------------------------------------")
+                            print(f"Classifier: {cname}")
 
-                        # Perform 5-fold cross-validation
-                        for fold, (train_idx, test_idx) in enumerate(cross_validation.split(trainSubset_X, trainSubset_y_gt)):
-                            # Not necessary, since the previous training is alwasy overwritten when using fit, but cleaner for anybody reading the code
-                            # Clone current model instance to have a fresh model for each fold
-                            clf = clone(o_clf)  
-                            print("")
+                            fold_scores = []
+                            fold_durations = []
+                            fold_conf_matrices = []
 
-                            trainSubset_train_useInds, trainSubset_test_useInds = (
-                                [trainSubset_useInds[i] for i in train_idx],
-                                [trainSubset_useInds[i] for i in test_idx]
-                            )
-                            trainSubset_train_X, trainSubset_test_X = (
-                                trainSubset_X[train_idx, :],
-                                trainSubset_X[test_idx, :],
-                            )
-                            trainSubset_train_y_gt, trainSubset_test_y_gt = (
-                                trainSubset_y_gt[train_idx],
-                                trainSubset_y_gt[test_idx],
-                            )
+                            # Perform 5-fold cross-validation
+                            for fold, (train_idx, test_idx) in enumerate(cross_validation.split(trainSubset_X, trainSubset_y_gt)):
+                                # Not necessary, since the previous training is alwasy overwritten when using fit, but cleaner for anybody reading the code
+                                # Clone current model instance to have a fresh model for each fold
+                                clf = clone(o_clf)  
+                                print("")
 
-                            # Train the model
-                            start_time = time.time()
-                            clf.fit(trainSubset_train_X, trainSubset_train_y_gt)
-                            trained_classifiers.append((f"{subset} / {cname} / {fold}", clf))
-                            duration = time.time() - start_time
+                                trainSubset_train_useInds, trainSubset_test_useInds = (
+                                    [trainSubset_useInds[i] for i in train_idx],
+                                    [trainSubset_useInds[i] for i in test_idx]
+                                )
+                                trainSubset_train_X, trainSubset_test_X = (
+                                    trainSubset_X[train_idx, :],
+                                    trainSubset_X[test_idx, :],
+                                )
+                                trainSubset_train_y_gt, trainSubset_test_y_gt = (
+                                    trainSubset_y_gt[train_idx],
+                                    trainSubset_y_gt[test_idx],
+                                )
 
-                            # Test on the test set
-                            trainSubset_test_y_pred = clf.predict(trainSubset_test_X)
-                            score = np.mean(trainSubset_test_y_pred == trainSubset_test_y_gt)
+                                # Train the model
+                                start_time = time.time()
+                                clf.fit(trainSubset_train_X, trainSubset_train_y_gt)
+                                trained_classifiers.append((f"{classifier_set_name} / {subset} / {cname} / {fold}", clf))
+                                duration = time.time() - start_time
 
-                            # print results for user
-                            print(f"   [Fold {fold + 1}] Score: {Fore.YELLOW}{score:.3f}{Style.RESET_ALL}, Duration: {Fore.YELLOW}{duration:.2f} seconds{Style.RESET_ALL}")
+                                # Test on the test set
+                                trainSubset_test_y_pred = clf.predict(trainSubset_test_X)
+                                score = np.mean(trainSubset_test_y_pred == trainSubset_test_y_gt)
 
-                            # calculate model metrics
-                            conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_test_y_gt, trainSubset_test_y_pred, labels, "Test subset", total = trainSubset_test_X.shape[0])
+                                # print results for user
+                                print(f"   [Fold {fold + 1}] Score: {Fore.YELLOW}{score:.3f}{Style.RESET_ALL}, Duration: {Fore.YELLOW}{duration:.2f} seconds{Style.RESET_ALL}")
 
-                            # save confusion matrix and other resultsresults
-                            df_metric["from"] = "Test set"
-                            df_metric["subset"] = subset
-                            df_metric["classifier"] = cname
-                            df_metric["fold"] = fold
-                            metrics_df.append(df_metric)
-
-                            fold_scores.append(score)
-                            fold_durations.append(duration)
-                            fold_conf_matrices.append(conf_matrix_percent)
-
-                            # Store the results in the inference_results dictionary
-                            for idx in range(trainSubset_test_X.shape[0]):
-                                if trainSubset_test_y_pred[idx] == "relevant":
-                                    idx = trainSubset_test_useInds[idx]
-                                    train_df.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
-
-                            # process validation dataset
-                            # Note: Usually the validation dataset is processed last, but due to the architecture here it needs to run now
-                            # TODO: change architecture and place validation set calculations outside the pipeline once the user has selected the final models
-                            if len(valiSubset_useInds) > 0:
-                                # Predict on the inference embeddings
-                                valiSubset_y_pred = clf.predict(valiSubset_X)
-
-                                conf_matrix_percent, df_metric = get_and_print_metrics(valiSubset_y_gt, valiSubset_y_pred, labels, "Validation set", total = valiSubset_X.shape[0])
+                                # calculate model metrics
+                                conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_test_y_gt, trainSubset_test_y_pred, labels, "Test subset", total = trainSubset_test_X.shape[0])
 
                                 # save confusion matrix and other resultsresults
-                                df_metric["from"] = "Validation set"
+                                df_metric["from"] = "Test set"
+                                df_metric["classifier_set"] = classifier_set_name
                                 df_metric["subset"] = subset
                                 df_metric["classifier"] = cname
                                 df_metric["fold"] = fold
                                 metrics_df.append(df_metric)
 
-                                # Store the results in the inference_results dictionary
-                                for idx in range(valiSubset_X.shape[0]):
-                                    if valiSubset_y_pred[idx] == "relevant":
-                                        idx = valiSubset_useInds[idx]
-                                        vali_df.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
-
-                            # process inference dataset
-                            if len(infeSubset_useInds) > 0:
-                                # Predict on the inference embeddings
-                                infeSubset_y_pred = clf.predict(infeSubset_X)
-
-                                # Count the number of 'relevant' and 'other' compounds in the inference predictions
-                                infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
-                                infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
-
-                                print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
-                                print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
+                                fold_scores.append(score)
+                                fold_durations.append(duration)
+                                fold_conf_matrices.append(conf_matrix_percent)
 
                                 # Store the results in the inference_results dictionary
-                                for idx in range(infeSubset_X.shape[0]):
-                                    if infeSubset_y_pred[idx] == "relevant":
-                                        idx = infeSubset_useInds[idx]
-                                        infe_df.iloc[idx]["prediction_results"].append(f"{subset} / {cname} / {fold}")
+                                for idx in range(trainSubset_test_X.shape[0]):
+                                    if trainSubset_test_y_pred[idx] == "relevant":
+                                        idx = trainSubset_test_useInds[idx]
+                                        train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+
+                                # process validation dataset
+                                # Note: Usually the validation dataset is processed last, but due to the architecture here it needs to run now
+                                # TODO: change architecture and place validation set calculations outside the pipeline once the user has selected the final models
+                                if len(valiSubset_useInds) > 0:
+                                    # Predict on the inference embeddings
+                                    valiSubset_y_pred = clf.predict(valiSubset_X)
+
+                                    conf_matrix_percent, df_metric = get_and_print_metrics(valiSubset_y_gt, valiSubset_y_pred, labels, "Validation set", total = valiSubset_X.shape[0])
+
+                                    # save confusion matrix and other resultsresults
+                                    df_metric["from"] = "Validation set"
+                                    df_metric["classifier_set"] = classifier_set_name
+                                    df_metric["subset"] = subset
+                                    df_metric["classifier"] = cname
+                                    df_metric["fold"] = fold
+                                    metrics_df.append(df_metric)
+
+                                    # Store the results in the inference_results dictionary
+                                    for idx in range(valiSubset_X.shape[0]):
+                                        if valiSubset_y_pred[idx] == "relevant":
+                                            idx = valiSubset_useInds[idx]
+                                            vali_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+
+                                # process inference dataset
+                                if len(infeSubset_useInds) > 0:
+                                    # Predict on the inference embeddings
+                                    infeSubset_y_pred = clf.predict(infeSubset_X)
+
+                                    # Count the number of 'relevant' and 'other' compounds in the inference predictions
+                                    infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
+                                    infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
+
+                                    print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
+                                    print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
+
+                                    # Store the results in the inference_results dictionary
+                                    for idx in range(infeSubset_X.shape[0]):
+                                        if infeSubset_y_pred[idx] == "relevant":
+                                            idx = infeSubset_useInds[idx]
+                                            infe_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
 
                         # Calculate average results
                         avg_score, std_score, min_score, max_score = (
@@ -1984,8 +2008,8 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers=None, c
                         print(f"Average duration: {avg_duration:.2f} seconds")
                         print("Average Confusion Matrix (Percentages, rows: ground-truth, columns: predictions):")
                         print(avg_conf_matrix_percent_df)
-    
-            trained_classifiers_per_subset[subset] = (subsets[subset], trained_classifiers)
+        
+                trained_classifiers_per_subset[f"{classifier_set_name} / {subset}"] = (subsets[subset], trained_classifiers, min_prediction_threshold)
     
     # collapse df_conf_matrices to a single dataframe
     metrics_df = pd.concat(metrics_df, ignore_index=True) if metrics_df else pd.DataFrame()
