@@ -16,6 +16,7 @@ import matplotlib
 from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
 import plotnine as p9
+import polars as pl
 
 import rdkit
 import rdkit.Chem
@@ -39,6 +40,96 @@ from colorama import Fore, Style
 
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def optimize_dataframe_dtypes(df, infer_schema_length=0, max_values_for_categorical_column=1000):
+    """
+    Optimize Polars DataFrame column datatypes to reduce memory usage.
+
+    This function analyzes each column and attempts to convert it to the most memory-efficient
+    datatype while preserving data integrity:
+    1. Try converting to Int64 (most memory-efficient for integers)
+    2. If that fails, try Float64 (for numeric data with decimals)
+    3. If that fails, keep as Utf8 (string)
+    4. For Utf8 columns with few unique values, convert to Categorical (more memory-efficient)
+
+    Args:
+        df: Polars DataFrame to optimize
+        infer_schema_length: Number of non-empty rows to sample per column for type inference.
+            If <= 0, uses all rows (default: 100)
+        max_values_for_categorical_column: Maximum number of unique values to convert
+            a string column to categorical (default: 100)
+
+    Returns:
+        Optimized Polars DataFrame with more memory-efficient dtypes
+    """
+    if df is None or df.is_empty():
+        return df
+
+    estimated_size_before = df.estimated_size()
+
+    if infer_schema_length <= 0:
+        print(f"Optimizing DataFrame dtypes (using all rows)...")
+    else:
+        print(f"Optimizing DataFrame dtypes (sampling {infer_schema_length} non-empty rows per column)...")
+
+    conversions = []
+
+    for col_name in df.columns:
+        # Only optimize string-like columns
+        if df[col_name].dtype != pl.Utf8:
+            continue
+
+        # Get non-null values for this column
+        non_null_sample = df.select(pl.col(col_name)).filter(pl.col(col_name).is_not_null())
+
+        # Limit to infer_schema_length rows if specified (> 0)
+        if infer_schema_length > 0:
+            non_null_sample = non_null_sample.head(infer_schema_length)
+
+        if non_null_sample.is_empty():
+            # All nulls, skip optimization
+            continue
+
+        # Try converting to Int64
+        try:
+            test_int = non_null_sample.select(pl.col(col_name).cast(pl.Int64, strict=True))
+            # Success! Convert entire column to Int64
+            conversions.append(pl.col(col_name).cast(pl.Int64, strict=False))
+            print(f"  - {col_name}: Utf8 → Int64")
+            continue
+        except:
+            pass
+
+        # Try converting to Float64
+        try:
+            test_float = non_null_sample.select(pl.col(col_name).cast(pl.Float64, strict=True))
+            # Success! Convert entire column to Float64
+            conversions.append(pl.col(col_name).cast(pl.Float64, strict=False))
+            print(f"  - {col_name}: Utf8 → Float64")
+            continue
+        except:
+            pass
+
+        # Keep as Utf8, but check if it should be Categorical
+        # Count unique values in the sample
+        unique_count = non_null_sample.select(pl.col(col_name).n_unique()).item()
+
+        if unique_count <= max_values_for_categorical_column:
+            # Convert to Categorical for memory efficiency
+            conversions.append(pl.col(col_name).cast(pl.Categorical))
+            print(f"  - {col_name}: Utf8 → Categorical ({unique_count} unique values)")
+
+    # Apply all conversions at once
+    if conversions:
+        df = df.with_columns(conversions).shrink_to_fit()
+        print(
+            f"Optimized {len(conversions)} column(s), reduced size by {(1.0 - df.estimated_size() / estimated_size_before) * 100.0:.2f}% (size before: {estimated_size_before} bytes, size after: {df.estimated_size()} bytes)"
+        )
+    else:
+        print("No columns required optimization")
+
+    return df
 
 
 def download_file_if_not_exists(url, dest_folder, file_name=None, print_intention=0, status_bar_update_func=None, status_bar_max_func=None):
@@ -839,7 +930,7 @@ def is_float(value):
         return False
 
 
-def parse_mgf_file(file_path, check_required_keys=True):
+def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=False, ignore_spectral_data=False):
     """
     Parses an MGF file and returns a dictionary containing the parsed data.
 
@@ -852,13 +943,16 @@ def parse_mgf_file(file_path, check_required_keys=True):
     with open(file_path, "r", errors="ignore") as file:
         lines = file.readlines()
 
-    blocks = []
+    if return_as_polars_table:
+        blocks = defaultdict(list)
+    else:
+        blocks = []
+    blocks_loaded_successfully_n = 0
     current_block_primary = OrderedDict()
     current_block_secondary = OrderedDict()
     blocks_not_used = 0
 
     required_keys = [
-        "$$spectrumData",
         "pepmass",
         "instrument",
         "name",
@@ -867,6 +961,9 @@ def parse_mgf_file(file_path, check_required_keys=True):
         "fragmentation_method",
         "collision_energy",
     ]
+
+    if not ignore_spectral_data:
+        required_keys.append("$$spectrumData")
 
     incomplete_blocks = defaultdict(int)
     cur_id = 0
@@ -888,22 +985,26 @@ def parse_mgf_file(file_path, check_required_keys=True):
             # Check if the block has the required keys to be considered valid
             use_block = "pepmass" in current_block_primary and is_float(current_block_primary["pepmass"]) and "name" in current_block_primary
             if use_block or not check_required_keys:
-                blocks.append(
-                    OrderedDict(
-                        list(
-                            natsort.natsorted(
-                                current_block_primary.items(),
-                                key=lambda x: x[0].lower(),
-                            )
-                        )
-                        + list(
-                            natsort.natsorted(
-                                current_block_secondary.items(),
-                                key=lambda x: x[0].lower(),
-                            )
-                        )
-                    )
-                )
+                blocks_loaded_successfully_n += 1
+                if return_as_polars_table:
+                    for meta in blocks.keys():
+                        if meta in current_block_secondary.keys():
+                            blocks[meta].append(current_block_secondary.get(meta))
+                        else:
+                            if meta in current_block_primary.keys():
+                                blocks[meta].append(current_block_primary.get(meta))
+                            else:
+                                blocks[meta].append(None)
+                    for meta in current_block_primary.keys():
+                        if meta not in blocks.keys():
+                            blocks[meta] = [None] * (blocks_loaded_successfully_n - 1)
+                            blocks[meta].append(current_block_primary.get(meta))
+                    for meta in current_block_secondary.keys():
+                        if meta not in blocks.keys():
+                            blocks[meta] = [None] * (blocks_loaded_successfully_n - 1)
+                            blocks[meta].append(current_block_secondary.get(meta))
+                else:
+                    blocks.append({**current_block_primary, **current_block_secondary})
             else:
                 blocks_not_used += 1
 
@@ -1022,15 +1123,17 @@ def parse_mgf_file(file_path, check_required_keys=True):
                 current_block_secondary[key] = str(value)
 
         elif line.lower().startswith("num peaks"):
-            if "spectrumData" not in current_block_secondary:
-                current_block_secondary["$$spectrumData"] = [[], []]
+            if not ignore_spectral_data:
+                if "spectrumData" not in current_block_secondary:
+                    current_block_secondary["$$spectrumData"] = [[], []]
 
         else:
-            if "$$spectrumData" not in current_block_secondary:
-                current_block_secondary["$$spectrumData"] = [[], []]
-            mz, inte = line.split()
-            current_block_secondary["$$spectrumData"][0].append(mz)
-            current_block_secondary["$$spectrumData"][1].append(inte)
+            if not ignore_spectral_data:
+                if "$$spectrumData" not in current_block_secondary:
+                    current_block_secondary["$$spectrumData"] = [[], []]
+                mz, inte = line.split()
+                current_block_secondary["$$spectrumData"][0].append(float(mz))
+                current_block_secondary["$$spectrumData"][1].append(float(inte))
 
     if len(incomplete_blocks) > 0:
         print(f"{Fore.RED}")
@@ -1044,7 +1147,14 @@ def parse_mgf_file(file_path, check_required_keys=True):
         print(f"   - Warning: {blocks_not_used} blocks were not used due to missing required keys.")
         print(f"{Style.RESET_ALL}")
 
-    blocks = [block for block in blocks if ("MSLEVEL" in block and block["MSLEVEL"] != "1") or "MSLEVEL" not in block]
+    if return_as_polars_table:
+        blocks = pl.DataFrame(blocks)
+        assert blocks_loaded_successfully_n == blocks.shape[0], f"Expected {blocks_loaded_successfully_n} blocks, but got {blocks.shape[0]}"
+        if "MSLEVEL" in blocks.columns:
+            blocks = blocks.filter((pl.col("MSLEVEL") != "1") | pl.col("MSLEVEL").is_null())
+    else:
+        assert blocks_loaded_successfully_n == len(blocks), f"Expected {blocks_loaded_successfully_n} blocks, but got {len(blocks)}"
+        blocks = [block for block in blocks if ("MSLEVEL" in block and block["MSLEVEL"] != "1") or "MSLEVEL" not in block]
 
     return blocks
 
@@ -1095,6 +1205,31 @@ def export_mgf_file(blocks, output_file_path):
                 # file.write("Num peaks {}\n".format(len(feature_blocks["$$spectrumData"][0])))
                 for mzi in range(len(feature_blocks["$$spectrumData"][0])):
                     file.write(f"{feature_blocks['$$spectrumData'][0][mzi]} {feature_blocks['$$spectrumData'][1][mzi]}\n")
+            file.write("END IONS\n\n")
+
+
+def export_mgf_file_from_polars_table(df, output_file_path):
+    """
+    Exports parsed MGF blocks from a Polars DataFrame to a new MGF file.
+
+    Args:
+        df (pl.DataFrame): Parsed MGF blocks in a Polars DataFrame.
+        output_file_path (str): Path to the output MGF file.
+    """
+    with open(output_file_path, "w") as file:
+        for row in df.iter_rows(named=True):
+            file.write("BEGIN IONS\n")
+            for key, value in row.items():
+                if key == "$$spectrumData":
+                    pass
+                elif key.lower() == "collision_energy":
+                    file.write(f"{key}={str(value).replace(' ', '')}\n")
+                elif value is not None:
+                    file.write(f"{key}={value}\n")
+            if "$$spectrumData" in row and row["$$spectrumData"] is not None:
+                # file.write("Num peaks {}\n".format(len(row["$$spectrumData"][0])))
+                for mzi in range(len(row["$$spectrumData"][0])):
+                    file.write(f"{row['$$spectrumData'][0][mzi]} {row['$$spectrumData'][1][mzi]}\n")
             file.write("END IONS\n\n")
 
 
@@ -1453,7 +1588,7 @@ def substructure_fn(smiles, substructures_to_match=None):
     return True
 
 
-def prep_smarts_key(smart, replace=True):
+def prep_smarts_key(smart, replace=True, convert_to_rdkit=True):
     """
     Prepares a SMARTS string for use in RDKit by replacing 'c' with 'C' and 'o' with 'O' (i.e, no carbon or oxygen atom are aromatic or aliphatic).
     Args:
@@ -1464,7 +1599,10 @@ def prep_smarts_key(smart, replace=True):
     """
     if replace:
         smart = smart.replace("c", "C").replace("o", "O").replace("C", "[C,c]").replace("O", "[O,o]")
-    return rdkit.Chem.MolFromSmarts(smart)
+    if not convert_to_rdkit:
+        return smart
+    else:
+        return rdkit.Chem.MolFromSmarts(smart)
 
 
 def generate_and_save_image(chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, typ):

@@ -1,9 +1,15 @@
 import sys
 import os
+import re
 from collections import defaultdict, OrderedDict
 import io
 import json
 import tomllib
+from multiprocessing import Pool, cpu_count
+from functools import partial
+from colorama import Fore, Style
+import polars as pl
+import time
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -32,7 +38,7 @@ from PyQt5.QtWidgets import (
     QMenu,
     QTabWidget,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QPixmap, QImage
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
@@ -73,7 +79,10 @@ class CollapsibleSection(QWidget):
         checked = self.toggle_button.isChecked()
         self.content_area.setVisible(checked)
         text = self.toggle_button.text()
-        self.toggle_button.setText(text.replace("▼" if checked else "▶", "▶" if not checked else "▼"))
+        if checked:
+            self.toggle_button.setText(text.replace("▶", "▼"))
+        else:
+            self.toggle_button.setText(text.replace("▼", "▶"))
         self.toggled.emit(self)
 
     def collapse(self):
@@ -275,7 +284,7 @@ class StructureViewerWindow(QMainWindow):
                 mol = Chem.MolFromSmiles(smiles)
                 if mol:
                     mols.append(mol)
-            except:
+            except Exception:
                 pass
 
         if not mols:
@@ -294,7 +303,6 @@ class StructureViewerWindow(QMainWindow):
         # Try SVG route if cairosvg is available
         if has_cairosvg:
             try:
-                print("mols to grid", mols)
                 svg_data = Draw.MolsToGridImage(mols, molsPerRow=mols_per_row, subImgSize=(400, 400), maxMols=len(mols), useSVG=True)
 
                 # Convert SVG to PNG using cairosvg
@@ -387,6 +395,12 @@ class StructureViewerWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Clean up temporary directory on close."""
+        # Remove ourselves from parent's tracking list to allow GC
+        if self.parent() and hasattr(self.parent(), "structure_windows"):
+            try:
+                self.parent().structure_windows.remove(self)
+            except ValueError:
+                pass
         self.temp_dir.cleanup()
         event.accept()
 
@@ -440,19 +454,39 @@ class DownloadThread(QThread):
 class MGFFilterGUI(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.mgf_files = {}  # {file_path: {blocks, smiles_field, filters}}
+        self.mgf_files = {}  # {file_path: {fields, smiles_field, filters}}
         self.smarts_filters = {}  # {filter_name: smarts_string}
-        self.filtered_results = {}  # {filter_name: {matched, non_matched}}
+        # OPTIMIZED: Store only matching SMILES sets per filter (not entire blocks)
+        # Format: {filter_name: set(matching_smiles)}
+        self.filter_matched_smiles = {}  # Memory-efficient: only SMILES strings
         self.temp_dir = tempfile.TemporaryDirectory()
         self.sections = []  # List to keep track of all sections
         self.structure_windows = []  # Keep track of open structure viewer windows
         # Track meta-field selections per file: {file_path: {meta_field: {selected_values}}}
         self.meta_field_selections = {}
+        # Polars DataFrame for all MGF data
+        self.df_data = None
+        # Debounce timer for meta-value changes
+        self._meta_values_debounce_timer = None
+        # Download thread reference (prevent GC during download)
+        self._download_thread = None
+
+        # Worker pool created lazily on first use (avoids startup RAM cost)
+        self._worker_pool = None
 
         # Define predefined SMARTS filters
         self.predefined_filters = self.get_predefined_filters()
 
         self.init_ui()
+
+    @property
+    def worker_pool(self):
+        """Lazily create worker pool on first use to avoid startup RAM cost."""
+        if self._worker_pool is None:
+            n_workers = max(1, cpu_count() - 1)
+            self._worker_pool = Pool(processes=n_workers)
+            print(f"Initialized worker pool with {n_workers} processes")
+        return self._worker_pool
 
     def get_version(self):
         """Read version from pyproject.toml"""
@@ -501,6 +535,217 @@ class MGFFilterGUI(QMainWindow):
                 ("Farnesyl", "[CH2][CH]=C([CH3])[CH2]([CH2][CH]=C([CH3])[CH2]([CH2][CH]=C([CH3])[CH3]))"),
             ]
         )
+
+    @staticmethod
+    def concat_dataframes_with_alignment(dataframes):
+        """Concatenate multiple Polars DataFrames vertically (stacking rows).
+
+        IMPORTANT: Each row remains completely separate and unique. Rows are NOT merged or combined.
+        This function simply STACKS all rows from all DataFrames on top of each other.
+
+        The 'diagonal' strategy handles the case where different DataFrames have different columns:
+        - Columns with the same name are aligned
+        - Missing columns in any DataFrame are filled with null values
+        - All rows from all DataFrames are preserved as-is (no merging/joining)
+
+        Example:
+            df1: [A, B] with 2 rows
+            df2: [B, C] with 3 rows
+            Result: [A, B, C] with 5 rows total (df1 rows have C=null, df2 rows have A=null)
+
+        Args:
+            dataframes: List of Polars DataFrames to stack vertically
+
+        Returns:
+            Single concatenated Polars DataFrame with all rows from all inputs
+        """
+        if not dataframes:
+            return None
+
+        if len(dataframes) == 1:
+            return dataframes[0]
+
+        # Vertical concatenation with automatic column alignment
+        # how="diagonal": stacks rows vertically, aligns columns by name, fills missing with null
+        # This does NOT combine/merge rows - each row remains unique and separate
+        return pl.concat(dataframes, how="diagonal")
+
+    # ---- SMILES validity helpers (used in many places) ----
+
+    _SMILES_NULL_STRINGS = ["", "n/a", "na", "none", "null"]
+
+    @staticmethod
+    def _is_valid_smiles_expr(col_name):
+        """Return a Polars expression that is True when `col_name` contains a valid, non-empty SMILES string."""
+        return pl.col(col_name).is_not_null() & (pl.col(col_name).cast(pl.Utf8).str.len_bytes() > 0) & ~pl.col(col_name).cast(pl.Utf8).str.to_lowercase().is_in(MGFFilterGUI._SMILES_NULL_STRINGS)
+
+    @staticmethod
+    def _is_valid_smiles_value(s):
+        """Return True when a Python string represents a valid, non-empty SMILES."""
+        return bool(s) and str(s).strip() != "" and str(s).strip().lower() not in MGFFilterGUI._SMILES_NULL_STRINGS
+
+    def get_blocks_from_dataframe(self, filter_expr=None):
+        """Reconstruct blocks from DataFrame.
+
+        Args:
+            filter_expr: Optional Polars expression to filter rows. If None, returns all rows.
+
+        Returns:
+            List of block dictionaries
+        """
+        if self.df_data is None:
+            return []
+
+        # Apply filter if provided
+        if filter_expr is not None:
+            df = self.df_data.filter(filter_expr)
+        else:
+            df = self.df_data
+
+        # Convert DataFrame to list of dictionaries, excluding internal columns
+        blocks = []
+        internal_cols = [col for col in df.columns if col.startswith("__AnnoMe_")]
+        data_cols = [col for col in df.columns if col not in internal_cols]
+
+        for row in df.select(data_cols).iter_rows(named=True):
+            # Remove None values
+            block = {k: v for k, v in row.items() if v is not None}
+            blocks.append(block)
+
+        return blocks
+
+    def rebuild_dataframe_from_mgf_files(self):
+        """Rebuild the Polars DataFrame from all loaded MGF files.
+
+        This method is now primarily used when adding new SMARTS filters to existing data.
+        For initial loading, DataFrames are created in parallel during file loading.
+        """
+        if not self.mgf_files:
+            self.df_data = None
+            return
+
+        # If DataFrame doesn't exist, create it from blocks (fallback)
+        if self.df_data is None:
+            # Collect all unique meta keys from all files
+            all_meta_keys = set()
+            for file_data in self.mgf_files.values():
+                for block in file_data["blocks"]:
+                    # Exclude special keys
+                    for key in block.keys():
+                        if key not in ["$$spectrumdata", "$$spectrumData", "peaks"]:
+                            all_meta_keys.add(key)
+
+            # Build list of records (one per spectrum)
+            records = []
+            for file_path, file_data in self.mgf_files.items():
+                source_name = os.path.basename(file_path)
+
+                for block in file_data["blocks"]:
+                    # Start with all meta keys set to None
+                    record = {key: None for key in all_meta_keys}
+
+                    # Fill in values that exist in this block
+                    for key, value in block.items():
+                        if key in all_meta_keys:
+                            record[key] = value
+
+                    # Add internal fields
+                    record["__AnnoMe_source"] = source_name
+                    record["__AnnoMe_source_path"] = file_path
+                    record["__AnnoMe_meta_filter"] = True  # Initially all pass meta filter
+                    record["__AnnoMe_smiles_required"] = file_data.get("smiles_required", False)
+
+                    # REMOVED: No longer store SMARTS filter results in DataFrame columns
+                    # Filter results are now stored as sets of matching SMILES in filter_matched_smiles
+
+                    records.append(record)
+
+            # Create Polars DataFrame
+            if records:
+                self.df_data = pl.DataFrame(records)
+                print(f"Created DataFrame with {len(self.df_data)} rows and {len(self.df_data.columns)} columns")
+            else:
+                self.df_data = None
+        else:
+            # REMOVED: No longer add SMARTS filter columns to DataFrame
+            # Filter results are stored separately in filter_matched_smiles
+
+            # Update smiles_required column using Polars-native replace (avoids slow map_elements)
+            smiles_req_paths = [path for path, data in self.mgf_files.items() if data.get("smiles_required", False)]
+            self.df_data = self.df_data.with_columns([pl.col("__AnnoMe_source_path").is_in(smiles_req_paths).alias("__AnnoMe_smiles_required")])
+
+    def compute_all_file_statistics(self):
+        """Compute statistics for all files in one efficient pass using group_by aggregation.
+
+        Returns:
+            dict: {source_name: {total, filtered, no_smiles}}
+        """
+        if self.df_data is None or self.df_data.is_empty():
+            return {}
+
+        # Compute basic statistics with group_by (one pass through data)
+        stats_df = self.df_data.group_by("__AnnoMe_source").agg(
+            [
+                pl.count().alias("total"),
+                pl.col("__AnnoMe_meta_filter").sum().cast(pl.Int64).alias("filtered"),
+                pl.col("__AnnoMe_has_valid_smiles").is_not_null().sum().cast(pl.Int64).alias("has_smiles"),
+            ]
+        )
+
+        # Convert to dict for fast lookup
+        stats_dict = {}
+        for row in stats_df.iter_rows(named=True):
+            source = row["__AnnoMe_source"]
+            stats_dict[source] = {
+                "total": row["total"],
+                "filtered": row["filtered"],
+                "no_smiles": row["total"] - row["has_smiles"],  # Calculate missing SMILES
+            }
+
+        return stats_dict
+
+    def update_meta_filter_in_dataframe(self):
+        """Update the __AnnoMe_meta_filter column in the DataFrame based on meta-field selections and SMILES requirements."""
+        if self.df_data is None:
+            return
+
+        # Start with all rows passing the filter
+        filter_mask = pl.lit(True)
+
+        # Apply meta-field filters for each file
+        for file_path, field_selections in self.meta_field_selections.items():
+            if not field_selections:
+                continue
+
+            source_name = os.path.basename(file_path)
+
+            for field_name, selected_values in field_selections.items():
+                if not selected_values:
+                    # No values selected = filter out all rows from this file with this field
+                    file_filter = ~(pl.col("__AnnoMe_source") == source_name)
+                else:
+                    # Keep only rows from this file that match selected values
+                    file_filter = (pl.col("__AnnoMe_source") != source_name) | (pl.col(field_name).cast(pl.Utf8).is_in(list(selected_values)))
+
+                filter_mask = filter_mask & file_filter
+
+        # Apply SMILES requirement filter
+        for file_path, file_data in self.mgf_files.items():
+            if file_data.get("smiles_required", False):
+                source_name = os.path.basename(file_path)
+                smiles_field = file_data.get("smiles_field")
+
+                if smiles_field and smiles_field in self.df_data.columns:
+                    # For this file, SMILES must be present and non-empty
+                    smiles_filter = (pl.col("__AnnoMe_source") != source_name) | self._is_valid_smiles_expr(smiles_field)
+                    filter_mask = filter_mask & smiles_filter
+
+        # Update the DataFrame with the new filter column
+        self.df_data = self.df_data.with_columns([filter_mask.alias("__AnnoMe_meta_filter")])
+
+        filtered_count = self.df_data.filter(pl.col("__AnnoMe_meta_filter")).select(pl.count()).item()
+        total_count = len(self.df_data)
+        print(f"Updated meta filter: {filtered_count} / {total_count} rows pass filter")
 
     def init_ui(self):
         version = self.get_version()
@@ -792,6 +1037,11 @@ class MGFFilterGUI(QMainWindow):
         buttons_layout.addWidget(save_json_btn)
 
         buttons_layout.addStretch()
+
+        delete_all_btn = QPushButton("Delete All Filters")
+        delete_all_btn.clicked.connect(self.delete_all_filters)
+        buttons_layout.addWidget(delete_all_btn)
+
         layout.addLayout(buttons_layout)
 
         # Filter table label (no control buttons here anymore)
@@ -808,6 +1058,7 @@ class MGFFilterGUI(QMainWindow):
         self.filter_table.itemSelectionChanged.connect(self.on_filter_selection_changed)
         self.filter_table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.filter_table.customContextMenuRequested.connect(self.show_filter_table_context_menu)
+        self.filter_table.setSortingEnabled(True)
 
         # Adjust column widths
         header = self.filter_table.horizontalHeader()
@@ -956,8 +1207,56 @@ class MGFFilterGUI(QMainWindow):
         parent_widget.setLayout(QVBoxLayout())
         parent_widget.layout().addWidget(content)
 
+    @staticmethod
+    def _load_single_mgf_file(file_path):
+        """Worker function to load a single MGF file in parallel and return as Polars DataFrame."""
+        try:
+            start_time = time.time()
+            # Parse MGF file and get Polars DataFrame directly
+            df = Filters.parse_mgf_file(file_path, check_required_keys=False, return_as_polars_table=True)
+
+            if df is None or df.is_empty():
+                print(f"{Fore.YELLOW}Warning: No valid spectra found in {file_path}{Style.RESET_ALL}")
+                return {
+                    "file_path": file_path,
+                    "fields": [],
+                    "smiles_field": None,
+                    "df": None,
+                    "success": True,
+                    "error": None,
+                }
+
+            # Get fields from DataFrame columns (excluding internal columns)
+            fields = [col for col in df.columns if not col.startswith("__AnnoMe_") and col not in ["$$spectrumdata", "$$spectrumData", "peaks"]]
+
+            # Auto-detect SMILES field (case-insensitive)
+            smiles_field = None
+            for field in fields:
+                if field.lower() == "smiles":
+                    smiles_field = field
+                    break
+
+            # Add internal tracking columns
+            source_name = os.path.basename(file_path)
+            df = df.with_columns([pl.lit(source_name).alias("__AnnoMe_source"), pl.lit(file_path).alias("__AnnoMe_source_path")])
+
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            print(f"{Fore.GREEN}Successfully loaded {file_path} with {len(df)} spectra in {elapsed_time:.2f} seconds{Style.RESET_ALL}")
+
+            return {
+                "file_path": file_path,
+                "fields": fields,
+                "smiles_field": smiles_field,
+                "df": df,
+                "success": True,
+                "error": None,
+            }
+        except Exception as e:
+            return {"file_path": file_path, "success": False, "error": str(e)}
+
     def load_mgf_file(self):
-        """Load one or more MGF files."""
+        """Load one or more MGF files using parallel processing."""
         file_paths, _ = QFileDialog.getOpenFileNames(self, "Select MGF File(s)", "", "MGF Files (*.mgf);;All Files (*)")
 
         if not file_paths:
@@ -966,58 +1265,139 @@ class MGFFilterGUI(QMainWindow):
         progress = QProgressDialog("Loading MGF files...", "Cancel", 0, len(file_paths), self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QApplication.processEvents()
 
         loaded_count = 0
         error_count = 0
 
-        for idx, file_path in enumerate(file_paths):
-            if progress.wasCanceled():
-                break
+        # Load files sequentially
+        print(f"Loading {len(file_paths)} MGF file(s)...")
 
-            progress.setValue(idx)
-            progress.setLabelText(f"Loading {os.path.basename(file_path)}...")
-            QApplication.processEvents()
+        dataframes_to_concat = []
 
-            try:
-                blocks = Filters.parse_mgf_file(file_path, check_required_keys=False)
+        try:
+            # Process files sequentially
+            for idx, file_path in enumerate(file_paths):
+                if progress.wasCanceled():
+                    break
 
-                fields = Filters.get_fields(blocks)
+                progress.setValue(idx)
+                progress.setLabelText(f"Loading {os.path.basename(file_path)}...")
+                QApplication.processEvents()
 
-                # Auto-detect SMILES field (case-insensitive)
-                smiles_field = None
-                for field in fields:
-                    if field.lower() == "smiles":
-                        smiles_field = field
-                        print(f"Auto-detected SMILES field: {field}")
-                        break
+                # Load file directly
+                result = self._load_single_mgf_file(file_path)
 
-                self.mgf_files[file_path] = {
-                    "blocks": blocks,
-                    "original_blocks": blocks.copy(),
-                    "fields": fields,
-                    "smiles_field": smiles_field,  # Auto-set if 'smiles' field exists
-                    "meta_filters": {},
-                    "filtered_blocks": blocks,
-                    "canonicalized": False,
-                    "smiles_required": self.smiles_required_checkbox.isChecked(),
-                }
+                if result["success"]:
+                    fields = result["fields"]
+                    smiles_field = result["smiles_field"]
+                    df = result["df"]
 
-                # Apply SMILES filter if required
-                if self.smiles_required_checkbox.isChecked():
-                    self.apply_smiles_filter_to_file(file_path)
+                    if smiles_field:
+                        print(f"Auto-detected SMILES field: {smiles_field}")
 
-                self.add_file_to_table(file_path)
-                loaded_count += 1
+                    self.mgf_files[file_path] = {
+                        "fields": fields,
+                        "smiles_field": smiles_field,
+                        "meta_filters": {},
+                        "canonicalized": False,
+                        "smiles_required": self.smiles_required_checkbox.isChecked(),
+                    }
 
-            except Exception as e:
-                error_count += 1
-                print(f"Error loading {file_path}: {str(e)}")
+                    if df is not None:
+                        dataframes_to_concat.append(df)
+
+                    loaded_count += 1
+                else:
+                    error_count += 1
+                    print(f"Error loading {result['file_path']}: {result['error']}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error during loading: {str(e)}")
+            return
 
         progress.setValue(len(file_paths))
 
-        if loaded_count > 0:
-            # Select the first loaded file
-            self.file_table.selectRow(self.file_table.rowCount() - loaded_count)
+        # Combine all DataFrames and add internal columns
+        if loaded_count > 0 and dataframes_to_concat:
+            # Stack all DataFrames vertically (each row remains unique and separate)
+            # Diagonal concatenation handles different metadata columns across files:
+            # - Aligns columns by name
+            # - Fills missing columns with null
+            # - Does NOT merge/combine rows - simply stacks them
+            self.df_data = self.concat_dataframes_with_alignment(dataframes_to_concat)
+
+            print(f"Stacked {len(dataframes_to_concat)} DataFrames vertically")
+            print(f"Total rows: {len(self.df_data)}, Total columns: {len(self.df_data.columns)}")
+            print(f"Metadata columns: {len([col for col in self.df_data.columns if not col.startswith('__AnnoMe_')])}")
+
+            # Optimize DataFrame dtypes to reduce memory usage
+            # This converts text columns to Int/Float/Categorical where appropriate
+            self.df_data = Filters.optimize_dataframe_dtypes(self.df_data)
+
+            # Precompute SMILES validity for all files (do this ONCE, not per filter)
+            # This dramatically reduces memory usage by avoiding repeated string operations
+            smiles_validity_columns = []
+            for file_path, file_data in self.mgf_files.items():
+                smiles_field = file_data.get("smiles_field")
+                if smiles_field and smiles_field in self.df_data.columns:
+                    source_name = os.path.basename(file_path)
+                    # For this source, check if SMILES field is valid
+                    validity_expr = (
+                        pl.when(pl.col("__AnnoMe_source") == source_name)
+                        .then(
+                            pl.when(self._is_valid_smiles_expr(smiles_field)).then(True).otherwise(None)  # Use None for invalid, so we can aggregate
+                        )
+                        .otherwise(None)
+                    )
+                    smiles_validity_columns.append(validity_expr)
+
+            # Combine all validity checks into one column (coalesce takes first non-null)
+            if smiles_validity_columns:
+                has_valid_smiles = smiles_validity_columns[0]
+                for expr in smiles_validity_columns[1:]:
+                    has_valid_smiles = has_valid_smiles.fill_null(expr)
+            else:
+                has_valid_smiles = pl.lit(None)
+
+            # Add internal tracking columns
+            smiles_req_paths = [path for path, data in self.mgf_files.items() if data.get("smiles_required", False)]
+            self.df_data = self.df_data.with_columns(
+                [
+                    pl.lit(True).alias("__AnnoMe_meta_filter"),
+                    pl.col("__AnnoMe_source_path").is_in(smiles_req_paths).alias("__AnnoMe_smiles_required"),
+                    has_valid_smiles.alias("__AnnoMe_has_valid_smiles"),
+                ]
+            )
+
+            # Compute all statistics in ONE pass (much more efficient)
+            print("Computing file statistics...")
+            cached_stats = self.compute_all_file_statistics()
+            print(f"Statistics computed for {len(cached_stats)} file(s)")
+
+            # Add only newly loaded files to table
+            for file_path in file_paths:
+                if file_path in self.mgf_files:
+                    # Check if this file is already in the table
+                    file_name = os.path.basename(file_path)
+                    already_in_table = False
+                    for row in range(self.file_table.rowCount()):
+                        if self.file_table.item(row, 0).text() == file_name:
+                            already_in_table = True
+                            break
+
+                    if not already_in_table:
+                        # Add new row with cached stats
+                        self.add_file_to_table(file_path, cached_stats=cached_stats)
+                    else:
+                        # Update existing row with cached stats
+                        print(f"Updating statistics for {file_name} in file table")
+                        self.update_file_in_table(file_path, cached_stats=cached_stats)
+
+            # Select the first newly loaded file
+            if loaded_count > 0:
+                self.file_table.selectRow(self.file_table.rowCount() - 1)
 
         msg = f"Successfully loaded {loaded_count} file(s)"
         if error_count > 0:
@@ -1052,113 +1432,104 @@ class MGFFilterGUI(QMainWindow):
         progress.setMinimumDuration(0)
         progress.setValue(0)
 
-        # Create and configure download thread
-        download_thread = DownloadThread()
+        # Create and configure download thread (stored as instance attr to prevent GC)
+        self._download_thread = DownloadThread()
 
         # Connect thread signals to progress dialog updates
-        download_thread.progress_update.connect(progress.setValue)
-        download_thread.max_update.connect(progress.setMaximum)
-        download_thread.description_update.connect(progress.setLabelText)
+        self._download_thread.progress_update.connect(progress.setValue)
+        self._download_thread.max_update.connect(progress.setMaximum)
+        self._download_thread.description_update.connect(progress.setLabelText)
 
         # Handle download completion
         def on_download_complete():
             progress.setValue(progress.maximum())
             progress.canceled.disconnect(on_cancel)  # Disconnect cancel handler
             progress.close()
+            self._download_thread = None
             QMessageBox.information(self, "Download Complete", "All resources have been downloaded successfully!")
 
         # Handle download error
         def on_download_error(error_msg):
             progress.close()
+            self._download_thread = None
             QMessageBox.critical(self, "Download Error", f"An error occurred during download:\n{error_msg}")
 
         # Handle cancellation
         def on_cancel():
-            download_thread.cancel()
-            download_thread.terminate()  # Forcefully kill the thread
-            download_thread.wait()  # Wait for thread cleanup
+            self._download_thread.cancel()
+            self._download_thread.terminate()  # Forcefully kill the thread
+            self._download_thread.wait()  # Wait for thread cleanup
+            self._download_thread = None
             QMessageBox.warning(self, "Download Cancelled", "Download was cancelled by user.")
 
-        download_thread.download_complete.connect(on_download_complete)
-        download_thread.download_error.connect(on_download_error)
+        self._download_thread.download_complete.connect(on_download_complete)
+        self._download_thread.download_error.connect(on_download_error)
         progress.canceled.connect(on_cancel)
 
         # Start the download thread
-        download_thread.start()
+        self._download_thread.start()
 
     def on_smiles_required_changed(self, state):
         """Handle SMILES required checkbox state change."""
         smiles_required = self.smiles_required_checkbox.isChecked()
 
-        # Apply to all loaded files
+        # Update all loaded files
         for file_path, file_data in self.mgf_files.items():
             file_data["smiles_required"] = smiles_required
 
-            if smiles_required:
-                self.apply_smiles_filter_to_file(file_path)
-            else:
-                # Reset to use all blocks from original
-                file_data["filtered_blocks"] = file_data["original_blocks"].copy()
+        # Rebuild DataFrame with updated smiles_required flags
+        if self.mgf_files:
+            self.rebuild_dataframe_from_mgf_files()
+            self.update_meta_filter_in_dataframe()
 
-            self.update_file_in_table(file_path)
+            # Compute all statistics in ONE pass, then update table
+            cached_stats = self.compute_all_file_statistics()
+            for file_path in self.mgf_files.keys():
+                self.update_file_in_table(file_path, cached_stats=cached_stats)
 
-    def apply_smiles_filter_to_file(self, file_path):
-        """Filter blocks to only include those with SMILES information."""
+    def add_file_to_table(self, file_path, cached_stats=None):
+        """Add a file to the file table.
+
+        Args:
+            file_path: Path to the MGF file
+            cached_stats: Optional dict from compute_all_file_statistics() to avoid recomputing
+        """
         file_data = self.mgf_files[file_path]
-        smiles_field = file_data.get("smiles_field")
-
-        if not smiles_field:
-            # No SMILES field selected yet, filter out any block that doesn't have any potential SMILES field
-            filtered = []
-            for block in file_data["original_blocks"]:
-                # Check if any field might contain SMILES
-                has_smiles = False
-                for key, value in block.items():
-                    if key.lower() in ["smiles", "inchi", "inchikey", "canonical_smiles"]:
-                        if value and str(value).strip() and str(value).strip().lower() not in ["", "n/a", "na", "none", "null"]:
-                            has_smiles = True
-                            break
-                if has_smiles:
-                    filtered.append(block)
-            file_data["filtered_blocks"] = filtered
-        else:
-            # Filter based on the selected SMILES field
-            filtered = []
-            for block in file_data["original_blocks"]:
-                if smiles_field in block:
-                    value = block[smiles_field]
-                    if value and str(value).strip() and str(value).strip().lower() not in ["", "n/a", "na", "none", "null"]:
-                        filtered.append(block)
-            file_data["filtered_blocks"] = filtered
-
-    def add_file_to_table(self, file_path):
-        """Add a file to the file table."""
-        file_data = self.mgf_files[file_path]
+        source_name = os.path.basename(file_path)
 
         row_position = self.file_table.rowCount()
         self.file_table.insertRow(row_position)
 
         # File Name
-        self.file_table.setItem(row_position, 0, QTableWidgetItem(os.path.basename(file_path)))
+        self.file_table.setItem(row_position, 0, QTableWidgetItem(source_name))
 
-        # Total Entries
-        total = len(file_data["original_blocks"])
+        # Get statistics (either from cache or compute on demand)
+        if cached_stats and source_name in cached_stats:
+            stats = cached_stats[source_name]
+            total = stats["total"]
+            no_smiles_count = stats["no_smiles"]
+            filtered = stats["filtered"]
+        else:
+            # Fallback: compute individually (slower)
+            if self.df_data is not None:
+                total = self.df_data.filter(pl.col("__AnnoMe_source") == source_name).select(pl.count()).item()
+                filtered = self.df_data.filter((pl.col("__AnnoMe_source") == source_name) & pl.col("__AnnoMe_meta_filter")).select(pl.count()).item()
+                no_smiles_count = self.df_data.filter((pl.col("__AnnoMe_source") == source_name) & pl.col("__AnnoMe_has_valid_smiles").is_null()).select(pl.count()).item()
+            else:
+                total = 0
+                filtered = 0
+                no_smiles_count = 0
+
+        removed = total - filtered
+
+        # Populate table cells
         self.file_table.setItem(row_position, 1, QTableWidgetItem(str(total)))
-
-        # Count blocks without SMILES
-        no_smiles_count = self.count_blocks_without_smiles(file_path)
         self.file_table.setItem(row_position, 2, QTableWidgetItem(str(no_smiles_count)))
 
-        # SMILES Field
         smiles_field = file_data.get("smiles_field", "")
         self.file_table.setItem(row_position, 3, QTableWidgetItem(smiles_field if smiles_field else "-"))
 
-        # Filtered
-        filtered = len(file_data["filtered_blocks"])
         self.file_table.setItem(row_position, 4, QTableWidgetItem(str(filtered)))
-
-        # Removed
-        removed = total - filtered
         self.file_table.setItem(row_position, 5, QTableWidgetItem(str(removed)))
 
         # Meta-Filters
@@ -1166,58 +1537,47 @@ class MGFFilterGUI(QMainWindow):
         filter_text = ", ".join([f"{k}({len(v)})" for k, v in meta_filters.items()]) if meta_filters else "-"
         self.file_table.setItem(row_position, 6, QTableWidgetItem(filter_text))
 
-    def count_blocks_without_smiles(self, file_path):
-        """Count how many blocks don't have SMILES information."""
-        file_data = self.mgf_files[file_path]
-        smiles_field = file_data.get("smiles_field")
+    def update_file_in_table(self, file_path, cached_stats=None):
+        """Update a file's information in the table using DataFrame.
 
-        count = 0
-        if not smiles_field:
-            # Check for any SMILES-like field
-            for block in file_data["original_blocks"]:
-                has_smiles = False
-                for key, value in block.items():
-                    if key.lower() in ["smiles", "inchi", "inchikey", "canonical_smiles"]:
-                        if value and str(value).strip() and str(value).strip().lower() not in ["", "n/a", "na", "none", "null"]:
-                            has_smiles = True
-                            break
-                if not has_smiles:
-                    count += 1
-        else:
-            # Count based on selected SMILES field
-            for block in file_data["original_blocks"]:
-                if smiles_field not in block:
-                    count += 1
-                else:
-                    value = block[smiles_field]
-                    if not value or not str(value).strip() or str(value).strip().lower() in ["", "n/a", "na", "none", "null"]:
-                        count += 1
-
-        return count
-
-    def update_file_in_table(self, file_path):
-        """Update a file's information in the table."""
+        Args:
+            file_path: Path to the MGF file
+            cached_stats: Optional dict from compute_all_file_statistics() to avoid recomputing
+        """
         # Find the row for this file
         file_name = os.path.basename(file_path)
         for row in range(self.file_table.rowCount()):
             if self.file_table.item(row, 0).text() == file_name:
                 file_data = self.mgf_files[file_path]
+                source_name = file_name
 
-                # Update No SMILES count
-                no_smiles_count = self.count_blocks_without_smiles(file_path)
+                # Get statistics (either from cache or compute on demand)
+                if cached_stats and source_name in cached_stats:
+                    stats = cached_stats[source_name]
+                    total = stats["total"]
+                    no_smiles_count = stats["no_smiles"]
+                    filtered_count = stats["filtered"]
+                else:
+                    # Fallback: compute individually (slower)
+                    if self.df_data is not None:
+                        total = self.df_data.filter(pl.col("__AnnoMe_source") == source_name).select(pl.count()).item()
+                        filtered_count = self.df_data.filter((pl.col("__AnnoMe_source") == source_name) & pl.col("__AnnoMe_meta_filter")).select(pl.count()).item()
+                        no_smiles_count = self.df_data.filter((pl.col("__AnnoMe_source") == source_name) & pl.col("__AnnoMe_has_valid_smiles").is_null()).select(pl.count()).item()
+                    else:
+                        total = 0
+                        filtered_count = 0
+                        no_smiles_count = 0
+
+                removed = total - filtered_count
+
+                # Update table cells
+                self.file_table.item(row, 1).setText(str(total))
                 self.file_table.item(row, 2).setText(str(no_smiles_count))
 
-                # Update SMILES Field
                 smiles_field = file_data.get("smiles_field", "")
                 self.file_table.item(row, 3).setText(smiles_field if smiles_field else "-")
 
-                # Update Filtered
-                filtered = len(file_data["filtered_blocks"])
-                self.file_table.item(row, 4).setText(str(filtered))
-
-                # Update Removed
-                total = len(file_data["original_blocks"])
-                removed = total - filtered
+                self.file_table.item(row, 4).setText(str(filtered_count))
                 self.file_table.item(row, 5).setText(str(removed))
 
                 # Update Meta-Filters
@@ -1280,19 +1640,41 @@ class MGFFilterGUI(QMainWindow):
             return
 
         applied_count = 0
+        files_to_update = []
+
         for row in selected_rows:
             file_name = self.file_table.item(row, 0).text()
             file_path = self.get_file_path_by_name(file_name)
             if file_path:
                 if field_name in self.mgf_files[file_path]["fields"]:
                     self.mgf_files[file_path]["smiles_field"] = field_name
-
-                    # Reapply SMILES filter if required
-                    if self.mgf_files[file_path].get("smiles_required", False):
-                        self.apply_smiles_filter_to_file(file_path)
-
-                    self.update_file_in_table(file_path)
+                    files_to_update.append(file_path)
                     applied_count += 1
+
+        if applied_count > 0:
+            # Recompute SMILES validity column for updated files
+            smiles_validity_columns = []
+            for file_path, file_data in self.mgf_files.items():
+                smiles_field = file_data.get("smiles_field")
+                if smiles_field and smiles_field in self.df_data.columns:
+                    source_name = os.path.basename(file_path)
+                    validity_expr = pl.when(pl.col("__AnnoMe_source") == source_name).then(pl.when(self._is_valid_smiles_expr(smiles_field)).then(True).otherwise(None)).otherwise(None)
+                    smiles_validity_columns.append(validity_expr)
+
+            if smiles_validity_columns:
+                has_valid_smiles = smiles_validity_columns[0]
+                for expr in smiles_validity_columns[1:]:
+                    has_valid_smiles = has_valid_smiles.fill_null(expr)
+            else:
+                has_valid_smiles = pl.lit(None)
+
+            # Update the validity column
+            self.df_data = self.df_data.with_columns([has_valid_smiles.alias("__AnnoMe_has_valid_smiles")])
+
+            # Recompute statistics and update table
+            cached_stats = self.compute_all_file_statistics()
+            for file_path in files_to_update:
+                self.update_file_in_table(file_path, cached_stats=cached_stats)
 
         QMessageBox.information(self, "Success", f"Applied SMILES field '{field_name}' to {applied_count} file(s)")
 
@@ -1316,19 +1698,21 @@ class MGFFilterGUI(QMainWindow):
             self.meta_values_list.blockSignals(False)
             return
 
-        # Collect all unique values from all selected files
+        # Initialize all_values
         all_values = set()
-        for row in selected_rows:
-            file_name = self.file_table.item(row, 0).text()
-            file_path = self.get_file_path_by_name(file_name)
-            if not file_path:
-                continue
 
-            file_data = self.mgf_files[file_path]
+        # Use DataFrame to collect all unique values from selected files
+        if self.df_data is not None and field_name in self.df_data.columns:
+            # Get source names for selected files
+            selected_sources = []
+            for row in selected_rows:
+                file_name = self.file_table.item(row, 0).text()
+                selected_sources.append(file_name)
 
-            for block in file_data["original_blocks"]:
-                if field_name in block:
-                    all_values.add(str(block[field_name]))
+            # Get unique values from DataFrame for selected sources
+            file_df = self.df_data.filter(pl.col("__AnnoMe_source").is_in(selected_sources))
+            unique_values = file_df.select(pl.col(field_name)).unique().to_series().drop_nulls().to_list()
+            all_values = set(str(v) for v in unique_values)
 
         # Add to list
         for value in sorted(all_values):
@@ -1412,7 +1796,8 @@ class MGFFilterGUI(QMainWindow):
         self.meta_field_selections[file_path][field_name] = selected_values.copy()
 
     def on_meta_values_changed(self):
-        """Handle meta-value selection changes - applies to all selected files."""
+        """Handle meta-value selection changes - debounced to avoid redundant recomputes."""
+        # Save current selections immediately (cheap)
         selected_rows = set(item.row() for item in self.file_table.selectedItems())
         if not selected_rows:
             return
@@ -1423,7 +1808,7 @@ class MGFFilterGUI(QMainWindow):
 
         selected_values = {item.text() for item in self.meta_values_list.selectedItems()}
 
-        # Apply filter to all selected files
+        # Apply filter to all selected files (just save state, cheap)
         for row in selected_rows:
             file_name = self.file_table.item(row, 0).text()
             file_path = self.get_file_path_by_name(file_name)
@@ -1437,47 +1822,42 @@ class MGFFilterGUI(QMainWindow):
                 self.meta_field_selections[file_path] = {}
             self.meta_field_selections[file_path][field_name] = selected_values.copy()
 
-            # Update meta_filters to match selections
+            # Update meta_filters to match selections (keep for backward compatibility)
             file_data["meta_filters"][field_name] = selected_values
 
-            # Apply all meta-filters cumulatively
-            self.apply_all_meta_filters_to_file(file_path)
+        # Debounce the expensive DataFrame recompute (200ms)
+        if self._meta_values_debounce_timer is not None:
+            self._meta_values_debounce_timer.stop()
+        self._meta_values_debounce_timer = QTimer()
+        self._meta_values_debounce_timer.setSingleShot(True)
+        self._meta_values_debounce_timer.timeout.connect(self._apply_meta_filter_deferred)
+        self._meta_values_debounce_timer.start(200)
 
-            self.update_file_in_table(file_path)
+    def _apply_meta_filter_deferred(self):
+        """Deferred meta filter application (called after debounce timer)."""
+        # Update the DataFrame meta filter
+        self.update_meta_filter_in_dataframe()
 
-    def apply_all_meta_filters_to_file(self, file_path):
-        """Apply all saved meta-filters cumulatively to a file."""
-        file_data = self.mgf_files[file_path]
+        # Compute all statistics in ONE pass, then update table
+        cached_stats = self.compute_all_file_statistics()
+        for file_path in self.mgf_files.keys():
+            self.update_file_in_table(file_path, cached_stats=cached_stats)
 
-        # Start with original blocks or SMILES-filtered blocks
-        base_blocks = file_data["original_blocks"]
-        if file_data.get("smiles_required", False):
-            # Apply SMILES filter first
-            self.apply_smiles_filter_to_file(file_path)
-            base_blocks = file_data["filtered_blocks"].copy()
-
-        # Apply all meta-filters cumulatively
-        filtered_blocks = base_blocks.copy()
-
-        # Get all saved meta-filters for this file
-        if file_path in self.meta_field_selections:
-            for field_name, selected_values in self.meta_field_selections[file_path].items():
-                if not selected_values:
-                    # If no values selected for this field, filter out all blocks with this field
-                    filtered_blocks = []
-                    break
-
-                # Filter blocks to only include those matching the selected values for this field
-                temp_filtered = []
-                for block in filtered_blocks:
-                    if field_name in block and str(block[field_name]) in selected_values:
-                        temp_filtered.append(block)
-                filtered_blocks = temp_filtered
-
-        file_data["filtered_blocks"] = filtered_blocks
+    @staticmethod
+    def _canonicalize_smiles_worker(smiles):
+        """Worker function to canonicalize a single SMILES string in parallel."""
+        try:
+            mol = rdkit.Chem.MolFromSmiles(smiles)
+            if mol:
+                canonical_smiles = rdkit.Chem.MolToSmiles(mol, canonical=True)
+                return (smiles, canonical_smiles, True)
+            else:
+                return (smiles, smiles, False)
+        except Exception:
+            return (smiles, smiles, False)
 
     def apply_canonicalization(self):
-        """Apply SMILES canonicalization to all loaded files."""
+        """Apply SMILES canonicalization to all loaded files using parallel processing and DataFrame."""
         if not self.canon_checkbox.isChecked():
             QMessageBox.warning(self, "Warning", "Please check the canonicalization checkbox first.")
             return
@@ -1486,50 +1866,81 @@ class MGFFilterGUI(QMainWindow):
             QMessageBox.warning(self, "Warning", "Please load at least one MGF file first.")
             return
 
-        # Count total blocks to process
-        total_blocks = sum(len(file_data["filtered_blocks"]) for file_data in self.mgf_files.values())
+        if self.df_data is None:
+            QMessageBox.warning(self, "Warning", "No data available. Please load MGF files first.")
+            return
 
-        progress = QProgressDialog("Canonicalizing SMILES...", "Cancel", 0, total_blocks, self)
+        # Find SMILES field (use the first non-null SMILES field from any file)
+        smiles_field = None
+        for file_data in self.mgf_files.values():
+            if file_data.get("smiles_field"):
+                smiles_field = file_data["smiles_field"]
+                break
+
+        if not smiles_field or smiles_field not in self.df_data.columns:
+            QMessageBox.warning(self, "Warning", "No SMILES field selected. Please select a SMILES field.")
+            return
+
+        # Get all unique SMILES from DataFrame
+        all_smiles_list = self.df_data.select(pl.col(smiles_field)).unique().drop_nulls().to_series().to_list()
+
+        # Filter out empty SMILES
+        all_smiles_list = [s for s in all_smiles_list if self._is_valid_smiles_value(s)]
+
+        if not all_smiles_list:
+            QMessageBox.warning(self, "Warning", "No SMILES found in loaded files.")
+            return
+
+        num_cores = cpu_count()
+        print(f"Canonicalizing {len(all_smiles_list)} unique SMILES...")
+
+        progress = QProgressDialog("Canonicalizing SMILES...", "Cancel", 0, len(all_smiles_list), self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
+        QApplication.processEvents()
 
-        processed = 0
         success_count = 0
         error_count = 0
 
-        for file_path, file_data in self.mgf_files.items():
-            if progress.wasCanceled():
-                break
+        try:
+            # Use persistent worker pool to canonicalize SMILES in parallel
+            results = self.worker_pool.map(self._canonicalize_smiles_worker, all_smiles_list)
 
-            smiles_field = file_data["smiles_field"]
-            if not smiles_field:
-                processed += len(file_data["filtered_blocks"])
-                continue
+            # Create mapping of original to canonical SMILES
+            smiles_map = {}
+            for idx, (original_smiles, canonical_smiles, success) in enumerate(results):
+                if idx % 100 == 0:  # Update progress every 100 items
+                    progress.setValue(idx)
+                    QApplication.processEvents()
 
-            for block in file_data["filtered_blocks"]:
                 if progress.wasCanceled():
                     break
 
-                if smiles_field in block and block[smiles_field]:
-                    try:
-                        mol = rdkit.Chem.MolFromSmiles(block[smiles_field])
-                        if mol:
-                            block[smiles_field] = rdkit.Chem.MolToSmiles(mol, canonical=True)
-                            success_count += 1
-                        else:
-                            error_count += 1
-                    except:
-                        error_count += 1
+                smiles_map[original_smiles] = canonical_smiles
+                if success:
+                    success_count += 1
+                else:
+                    error_count += 1
 
-                processed += 1
-                progress.setValue(processed)
-                QApplication.processEvents()
+            # Update DataFrame with canonical SMILES using efficient map_elements with dict lookup
+            # This is much more efficient than chaining when().then().otherwise() for each mapping
 
-            file_data["canonicalized"] = True
-            self.update_file_in_table(file_path)
+            # Use Polars replace method which is optimized for bulk replacements
+            self.df_data = self.df_data.with_columns([pl.col(smiles_field).replace(smiles_map, default=pl.col(smiles_field)).alias(smiles_field)])
 
-        progress.setValue(total_blocks)
+            # Mark all files with this SMILES field as canonicalized
+            cached_stats = self.compute_all_file_statistics()
+            for file_path, file_data in self.mgf_files.items():
+                if file_data.get("smiles_field") == smiles_field:
+                    file_data["canonicalized"] = True
+                    self.update_file_in_table(file_path, cached_stats=cached_stats)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error during canonicalization: {str(e)}")
+            return
+
+        progress.setValue(len(all_smiles_list))
 
         status_msg = f"Canonicalized {success_count} SMILES"
         if error_count > 0:
@@ -1549,8 +1960,6 @@ class MGFFilterGUI(QMainWindow):
             return
 
         # Parse AND-separated groups (case-insensitive)
-        import re
-
         and_groups = re.split(r"\s+AND\s+", smarts_string, flags=re.IGNORECASE)
         and_groups = [s.strip() for s in and_groups if s.strip()]
 
@@ -1628,15 +2037,29 @@ class MGFFilterGUI(QMainWindow):
         # Find the row for this filter
         for row in range(self.filter_table.rowCount()):
             if self.filter_table.item(row, 0).text() == filter_name:
-                if filter_name in self.filtered_results:
-                    results = self.filtered_results[filter_name]
-                    total = len(results["matched_smiles"]) + len(results["non_matched_smiles"])
-                    matched = len(results["matched_smiles"])
-                    non_matched = len(results["non_matched_smiles"])
+                if filter_name in self.filter_matched_smiles:
+                    # Get unique SMILES count from filtered DataFrame
+                    filtered_df = self.df_data.filter(pl.col("__AnnoMe_meta_filter"))
 
-                    self.filter_table.item(row, 1).setText(str(total))
-                    self.filter_table.item(row, 2).setText(str(matched))
-                    self.filter_table.item(row, 3).setText(str(non_matched))
+                    # Find SMILES field
+                    smiles_field = None
+                    for file_data in self.mgf_files.values():
+                        if file_data.get("smiles_field"):
+                            smiles_field = file_data["smiles_field"]
+                            break
+
+                    if smiles_field and smiles_field in filtered_df.columns:
+                        # Get all valid unique SMILES
+                        all_smiles = filtered_df.select(pl.col(smiles_field)).unique().drop_nulls().to_series().to_list()
+                        all_smiles = set(s for s in all_smiles if self._is_valid_smiles_value(s))
+
+                        matched = len(self.filter_matched_smiles[filter_name])
+                        total = len(all_smiles)
+                        non_matched = total - matched
+
+                        self.filter_table.item(row, 1).setText(str(total))
+                        self.filter_table.item(row, 2).setText(str(matched))
+                        self.filter_table.item(row, 3).setText(str(non_matched))
                 return
 
         # If not found, add new row
@@ -1687,8 +2110,8 @@ class MGFFilterGUI(QMainWindow):
             # Remove from data structures
             if filter_name in self.smarts_filters:
                 del self.smarts_filters[filter_name]
-            if filter_name in self.filtered_results:
-                del self.filtered_results[filter_name]
+            if filter_name in self.filter_matched_smiles:
+                del self.filter_matched_smiles[filter_name]
 
             # Remove from UI
             self.filter_table.removeRow(row)
@@ -1698,6 +2121,32 @@ class MGFFilterGUI(QMainWindow):
                 if self.export_filter_list.item(i).text() == filter_name:
                     self.export_filter_list.takeItem(i)
                     break
+
+    def delete_all_filters(self):
+        """Delete all defined filters after confirmation."""
+        if not self.smarts_filters:
+            QMessageBox.information(self, "No Filters", "There are no filters to delete.")
+            return
+
+        filter_count = len(self.smarts_filters)
+        reply = QMessageBox.question(self, "Confirm Delete All", f"Are you sure you want to delete all {filter_count} filter(s)?\n\nThis action cannot be undone.", QMessageBox.Yes | QMessageBox.No)
+
+        if reply == QMessageBox.Yes:
+            # Clear all data structures
+            self.smarts_filters.clear()
+            self.filter_matched_smiles.clear()
+
+            # Clear filter table
+            self.filter_table.setRowCount(0)
+
+            # Clear export filter list
+            self.export_filter_list.clear()
+
+            # Clear SMARTS visualization
+            self.smarts_viz_container.setText("Select a filter to view its SMARTS patterns")
+            self.smarts_viz_pixmap = None
+
+            QMessageBox.information(self, "Filters Deleted", f"All {filter_count} filter(s) have been deleted.")
 
     def on_filter_selection_changed(self):
         """Handle filter selection changes in the table and update SMARTS visualization."""
@@ -1726,14 +2175,28 @@ class MGFFilterGUI(QMainWindow):
         row = selected_rows[0].row()
         filter_name = self.filter_table.item(row, 0).text()
 
-        if filter_name not in self.filtered_results:
+        if filter_name not in self.filter_matched_smiles:
             QMessageBox.warning(self, "Warning", "Filter results not available. Please apply the filter first.")
             return
 
-        results = self.filtered_results[filter_name]
+        matched_smiles = list(self.filter_matched_smiles[filter_name])
+
+        # Compute non-matched SMILES from the filtered DataFrame
+        smiles_field = None
+        for file_data in self.mgf_files.values():
+            if file_data.get("smiles_field"):
+                smiles_field = file_data["smiles_field"]
+                break
+
+        non_matched_smiles = []
+        if smiles_field and self.df_data is not None and smiles_field in self.df_data.columns:
+            filtered_df = self.df_data.filter(pl.col("__AnnoMe_meta_filter"))
+            all_smiles = filtered_df.select(pl.col(smiles_field)).unique().drop_nulls().to_series().to_list()
+            all_valid = set(s for s in all_smiles if self._is_valid_smiles_value(s))
+            non_matched_smiles = list(all_valid - self.filter_matched_smiles[filter_name])
 
         # Create and show structure viewer window
-        viewer = StructureViewerWindow(filter_name, results["matched_smiles"], results["non_matched_smiles"], self)
+        viewer = StructureViewerWindow(filter_name, matched_smiles, non_matched_smiles, self)
         viewer.show()
 
         # Keep reference to prevent garbage collection
@@ -1813,96 +2276,26 @@ class MGFFilterGUI(QMainWindow):
             self.smarts_viz_container.setText(f"Error rendering SMARTS: {str(e)}")
             print(f"Error rendering SMARTS structures: {e}")
 
-    def apply_filter(self, filter_name):
-        """Apply the SMARTS filter and display results."""
-        if filter_name not in self.smarts_filters:
-            return
-
-        if not self.mgf_files:
-            QMessageBox.warning(self, "Warning", "Please load at least one MGF file first.")
-            return
-
-        parsed_smarts = self.smarts_filters[filter_name]
-
-        # Collect all unique SMILES from all files
-        all_smiles = set()
-        smiles_to_blocks = defaultdict(list)
-
-        for file_path, file_data in self.mgf_files.items():
-            smiles_field = file_data["smiles_field"]
-            if not smiles_field:
-                continue
-
-            for block in file_data["filtered_blocks"]:
-                if smiles_field in block and block[smiles_field]:
-                    smiles = block[smiles_field]
-                    all_smiles.add(smiles)
-                    smiles_to_blocks[smiles].append(block)
-
-        if not all_smiles:
-            QMessageBox.warning(self, "Warning", "No SMILES found in loaded files. Please select a SMILES field.")
-            return
-
-        # Filter using substructure matching with AND/OR logic
-        matched_smiles = []
-        non_matched_smiles = []
-
-        progress = QProgressDialog("Filtering SMILES...", "Cancel", 0, len(all_smiles), self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-
-        for idx, smiles in enumerate(all_smiles):
-            if progress.wasCanceled():
-                break
-
-            progress.setValue(idx)
-            QApplication.processEvents()
-
-            try:
-                if self.check_smarts_match(smiles, parsed_smarts):
-                    matched_smiles.append(smiles)
-                else:
-                    non_matched_smiles.append(smiles)
-            except:
-                non_matched_smiles.append(smiles)
-
-        progress.setValue(len(all_smiles))
-
-        # Store results
-        self.filtered_results[filter_name] = {"matched_smiles": matched_smiles, "non_matched_smiles": non_matched_smiles, "smiles_to_blocks": smiles_to_blocks}
-
-        # Update table
-        self.update_filter_in_table(filter_name)
-
-    def check_smarts_match(self, smiles, parsed_smarts):
-        """
-        Check if a SMILES string matches the parsed SMARTS pattern.
+    @staticmethod
+    def _check_smarts_match_with_compiled(mol, compiled_patterns):
+        """Check if an RDKit mol matches pre-compiled SMARTS patterns.
 
         Args:
-            smiles: SMILES string to check
-            parsed_smarts: List of OR groups, where each OR group is a list of SMARTS patterns
-                          Format: [[pattern1_or1, pattern1_or2], [pattern2], ...]
-                          Top level is AND, inner lists are OR
+            mol: RDKit molecule object
+            compiled_patterns: List of lists of compiled RDKit pattern mols.
+                              Outer list = AND groups, inner list = OR alternatives.
 
         Returns:
-            bool: True if matches, False otherwise
+            bool: True if all AND groups match (at least one OR pattern each).
         """
-        mol = rdkit.Chem.MolFromSmiles(smiles)
-        if not mol:
-            return False
-
         # All AND groups must match (top level)
-        for or_group in parsed_smarts:
+        for or_group in compiled_patterns:
             # At least one pattern in the OR group must match
             or_match = False
-            for smarts_pattern in or_group:
-                try:
-                    pattern_mol = rdkit.Chem.MolFromSmarts(smarts_pattern)
-                    if pattern_mol and mol.HasSubstructMatch(pattern_mol):
-                        or_match = True
-                        break
-                except:
-                    continue
+            for pattern_mol in or_group:
+                if pattern_mol is not None and mol.HasSubstructMatch(pattern_mol):
+                    or_match = True
+                    break
 
             # If no pattern in this OR group matched, the whole filter fails
             if not or_match:
@@ -1910,6 +2303,244 @@ class MGFFilterGUI(QMainWindow):
 
         # All AND groups matched
         return True
+
+    @staticmethod
+    def _compile_smarts_patterns(parsed_smarts):
+        """Pre-compile SMARTS patterns into RDKit mol objects.
+
+        Args:
+            parsed_smarts: List of OR groups, each a list of SMARTS strings.
+
+        Returns:
+            List of lists of compiled RDKit mol objects (same structure).
+        """
+        compiled = []
+        for or_group in parsed_smarts:
+            compiled_or = []
+            for smarts_pattern in or_group:
+                try:
+                    compiled_or.append(rdkit.Chem.MolFromSmarts(smarts_pattern))
+                except Exception:
+                    compiled_or.append(None)
+            compiled.append(compiled_or)
+        return compiled
+
+    @staticmethod
+    def _process_smiles_chunk(chunk_info):
+        """Worker function to process a chunk of SMILES with all filters sequentially.
+
+        SMARTS patterns are pre-compiled once per chunk to avoid redundant parsing.
+        """
+        smiles_chunk, all_filters = chunk_info
+
+        # Pre-compile all SMARTS patterns once for this chunk (major perf win)
+        compiled_filters = {}
+        for filter_name, parsed_smarts in all_filters.items():
+            compiled_filters[filter_name] = MGFFilterGUI._compile_smarts_patterns(parsed_smarts)
+
+        # Results for each filter
+        filter_results = {}
+
+        # Apply each filter sequentially to this chunk
+        for filter_name, compiled_patterns in compiled_filters.items():
+            matched_smiles = []
+            non_matched_smiles = []
+
+            for smiles in smiles_chunk:
+                try:
+                    mol = rdkit.Chem.MolFromSmiles(smiles)
+                    if mol and MGFFilterGUI._check_smarts_match_with_compiled(mol, compiled_patterns):
+                        matched_smiles.append(smiles)
+                    else:
+                        non_matched_smiles.append(smiles)
+                except Exception:
+                    non_matched_smiles.append(smiles)
+
+            filter_results[filter_name] = {"matched_smiles": matched_smiles, "non_matched_smiles": non_matched_smiles}
+
+        return filter_results
+
+    def apply_filter(self, filter_name, show_progress=True):
+        """Apply a single SMARTS filter across all files using parallel processing.
+
+        Args:
+            filter_name: Name of the filter to apply
+            show_progress: Whether to show the progress dialog (default: True)
+        """
+        if filter_name not in self.smarts_filters:
+            return
+
+        if not self.mgf_files:
+            QMessageBox.warning(self, "Warning", "Please load at least one MGF file first.")
+            return
+
+        if self.df_data is None:
+            QMessageBox.warning(self, "Warning", "No data available. Please load MGF files first.")
+            return
+
+        parsed_smarts = self.smarts_filters[filter_name]
+
+        # Get all unique SMILES from DataFrame (only from rows that pass meta filter)
+        filtered_df = self.df_data.filter(pl.col("__AnnoMe_meta_filter"))
+
+        # Find SMILES field (use the first non-null SMILES field from any file)
+        smiles_field = None
+        for file_data in self.mgf_files.values():
+            if file_data.get("smiles_field"):
+                smiles_field = file_data["smiles_field"]
+                break
+
+        if not smiles_field or smiles_field not in filtered_df.columns:
+            QMessageBox.warning(self, "Warning", "No SMILES field selected. Please select a SMILES field.")
+            return
+
+        # Get unique SMILES
+        all_smiles_list = filtered_df.select(pl.col(smiles_field)).unique().drop_nulls().to_series().to_list()
+
+        # Filter out empty SMILES
+        all_smiles_list = [s for s in all_smiles_list if self._is_valid_smiles_value(s)]
+
+        if not all_smiles_list:
+            QMessageBox.warning(self, "Warning", "No valid SMILES found in loaded files.")
+            return
+
+        num_cores = cpu_count()
+
+        # Split SMILES into chunks for parallel processing
+        chunk_size = max(1, len(all_smiles_list) // num_cores)
+        smiles_chunks = [all_smiles_list[i : i + chunk_size] for i in range(0, len(all_smiles_list), chunk_size)]
+
+        print(f"Filtering {len(all_smiles_list)} SMILES in {len(smiles_chunks)} chunk(s)...")
+
+        progress = None
+        if show_progress:
+            progress = QProgressDialog("Filtering SMILES...", "Cancel", 0, len(smiles_chunks), self)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+            QApplication.processEvents()
+
+        try:
+            # Prepare chunk info with single filter
+            chunk_infos = [(chunk, {filter_name: parsed_smarts}) for chunk in smiles_chunks]
+
+            # Use persistent worker pool to process chunks in parallel
+            results = self.worker_pool.map(self._process_smiles_chunk, chunk_infos)
+
+            # Combine results from all chunks
+            matched_smiles = set()
+            non_matched_smiles = set()
+
+            for idx, chunk_result in enumerate(results):
+                if progress and progress.wasCanceled():
+                    break
+
+                if progress:
+                    progress.setValue(idx + 1)
+                    QApplication.processEvents()
+
+                matched_smiles.update(chunk_result[filter_name]["matched_smiles"])
+                non_matched_smiles.update(chunk_result[filter_name]["non_matched_smiles"])
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error during filtering: {str(e)}")
+            return
+
+        if progress:
+            progress.setValue(len(smiles_chunks))
+
+        # OPTIMIZED: Store only the set of matching SMILES (not DataFrame columns or blocks)
+        # This dramatically reduces memory usage - only stores SMILES strings, not entire blocks
+        print(f"Filter '{filter_name}': {len(matched_smiles)} matched, {len(non_matched_smiles)} non-matched")
+        self.filter_matched_smiles[filter_name] = matched_smiles  # Already a set
+
+        # Update table
+        self.update_filter_in_table(filter_name)
+
+    def apply_all_filters_parallel(self):
+        """Apply all defined SMARTS filters in parallel - each thread processes a chunk of SMILES with all filters."""
+        if not self.smarts_filters:
+            QMessageBox.warning(self, "Warning", "No filters defined.")
+            return
+
+        if not self.mgf_files:
+            QMessageBox.warning(self, "Warning", "Please load at least one MGF file first.")
+            return
+
+        if self.df_data is None:
+            QMessageBox.warning(self, "Warning", "No data available. Please load MGF files first.")
+            return
+
+        # Get SMILES field
+        smiles_field = None
+        for file_data in self.mgf_files.values():
+            if file_data.get("smiles_field"):
+                smiles_field = file_data["smiles_field"]
+                break
+
+        if not smiles_field or smiles_field not in self.df_data.columns:
+            QMessageBox.warning(self, "Warning", "No SMILES field selected. Please select a SMILES field.")
+            return
+
+        # Collect all unique SMILES from DataFrame directly (no dict conversion)
+        filtered_df = self.df_data.filter(pl.col("__AnnoMe_meta_filter"))
+        all_smiles_list = filtered_df.select(pl.col(smiles_field)).unique().drop_nulls().to_series().to_list()
+
+        # Filter out empty SMILES
+        all_smiles_list = [s for s in all_smiles_list if self._is_valid_smiles_value(s)]
+
+        if not all_smiles_list:
+            QMessageBox.warning(self, "Warning", "No SMILES found in loaded files. Please select a SMILES field.")
+            return
+        num_cores = cpu_count()
+
+        # Split SMILES into chunks for parallel processing
+        chunk_size = max(1, len(all_smiles_list) // num_cores)
+        smiles_chunks = [all_smiles_list[i : i + chunk_size] for i in range(0, len(all_smiles_list), chunk_size)]
+
+        print(f"Processing {len(self.smarts_filters)} filter(s) on {len(all_smiles_list)} SMILES in {len(smiles_chunks)} chunk(s) using {num_cores} CPU cores...")
+
+        progress = QProgressDialog("Processing filters...", "Cancel", 0, len(smiles_chunks), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QApplication.processEvents()
+
+        try:
+            # Prepare chunk info with all filters
+            chunk_infos = [(chunk, self.smarts_filters) for chunk in smiles_chunks]
+
+            # Use persistent worker pool to process chunks in parallel
+            results = self.worker_pool.map(self._process_smiles_chunk, chunk_infos)
+
+            # Combine results from all chunks for each filter
+            for filter_name in self.smarts_filters.keys():
+                matched_smiles = []
+                non_matched_smiles = []
+
+                for idx, chunk_result in enumerate(results):
+                    if progress.wasCanceled():
+                        break
+
+                    if idx == 0:  # Update progress once per chunk
+                        progress.setValue(idx + 1)
+                        QApplication.processEvents()
+
+                    matched_smiles.extend(chunk_result[filter_name]["matched_smiles"])
+                    non_matched_smiles.extend(chunk_result[filter_name]["non_matched_smiles"])
+
+                # OPTIMIZED: Store only matching SMILES set (not blocks)
+                self.filter_matched_smiles[filter_name] = set(matched_smiles)
+
+                # Update table for this filter
+                self.update_filter_in_table(filter_name)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error during parallel filtering: {str(e)}")
+            return
+
+        progress.setValue(len(smiles_chunks))
+        QMessageBox.information(self, "Success", f"Successfully processed {len(self.smarts_filters)} filter(s) in parallel.")
 
     def on_export_all_changed(self, state):
         """Handle export all checkbox state change."""
@@ -1921,20 +2552,54 @@ class MGFFilterGUI(QMainWindow):
             # Deselect all filters
             self.export_filter_list.clearSelection()
 
-    def browse_output_folder(self):
-        """Browse for output folder."""
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Folder")
-        if folder:
-            self.output_folder_input.setText(folder)
-
     def browse_output_file(self):
         """Browse for output file."""
         file_path, _ = QFileDialog.getSaveFileName(self, "Select Base Output File", "", "MGF Files (*.mgf);;All Files (*)")
         if file_path:
             self.output_file_input.setText(file_path)
 
+    def _export_single_filter_optimized(self, export_info):
+        """Worker function to export a single filter - uses Polars DataFrame directly.
+
+        OPTIMIZED: Instead of converting to dictionaries, we:
+        1. Filter the DataFrame to rows that match the filter's SMILES
+        2. Remove internal tracking columns
+        3. Pass the filtered DataFrame directly to export_mgf_file_from_polars_table
+
+        This is much faster as it avoids row-by-row iteration and dictionary conversion.
+        """
+        filter_name, matched_smiles_set, filtered_df, smiles_field, base_dir, base_name = export_info
+
+        try:
+            # Filter DataFrame to only matched SMILES using Polars operations (much faster)
+            matched_df = filtered_df.filter(pl.col(smiles_field).is_in(matched_smiles_set))
+
+            # Remove internal tracking columns
+            data_cols = [col for col in matched_df.columns if not col.startswith("__AnnoMe_")]
+            matched_df = matched_df.select(data_cols)
+
+            # Export matched file with filter name as suffix
+            # Sanitize filter name for filename
+            safe_filter_name = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in filter_name)
+
+            matched_path = os.path.join(base_dir, f"{base_name}_{safe_filter_name}_matched.mgf")
+
+            # Only export if there are spectra to write
+            if len(matched_df) > 0:
+                # Use Polars-native export function (no dictionary conversion needed)
+                Filters.export_mgf_file_from_polars_table(matched_df, matched_path)
+            else:
+                # Delete file if it exists but would be empty
+                if os.path.exists(matched_path):
+                    os.remove(matched_path)
+
+            return {"success": True, "filter_name": filter_name, "matched_count": len(matched_df)}
+
+        except Exception as e:
+            return {"success": False, "filter_name": filter_name, "error": str(e)}
+
     def export_results(self):
-        """Export filtered results to MGF files."""
+        """Export filtered results to MGF files using parallel processing."""
         base_output_path = self.output_file_input.text()
 
         if not base_output_path:
@@ -1952,79 +2617,174 @@ class MGFFilterGUI(QMainWindow):
         base_dir = os.path.dirname(base_output_path)
         base_name = os.path.splitext(os.path.basename(base_output_path))[0]
 
-        exported_files = []
-        skipped_filters = []
-
-        progress = QProgressDialog("Exporting filtered results...", "Cancel", 0, len(selected_filters), self)
-        progress.setWindowModality(Qt.WindowModal)
-        progress.setMinimumDuration(0)
-
-        for idx, filter_name in enumerate(selected_filters):
-            if progress.wasCanceled():
+        # Get SMILES field
+        smiles_field = None
+        for file_data in self.mgf_files.values():
+            if file_data.get("smiles_field"):
+                smiles_field = file_data["smiles_field"]
                 break
 
-            progress.setValue(idx)
-            progress.setLabelText(f"Exporting filter: {filter_name}")
-            QApplication.processEvents()
+        if not smiles_field or smiles_field not in self.df_data.columns:
+            QMessageBox.warning(self, "Warning", "No SMILES field selected. Please select a SMILES field.")
+            return
 
-            if filter_name not in self.filtered_results:
+        # Get filtered DataFrame (rows that pass meta filter)
+        filtered_df = self.df_data.filter(pl.col("__AnnoMe_meta_filter"))
+
+        # Prepare export info for each filter
+        export_infos = []
+        skipped_filters = []
+
+        for filter_name in selected_filters:
+            if filter_name not in self.filter_matched_smiles:
                 skipped_filters.append(filter_name)
                 continue
 
-            results = self.filtered_results[filter_name]
+            # Pass only the matched SMILES set and DataFrame reference
+            matched_smiles_set = self.filter_matched_smiles[filter_name]
+            export_infos.append((filter_name, matched_smiles_set, filtered_df, smiles_field, base_dir, base_name))
 
-            # Prepare matched and non-matched blocks
-            matched_blocks = []
-            non_matched_blocks = []
+        if not export_infos:
+            QMessageBox.warning(self, "Warning", "No valid filters to export.")
+            return
 
-            for smiles, blocks in results["smiles_to_blocks"].items():
-                if smiles in results["matched_smiles"]:
-                    matched_blocks.extend(blocks)
+        print(f"Exporting {len(export_infos)} filter(s) sequentially (on-demand reconstruction)...")
+
+        progress = QProgressDialog("Exporting filtered results...", "Cancel", 0, len(export_infos) + 2, self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        QApplication.processEvents()
+
+        exported_files = []
+        all_matched_smiles = set()  # Collect all SMILES that matched any filter
+        filters_with_no_matches = 0  # Track filters with zero matching spectra
+
+        try:
+            # Export sequentially (avoid DataFrame pickling issues with multiprocessing)
+            # Each export reconstructs blocks on-demand, keeping memory usage low
+            results = []
+            for idx, export_info in enumerate(export_infos):
+                if progress.wasCanceled():
+                    break
+
+                progress.setValue(idx)
+                progress.setLabelText(f"Exporting {export_info[0]}...")
+                QApplication.processEvents()
+
+                result = self._export_single_filter_optimized(export_info)
+                results.append(result)
+
+                # Collect matched SMILES from this filter
+                if result["success"]:
+                    all_matched_smiles.update(export_info[1])  # export_info[1] is matched_smiles_set
+
+            # Process results
+            for idx, result in enumerate(results):
+                if progress.wasCanceled():
+                    break
+
+                progress.setValue(idx + 1)
+                QApplication.processEvents()
+
+                if result["success"]:
+                    exported_files.append(result["filter_name"])
+                    if result["matched_count"] == 0:
+                        filters_with_no_matches += 1
                 else:
-                    non_matched_blocks.extend(blocks)
+                    skipped_filters.append(f"{result['filter_name']} (Error: {result['error']})")
 
-            # Export files with filter name as suffix
-            try:
-                # Sanitize filter name for filename
-                safe_filter_name = "".join(c if c.isalnum() or c in (" ", "-", "_") else "_" for c in filter_name)
+            # Export combined all-match file containing all spectra that match AT LEAST ONE filter (no duplicates)
+            all_match_count = 0
+            if not progress.wasCanceled() and all_matched_smiles:
+                progress.setValue(len(export_infos))
+                progress.setLabelText("Exporting all-match file...")
+                QApplication.processEvents()
 
-                matched_path = os.path.join(base_dir, f"{base_name}_{safe_filter_name}_matched.mgf")
-                non_matched_path = os.path.join(base_dir, f"{base_name}_{safe_filter_name}_noMatch.mgf")
+                # Use Polars filtering for much better performance
+                all_match_df = filtered_df.filter(pl.col(smiles_field).is_in(all_matched_smiles))
 
-                Filters.export_mgf_file(matched_blocks, matched_path)
-                Filters.export_mgf_file(non_matched_blocks, non_matched_path)
+                # Remove internal tracking columns
+                data_cols = [col for col in all_match_df.columns if not col.startswith("__AnnoMe_")]
+                all_match_df = all_match_df.select(data_cols)
 
-                exported_files.append(f"{filter_name}: {len(matched_blocks)} matched, {len(non_matched_blocks)} non-matched")
+                all_match_path = os.path.join(base_dir, f"{base_name}_allMatch.mgf")
 
-            except Exception as e:
-                skipped_filters.append(f"{filter_name} (Error: {str(e)})")
+                # Only export if there are spectra to write
+                if len(all_match_df) > 0:
+                    all_match_count = len(all_match_df)
+                    Filters.export_mgf_file_from_polars_table(all_match_df, all_match_path)
+                else:
+                    # Delete file if it exists but would be empty
+                    if os.path.exists(all_match_path):
+                        os.remove(all_match_path)
 
-        progress.setValue(len(selected_filters))
+            # Export single no-match file containing all spectra that don't match ANY filter
+            no_match_count = 0
+            if not progress.wasCanceled():
+                progress.setValue(len(export_infos) + 1)
+                progress.setLabelText("Exporting no-match file...")
+                QApplication.processEvents()
 
-        # Show summary
-        msg = f"Successfully exported {len(exported_files)} filter(s):\n\n"
-        for export_info in exported_files:
-            msg += f"  • {export_info}\n"
+                # Use Polars filtering for much better performance
+                no_match_df = filtered_df.filter(~pl.col(smiles_field).is_in(all_matched_smiles) | pl.col(smiles_field).is_null())
+
+                # Remove internal tracking columns
+                data_cols = [col for col in no_match_df.columns if not col.startswith("__AnnoMe_")]
+                no_match_df = no_match_df.select(data_cols)
+
+                no_match_path = os.path.join(base_dir, f"{base_name}_noMatch.mgf")
+
+                # Only export if there are spectra to write
+                if len(no_match_df) > 0:
+                    no_match_count = len(no_match_df)
+                    Filters.export_mgf_file_from_polars_table(no_match_df, no_match_path)
+                else:
+                    # Delete file if it exists but would be empty
+                    if os.path.exists(no_match_path):
+                        os.remove(no_match_path)
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error during export: {str(e)}")
+            return
+
+        progress.setValue(len(export_infos) + 2)
+
+        # Build concise summary message
+        n_filters = len(exported_files)
+        k_no_matches = filters_with_no_matches
+        u_matched = all_match_count
+        i_no_match = no_match_count
+
+        msg = f"Export completed successfully!\n\n"
+        msg += f"  • {n_filters} filter(s) written\n"
+        if k_no_matches > 0:
+            msg += f"  • {k_no_matches} filter(s) with no matching spectra\n"
+        msg += f"  • {u_matched} spectra matched to 1 or more filters (all-match file)\n"
+        msg += f"  • {i_no_match} spectra did not match any filter (no-match file)\n"
+        msg += f"\nFiles saved to: {base_dir}"
 
         if skipped_filters:
-            msg += f"\n\nSkipped {len(skipped_filters)} filter(s):\n"
+            msg += f"\n\nWarning: {len(skipped_filters)} filter(s) skipped due to errors:\n"
             for skipped in skipped_filters:
                 msg += f"  • {skipped}\n"
-
-        msg += f"\n\nFiles saved to: {base_dir}"
-
-        if skipped_filters:
             QMessageBox.warning(self, "Export Complete with Warnings", msg)
         else:
             QMessageBox.information(self, "Export Complete", msg)
 
     def closeEvent(self, event):
-        """Clean up temporary directory on close."""
+        """Clean up temporary directory and worker pool on close."""
         self.temp_dir.cleanup()
 
         # Close all structure viewer windows
         for window in self.structure_windows:
             window.close()
+
+        # Terminate worker pool (only if it was actually created)
+        if self._worker_pool is not None:
+            self._worker_pool.close()
+            self._worker_pool.join()
+            print("Worker pool terminated")
 
         event.accept()
 
@@ -2069,8 +2829,6 @@ class MGFFilterGUI(QMainWindow):
                         raise ValueError("Invalid SMARTS pattern")
 
                     # Parse AND-separated groups (case-insensitive)
-                    import re
-
                     and_groups = re.split(r"\s+AND\s+", smarts_string, flags=re.IGNORECASE)
                     and_groups = [s.strip() for s in and_groups if s.strip()]
 
@@ -2115,8 +2873,8 @@ class MGFFilterGUI(QMainWindow):
                         if self.export_all_checkbox.isChecked():
                             item.setSelected(True)
 
-                    # Apply the filter
-                    self.apply_filter(filter_name)
+                    # Apply the filter (without showing progress dialog)
+                    self.apply_filter(filter_name, show_progress=False)
 
                     loaded_count += 1
 
@@ -2186,6 +2944,11 @@ class MGFFilterGUI(QMainWindow):
 
 
 def main():
+    # Required for Windows multiprocessing support
+    from multiprocessing import freeze_support
+
+    freeze_support()
+
     app = QApplication(sys.argv)
     window = MGFFilterGUI()
     window.show()

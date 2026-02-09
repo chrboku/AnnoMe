@@ -16,75 +16,39 @@
     },
     "MSnLib_files": {
         "base_url": "https://zenodo.org/api/records/15683662/files/{file_name}/content",
-        "20250228_targetmolnphts_pos_msn": {
-        },
         "20250228_targetmolnphts_pos_ms2": {
         },
         "20250228_targetmolnphts_np_neg_ms2": {
         },
-        "20250228_targetmolnphts_neg_msn": {
-        },
-        "20250228_mcediv_50k_sub_pos_msn": {
-        },
         "20250228_mcediv_50k_sub_pos_ms2": {
-        },
-        "20250228_mcediv_50k_sub_neg_msn": {
         },
         "20250228_mcediv_50k_sub_neg_ms2": {
         },
-        "20241003_otavapep_pos_msn": {
-        },
         "20241003_otavapep_pos_ms2": {
-        },
-        "20241003_otavapep_neg_msn": {
         },
         "20241003_otavapep_neg_ms2": {
         },
-        "20241003_nihnp_pos_msn": {
-        },
         "20241003_nihnp_pos_ms2": {
-        },
-        "20241003_nihnp_neg_msn": {
         },
         "20241003_nihnp_neg_ms2": {
         },
-        "20241003_mcescaf_pos_msn": {
-        },
         "20241003_mcescaf_pos_ms2": {
-        },
-        "20241003_mcescaf_neg_msn": {
         },
         "20241003_mcescaf_neg_ms2": {
         },
-        "20241003_mcedrug_pos_msn": {
-        },
         "20241003_mcedrug_pos_ms2": {
-        },
-        "20241003_mcedrug_neg_msn": {
         },
         "20241003_mcedrug_neg_ms2": {
         },
-        "20241003_mcebio_pos_msn": {
-        },
         "20241003_mcebio_pos_ms2": {
-        },
-        "20241003_mcebio_neg_msn": {
         },
         "20241003_mcebio_neg_ms2": {
         },
-        "20241003_enammol_pos_msn": {
-        },
         "20241003_enammol_pos_ms2": {
-        },
-        "20241003_enammol_neg_msn": {
         },
         "20241003_enammol_neg_ms2": {
         },
-        "20241003_enamdisc_pos_msn": {
-        },
         "20241003_enamdisc_pos_ms2": {
-        },
-        "20241003_enamdisc_neg_msn": {
         },
         "20241003_enamdisc_neg_ms2": {
         }        

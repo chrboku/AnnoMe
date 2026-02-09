@@ -12,6 +12,32 @@ Classification of MS/MS spectra into substance classes is a non-trivial task and
 
 Using training data consisting of annotated and labeled MS/MS spectra of compounds of interest and others, different classifiers (LDA, NN, SVM, etc.) are first trained using cross-validation and different random seeds. The results are then aggregated and a majority-vote is derived which indicates the final classification of the input MS/MS spectra to either "relevant" or "other". The term "relevant" refers to compounds of interest, while the term "other" refers to compounds not of interest.
 
+## Setup
+
+1. Install the uv toolkit. For installation instructions please refer to [https://github.com/astral-sh/uv#installation](https://github.com/astral-sh/uv#installation).
+
+2. Install git. For installation instructions please refer to [https://github.com/git-guides/install-git](https://github.com/git-guides/install-git). 
+
+3. Open a command prompt and navigate to a new folder of your choice where you want to setup the AnnoMe package.
+
+4. In the command prompt, clone the AnnoMe repository with the following commands:
+```{bash}
+git clone https://github.com/chrboku/AnnoMe
+cd AnnoMe
+```
+
+5. Download available public MS/MS resources using the following command (Note: All resources are approximately 11GB in size (per 2.2026), and - depending on your internet connection - the download might take some time. It can be interrupted and restarted. Also please be aware of the download size if you are on a metered internet connection):
+```{bash}
+uv run annome_downloadresources
+```
+
+## Graphical User Interface
+AnnoMe provides two graphical user interface programs for a) the filtering of MGF files for interesting structures, and b) performing classification and comparison tasks. The two tools can be executed with the commands:
+```bash
+uv run annome_filtergui
+uv run annome_classificationgui
+```
+
 ## Disclaimer
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
@@ -32,12 +58,10 @@ The inference dataset are obtained from extracts of plants that are known produc
 - *Glycyrrhizza uralensis* (roots)
 plants, which are known to produce prenylated flavonoid compounds.
 
-To execute the respective calculation, please execute the following steps:
+To execute the respective calculation, please refer to Instructions_DemoPrenylatedFlavonoids.md. 
 
-- [optional step]: Install the python tool uv. Please refer to [https://github.com/astral-sh/uv#installation](https://github.com/astral-sh/uv#installation) for installation instruction. This step can be omitted if uv is already available on the system.
-- Open a terminal and navigate to an empty folder into which the AnnoMe package shall be cloned.
-- Clone the repo AnnoMe with the command `git clone https://github.com/chrboku/AnnoMe`.
-- Navigate into the new folder with `cd AnnoMe`.
+execute the following steps:
+
 - From the base folder (i.e., **AnnoMe**, the current folder), execute the demo filter-script with `uv run ./demo/Filter_PrenylatedCompounds_publicDBs.py`. This will download the publicly available MS/MS databases and the used embeddings model. Then the scripts will filter the public databases for **prenylated flavones** and **prenylated chalcones**. The results will be available in **./resources/libraries_filtered**.
 - Similar to the public database, execute the demo script for the in-house databases with `uv run ./demo/Filter_PrenylatedCompounds_BOKUDB.py`.
 - From the base folder (i.e., **AnnoMe**, the current folder), execute the demo analysis-script with `uv run jupyter nbconvert --to HTML --execute ./demo/Classification_PrenylatedCompounds_publicDBs.ipynb`. Once finished, the log of the classification pipeline will be available in **./demo/Classification_PrenylatedCompounds_publicDBs.html** and the prediction results will be available in **./demo/publicDBs/output/PrenylatedCompounds_PublicDBs/**.
@@ -61,13 +85,6 @@ To use AnnoMe for the classification of a new relevant chemical class, either
 
 ### Filter public repositories
 
-#### GUI-based
-
-The AnnoMe package provides a convenient graphical user interface to load multiple MGF files, filter their contentes for certain substructures, and separate the contained MSMS spectra based on the filtering results. The gui application can be started with (from within the project directory)
-```bash
-uv run annome_filtergui
-```
-
 #### Script-based
 
 - Clone and rename the file **demo/Filter_PrenylatedCompounds_publicDBs.py** to a new directory and open it with an editor of your choice.
@@ -88,12 +105,6 @@ uv run annome_filtergui
 - Execute the filtering script with ``uv run script_location_and_name.py``
 
 ### Execute the classifier
-
-#### GUI-based
-The AnnoMe package provides a convenient graphical user interface to load multiple MGF files, assign them as training, validiation or inference datasets and assing the classes relevant and others. The gui application can be started with (from within the project directory)
-```bash
-uv run annome_classificationgui
-```
 
 #### Script-based
 
