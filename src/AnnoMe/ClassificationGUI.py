@@ -191,7 +191,9 @@ class TrainingWorker(QThread):
                 min_threshold = trained_classifiers[combined_key][2] if len(trained_classifiers[combined_key]) > 2 else 120
 
                 df_subset_infe = predict(df_working_copy, classifiers_list, subset_name, subset_fn)
-                long_table, pivot_table = generate_prediction_overview(df_working_copy, df_subset_infe, self.output_dir, file_prefix=display_key.replace(" // ", "_"), min_prediction_threshold=min_threshold)
+                long_table, pivot_table = generate_prediction_overview(
+                    df_working_copy, df_subset_infe, self.output_dir, file_prefix=display_key.replace(" // ", "_"), min_prediction_threshold=min_threshold
+                )
                 long_tables[display_key] = long_table
                 pivot_tables[display_key] = pivot_table
 

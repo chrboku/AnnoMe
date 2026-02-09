@@ -5,8 +5,6 @@ from collections import defaultdict, OrderedDict
 import io
 import json
 import tomllib
-from multiprocessing import Pool, cpu_count
-from functools import partial
 from colorama import Fore, Style
 import polars as pl
 import time
@@ -471,22 +469,10 @@ class MGFFilterGUI(QMainWindow):
         # Download thread reference (prevent GC during download)
         self._download_thread = None
 
-        # Worker pool created lazily on first use (avoids startup RAM cost)
-        self._worker_pool = None
-
         # Define predefined SMARTS filters
         self.predefined_filters = self.get_predefined_filters()
 
         self.init_ui()
-
-    @property
-    def worker_pool(self):
-        """Lazily create worker pool on first use to avoid startup RAM cost."""
-        if self._worker_pool is None:
-            n_workers = max(1, cpu_count() - 1)
-            self._worker_pool = Pool(processes=n_workers)
-            print(f"Initialized worker pool with {n_workers} processes")
-        return self._worker_pool
 
     def get_version(self):
         """Read version from pyproject.toml"""
@@ -618,7 +604,7 @@ class MGFFilterGUI(QMainWindow):
         """Rebuild the Polars DataFrame from all loaded MGF files.
 
         This method is now primarily used when adding new SMARTS filters to existing data.
-        For initial loading, DataFrames are created in parallel during file loading.
+        For initial loading, DataFrames are created during file loading.
         """
         if not self.mgf_files:
             self.df_data = None
@@ -1209,7 +1195,7 @@ class MGFFilterGUI(QMainWindow):
 
     @staticmethod
     def _load_single_mgf_file(file_path):
-        """Worker function to load a single MGF file in parallel and return as Polars DataFrame."""
+        """Worker function to load a single MGF file and return as Polars DataFrame."""
         try:
             start_time = time.time()
             # Parse MGF file and get Polars DataFrame directly
@@ -1256,7 +1242,7 @@ class MGFFilterGUI(QMainWindow):
             return {"file_path": file_path, "success": False, "error": str(e)}
 
     def load_mgf_file(self):
-        """Load one or more MGF files using parallel processing."""
+        """Load one or more MGF files."""
         file_paths, _ = QFileDialog.getOpenFileNames(self, "Select MGF File(s)", "", "MGF Files (*.mgf);;All Files (*)")
 
         if not file_paths:
@@ -1845,7 +1831,7 @@ class MGFFilterGUI(QMainWindow):
 
     @staticmethod
     def _canonicalize_smiles_worker(smiles):
-        """Worker function to canonicalize a single SMILES string in parallel."""
+        """Worker function to canonicalize a single SMILES string."""
         try:
             mol = rdkit.Chem.MolFromSmiles(smiles)
             if mol:
@@ -1857,7 +1843,7 @@ class MGFFilterGUI(QMainWindow):
             return (smiles, smiles, False)
 
     def apply_canonicalization(self):
-        """Apply SMILES canonicalization to all loaded files using parallel processing and DataFrame."""
+        """Apply SMILES canonicalization to all loaded files using sequential processing and DataFrame."""
         if not self.canon_checkbox.isChecked():
             QMessageBox.warning(self, "Warning", "Please check the canonicalization checkbox first.")
             return
@@ -1891,7 +1877,6 @@ class MGFFilterGUI(QMainWindow):
             QMessageBox.warning(self, "Warning", "No SMILES found in loaded files.")
             return
 
-        num_cores = cpu_count()
         print(f"Canonicalizing {len(all_smiles_list)} unique SMILES...")
 
         progress = QProgressDialog("Canonicalizing SMILES...", "Cancel", 0, len(all_smiles_list), self)
@@ -1904,12 +1889,9 @@ class MGFFilterGUI(QMainWindow):
         error_count = 0
 
         try:
-            # Use persistent worker pool to canonicalize SMILES in parallel
-            results = self.worker_pool.map(self._canonicalize_smiles_worker, all_smiles_list)
-
-            # Create mapping of original to canonical SMILES
+            # Process SMILES sequentially
             smiles_map = {}
-            for idx, (original_smiles, canonical_smiles, success) in enumerate(results):
+            for idx, smiles in enumerate(all_smiles_list):
                 if idx % 100 == 0:  # Update progress every 100 items
                     progress.setValue(idx)
                     QApplication.processEvents()
@@ -1917,6 +1899,7 @@ class MGFFilterGUI(QMainWindow):
                 if progress.wasCanceled():
                     break
 
+                original_smiles, canonical_smiles, success = self._canonicalize_smiles_worker(smiles)
                 smiles_map[original_smiles] = canonical_smiles
                 if success:
                     success_count += 1
@@ -2361,7 +2344,7 @@ class MGFFilterGUI(QMainWindow):
         return filter_results
 
     def apply_filter(self, filter_name, show_progress=True):
-        """Apply a single SMARTS filter across all files using parallel processing.
+        """Apply a single SMARTS filter across all files sequentially.
 
         Args:
             filter_name: Name of the filter to apply
@@ -2404,50 +2387,30 @@ class MGFFilterGUI(QMainWindow):
             QMessageBox.warning(self, "Warning", "No valid SMILES found in loaded files.")
             return
 
-        num_cores = cpu_count()
-
-        # Split SMILES into chunks for parallel processing
-        chunk_size = max(1, len(all_smiles_list) // num_cores)
-        smiles_chunks = [all_smiles_list[i : i + chunk_size] for i in range(0, len(all_smiles_list), chunk_size)]
-
-        print(f"Filtering {len(all_smiles_list)} SMILES in {len(smiles_chunks)} chunk(s)...")
+        print(f"Filtering {len(all_smiles_list)} SMILES sequentially...")
 
         progress = None
         if show_progress:
-            progress = QProgressDialog("Filtering SMILES...", "Cancel", 0, len(smiles_chunks), self)
+            progress = QProgressDialog("Filtering SMILES...", "Cancel", 0, len(all_smiles_list), self)
             progress.setWindowModality(Qt.WindowModal)
             progress.setMinimumDuration(0)
             progress.setValue(0)
             QApplication.processEvents()
 
         try:
-            # Prepare chunk info with single filter
-            chunk_infos = [(chunk, {filter_name: parsed_smarts}) for chunk in smiles_chunks]
+            # Process all SMILES sequentially with the single filter
+            chunk_info = (all_smiles_list, {filter_name: parsed_smarts})
+            result = self._process_smiles_chunk(chunk_info)
 
-            # Use persistent worker pool to process chunks in parallel
-            results = self.worker_pool.map(self._process_smiles_chunk, chunk_infos)
-
-            # Combine results from all chunks
-            matched_smiles = set()
-            non_matched_smiles = set()
-
-            for idx, chunk_result in enumerate(results):
-                if progress and progress.wasCanceled():
-                    break
-
-                if progress:
-                    progress.setValue(idx + 1)
-                    QApplication.processEvents()
-
-                matched_smiles.update(chunk_result[filter_name]["matched_smiles"])
-                non_matched_smiles.update(chunk_result[filter_name]["non_matched_smiles"])
+            matched_smiles = set(result[filter_name]["matched_smiles"])
+            non_matched_smiles = set(result[filter_name]["non_matched_smiles"])
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error during filtering: {str(e)}")
             return
 
         if progress:
-            progress.setValue(len(smiles_chunks))
+            progress.setValue(len(all_smiles_list))
 
         # OPTIMIZED: Store only the set of matching SMILES (not DataFrame columns or blocks)
         # This dramatically reduces memory usage - only stores SMILES strings, not entire blocks
@@ -2458,7 +2421,7 @@ class MGFFilterGUI(QMainWindow):
         self.update_filter_in_table(filter_name)
 
     def apply_all_filters_parallel(self):
-        """Apply all defined SMARTS filters in parallel - each thread processes a chunk of SMILES with all filters."""
+        """Apply all defined SMARTS filters sequentially."""
         if not self.smarts_filters:
             QMessageBox.warning(self, "Warning", "No filters defined.")
             return
@@ -2492,55 +2455,33 @@ class MGFFilterGUI(QMainWindow):
         if not all_smiles_list:
             QMessageBox.warning(self, "Warning", "No SMILES found in loaded files. Please select a SMILES field.")
             return
-        num_cores = cpu_count()
 
-        # Split SMILES into chunks for parallel processing
-        chunk_size = max(1, len(all_smiles_list) // num_cores)
-        smiles_chunks = [all_smiles_list[i : i + chunk_size] for i in range(0, len(all_smiles_list), chunk_size)]
+        print(f"Processing {len(self.smarts_filters)} filter(s) on {len(all_smiles_list)} SMILES sequentially...")
 
-        print(f"Processing {len(self.smarts_filters)} filter(s) on {len(all_smiles_list)} SMILES in {len(smiles_chunks)} chunk(s) using {num_cores} CPU cores...")
-
-        progress = QProgressDialog("Processing filters...", "Cancel", 0, len(smiles_chunks), self)
+        progress = QProgressDialog("Processing filters...", "Cancel", 0, len(all_smiles_list), self)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
         progress.setValue(0)
         QApplication.processEvents()
 
         try:
-            # Prepare chunk info with all filters
-            chunk_infos = [(chunk, self.smarts_filters) for chunk in smiles_chunks]
+            # Process all SMILES with all filters in a single sequential pass
+            chunk_info = (all_smiles_list, self.smarts_filters)
+            result = self._process_smiles_chunk(chunk_info)
 
-            # Use persistent worker pool to process chunks in parallel
-            results = self.worker_pool.map(self._process_smiles_chunk, chunk_infos)
-
-            # Combine results from all chunks for each filter
             for filter_name in self.smarts_filters.keys():
-                matched_smiles = []
-                non_matched_smiles = []
-
-                for idx, chunk_result in enumerate(results):
-                    if progress.wasCanceled():
-                        break
-
-                    if idx == 0:  # Update progress once per chunk
-                        progress.setValue(idx + 1)
-                        QApplication.processEvents()
-
-                    matched_smiles.extend(chunk_result[filter_name]["matched_smiles"])
-                    non_matched_smiles.extend(chunk_result[filter_name]["non_matched_smiles"])
-
                 # OPTIMIZED: Store only matching SMILES set (not blocks)
-                self.filter_matched_smiles[filter_name] = set(matched_smiles)
+                self.filter_matched_smiles[filter_name] = set(result[filter_name]["matched_smiles"])
 
                 # Update table for this filter
                 self.update_filter_in_table(filter_name)
 
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Error during parallel filtering: {str(e)}")
+            QMessageBox.critical(self, "Error", f"Error during filtering: {str(e)}")
             return
 
-        progress.setValue(len(smiles_chunks))
-        QMessageBox.information(self, "Success", f"Successfully processed {len(self.smarts_filters)} filter(s) in parallel.")
+        progress.setValue(len(all_smiles_list))
+        QMessageBox.information(self, "Success", f"Successfully processed {len(self.smarts_filters)} filter(s).")
 
     def on_export_all_changed(self, state):
         """Handle export all checkbox state change."""
@@ -2599,7 +2540,7 @@ class MGFFilterGUI(QMainWindow):
             return {"success": False, "filter_name": filter_name, "error": str(e)}
 
     def export_results(self):
-        """Export filtered results to MGF files using parallel processing."""
+        """Export filtered results to MGF files."""
         base_output_path = self.output_file_input.text()
 
         if not base_output_path:
@@ -2661,7 +2602,7 @@ class MGFFilterGUI(QMainWindow):
         filters_with_no_matches = 0  # Track filters with zero matching spectra
 
         try:
-            # Export sequentially (avoid DataFrame pickling issues with multiprocessing)
+            # Export sequentially - each export reconstructs blocks on-demand, keeping memory usage low
             # Each export reconstructs blocks on-demand, keeping memory usage low
             results = []
             for idx, export_info in enumerate(export_infos):
@@ -2773,18 +2714,12 @@ class MGFFilterGUI(QMainWindow):
             QMessageBox.information(self, "Export Complete", msg)
 
     def closeEvent(self, event):
-        """Clean up temporary directory and worker pool on close."""
+        """Clean up temporary directory on close."""
         self.temp_dir.cleanup()
 
         # Close all structure viewer windows
         for window in self.structure_windows:
             window.close()
-
-        # Terminate worker pool (only if it was actually created)
-        if self._worker_pool is not None:
-            self._worker_pool.close()
-            self._worker_pool.join()
-            print("Worker pool terminated")
 
         event.accept()
 
@@ -2944,11 +2879,6 @@ class MGFFilterGUI(QMainWindow):
 
 
 def main():
-    # Required for Windows multiprocessing support
-    from multiprocessing import freeze_support
-
-    freeze_support()
-
     app = QApplication(sys.argv)
     window = MGFFilterGUI()
     window.show()
