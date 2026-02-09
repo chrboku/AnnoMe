@@ -17,6 +17,7 @@ from matplotlib.backends.backend_pdf import PdfPages
 import matplotlib.pyplot as plt
 import plotnine as p9
 import polars as pl
+import pandas as pd
 
 import rdkit
 import rdkit.Chem
@@ -44,21 +45,45 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def optimize_dataframe_dtypes(df, infer_schema_length=0, max_values_for_categorical_column=1000):
     """
-    Optimize Polars DataFrame column datatypes to reduce memory usage.
+    Optimize DataFrame column datatypes to reduce memory usage.
+    Supports both Polars and pandas DataFrames.
 
     This function analyzes each column and attempts to convert it to the most memory-efficient
     datatype while preserving data integrity:
     1. Try converting to Int64 (most memory-efficient for integers)
     2. If that fails, try Float64 (for numeric data with decimals)
-    3. If that fails, keep as Utf8 (string)
-    4. For Utf8 columns with few unique values, convert to Categorical (more memory-efficient)
+    3. If that fails, keep as string
+    4. For string columns with few unique values, convert to Categorical (more memory-efficient)
+
+    Args:
+        df: Polars or pandas DataFrame to optimize
+        infer_schema_length: Number of non-empty rows to sample per column for type inference.
+            If <= 0, uses all rows (default: 0)
+        max_values_for_categorical_column: Maximum number of unique values to convert
+            a string column to categorical (default: 1000)
+
+    Returns:
+        Optimized DataFrame with more memory-efficient dtypes (same type as input)
+    """
+
+    if isinstance(df, pl.DataFrame):
+        return _optimize_polars_dtypes(df, infer_schema_length, max_values_for_categorical_column)
+    elif isinstance(df, pd.DataFrame):
+        return _optimize_pandas_dtypes(df, infer_schema_length, max_values_for_categorical_column)
+    else:
+        raise TypeError(f"Unsupported DataFrame type: {type(df)}. Expected polars.DataFrame or pandas.DataFrame.")
+
+
+def _optimize_polars_dtypes(df, infer_schema_length=0, max_values_for_categorical_column=1000):
+    """
+    Optimize Polars DataFrame column datatypes to reduce memory usage.
 
     Args:
         df: Polars DataFrame to optimize
         infer_schema_length: Number of non-empty rows to sample per column for type inference.
-            If <= 0, uses all rows (default: 100)
+            If <= 0, uses all rows
         max_values_for_categorical_column: Maximum number of unique values to convert
-            a string column to categorical (default: 100)
+            a string column to categorical
 
     Returns:
         Optimized Polars DataFrame with more memory-efficient dtypes
@@ -69,11 +94,11 @@ def optimize_dataframe_dtypes(df, infer_schema_length=0, max_values_for_categori
     estimated_size_before = df.estimated_size()
 
     if infer_schema_length <= 0:
-        print(f"Optimizing DataFrame dtypes (using all rows)...")
+        print(f"Optimizing Polars DataFrame dtypes (using all rows)...")
     else:
-        print(f"Optimizing DataFrame dtypes (sampling {infer_schema_length} non-empty rows per column)...")
+        print(f"Optimizing Polars DataFrame dtypes (sampling {infer_schema_length} non-empty rows per column)...")
 
-    conversions = []
+    num_conversions = 0
 
     for col_name in df.columns:
         # Only optimize string-like columns
@@ -93,20 +118,22 @@ def optimize_dataframe_dtypes(df, infer_schema_length=0, max_values_for_categori
 
         # Try converting to Int64
         try:
-            test_int = non_null_sample.select(pl.col(col_name).cast(pl.Int64, strict=True))
-            # Success! Convert entire column to Int64
-            conversions.append(pl.col(col_name).cast(pl.Int64, strict=False))
+            non_null_sample.select(pl.col(col_name).cast(pl.Int64, strict=True))
+            # Success! Convert entire column to Int64 immediately
+            df = df.with_columns(pl.col(col_name).cast(pl.Int64, strict=False))
             print(f"  - {col_name}: Utf8 → Int64")
+            num_conversions += 1
             continue
         except:
             pass
 
         # Try converting to Float64
         try:
-            test_float = non_null_sample.select(pl.col(col_name).cast(pl.Float64, strict=True))
-            # Success! Convert entire column to Float64
-            conversions.append(pl.col(col_name).cast(pl.Float64, strict=False))
+            non_null_sample.select(pl.col(col_name).cast(pl.Float64, strict=True))
+            # Success! Convert entire column to Float64 immediately
+            df = df.with_columns(pl.col(col_name).cast(pl.Float64, strict=False))
             print(f"  - {col_name}: Utf8 → Float64")
+            num_conversions += 1
             continue
         except:
             pass
@@ -116,15 +143,101 @@ def optimize_dataframe_dtypes(df, infer_schema_length=0, max_values_for_categori
         unique_count = non_null_sample.select(pl.col(col_name).n_unique()).item()
 
         if unique_count <= max_values_for_categorical_column:
-            # Convert to Categorical for memory efficiency
-            conversions.append(pl.col(col_name).cast(pl.Categorical))
+            # Convert to Categorical for memory efficiency immediately
+            df = df.with_columns(pl.col(col_name).cast(pl.Categorical))
             print(f"  - {col_name}: Utf8 → Categorical ({unique_count} unique values)")
+            num_conversions += 1
 
-    # Apply all conversions at once
-    if conversions:
-        df = df.with_columns(conversions).shrink_to_fit()
+    # Shrink to fit after all conversions
+    if num_conversions > 0:
+        df = df.shrink_to_fit()
         print(
-            f"Optimized {len(conversions)} column(s), reduced size by {(1.0 - df.estimated_size() / estimated_size_before) * 100.0:.2f}% (size before: {estimated_size_before} bytes, size after: {df.estimated_size()} bytes)"
+            f"Optimized {num_conversions} column(s), reduced size by {(1.0 - df.estimated_size() / estimated_size_before) * 100.0:.2f}% (size before: {estimated_size_before} bytes, size after: {df.estimated_size()} bytes)"
+        )
+    else:
+        print("No columns required optimization")
+
+    return df
+
+
+def _optimize_pandas_dtypes(df, infer_schema_length=0, max_values_for_categorical_column=1000):
+    """
+    Optimize pandas DataFrame column datatypes to reduce memory usage.
+
+    Args:
+        df: pandas DataFrame to optimize
+        infer_schema_length: Number of non-empty rows to sample per column for type inference.
+            If <= 0, uses all rows
+        max_values_for_categorical_column: Maximum number of unique values to convert
+            a string column to categorical
+
+    Returns:
+        Optimized pandas DataFrame with more memory-efficient dtypes
+    """
+    import pandas as pd
+
+    if df is None or df.empty:
+        return df
+
+    estimated_size_before = df.memory_usage(deep=True).sum()
+
+    if infer_schema_length <= 0:
+        print(f"Optimizing pandas DataFrame dtypes (using all rows)...")
+    else:
+        print(f"Optimizing pandas DataFrame dtypes (sampling {infer_schema_length} non-empty rows per column)...")
+
+    num_conversions = 0
+
+    for col_name in df.columns:
+        # Only optimize object (string) columns
+        if df[col_name].dtype != object:
+            continue
+
+        # Get non-null values for this column
+        non_null_series = df[col_name].dropna()
+
+        # Limit to infer_schema_length rows if specified (> 0)
+        if infer_schema_length > 0:
+            non_null_series = non_null_series.head(infer_schema_length)
+
+        if non_null_series.empty:
+            # All nulls, skip optimization
+            continue
+
+        # Try converting to Int64 (nullable integer)
+        try:
+            converted = pd.to_numeric(non_null_series, errors="raise")
+            # Check if all values are integers (no fractional parts)
+            if (converted == converted.astype("int64")).all():
+                df[col_name] = pd.to_numeric(df[col_name], errors="coerce").astype("Int64")
+                print(f"  - {col_name}: object → Int64")
+                num_conversions += 1
+                continue
+        except (ValueError, TypeError, OverflowError):
+            pass
+
+        # Try converting to Float64
+        try:
+            pd.to_numeric(non_null_series, errors="raise")
+            df[col_name] = pd.to_numeric(df[col_name], errors="coerce").astype("float64")
+            print(f"  - {col_name}: object → float64")
+            num_conversions += 1
+            continue
+        except (ValueError, TypeError):
+            pass
+
+        # Keep as object, but check if it should be Categorical
+        unique_count = non_null_series.nunique()
+
+        if unique_count <= max_values_for_categorical_column:
+            df[col_name] = df[col_name].astype("category")
+            print(f"  - {col_name}: object → category ({unique_count} unique values)")
+            num_conversions += 1
+
+    if num_conversions > 0:
+        estimated_size_after = df.memory_usage(deep=True).sum()
+        print(
+            f"Optimized {num_conversions} column(s), reduced size by {(1.0 - estimated_size_after / estimated_size_before) * 100.0:.2f}% (size before: {estimated_size_before} bytes, size after: {estimated_size_after} bytes)"
         )
     else:
         print("No columns required optimization")
@@ -936,210 +1049,218 @@ def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=F
 
     Args:
         file_path (str): Path to the MGF file.
+        check_required_keys (bool): If True, only blocks with 'pepmass' and 'name' are kept.
+        return_as_polars_table (bool): If True, returns a Polars DataFrame instead of a list of dicts.
+        ignore_spectral_data (bool): If True, skips parsing of peak m/z and intensity data.
 
     Returns:
-        dict: A dictionary where each key is a FEATURE_ID and the value is a list of blocks.
+        list or pl.DataFrame: Parsed MGF blocks.
     """
-    with open(file_path, "r", errors="ignore") as file:
-        lines = file.readlines()
+    # --- Pre-compile regexes (avoid recompilation per line) ---
+    _RE_CE_WITH_METHOD = re.compile(r"^(\d+(?:\.\d+)?)\s*(HCD|CID)$", re.IGNORECASE)
 
-    if return_as_polars_table:
-        blocks = defaultdict(list)
-    else:
-        blocks = []
-    blocks_loaded_successfully_n = 0
-    current_block_primary = OrderedDict()
-    current_block_secondary = OrderedDict()
-    blocks_not_used = 0
+    # --- Pre-build lookup sets for O(1) key matching (avoid O(n) list scans) ---
+    _COLLISION_ENERGY_KEYS = frozenset({"collision_energy", "ms_ionization_energy"})
+    _FRAGMENTATION_KEYS = frozenset({"fragmentation_mode", "ms_frag_mode", "fragmentation_method", "ms_dissociation_method"})
+    _IONMODE_KEYS = frozenset({"ionmode", "ion_mode", "ms_ion_mode", "polarity"})
+    _FEATURE_ID_KEYS = frozenset({"feature_id", "accession"})
+    _ADDUCT_KEYS = frozenset({"precursor_type", "adduct"})
+    _PEPMASS_KEYS = frozenset({"precursormz", "precursor_mz", "pepmass", "precursor_mz_value"})
+    _INSTRUMENT_KEYS = frozenset(
+        {
+            "instrument",
+            "instrument_model",
+            "instrument_model_name",
+            "instrument_name",
+            "source_instrument",
+            "ms_mass_analyzer",
+            "instrument_type",
+        }
+    )
+    _NAME_KEYS = frozenset({"name", "compound_name"})
+    _MSLEVEL_KEYS = frozenset({"mslevel", "ms_level"})
+    _POSITIVE_VALUES = frozenset({"positive", "pos", "p", "+"})
+    _NEGATIVE_VALUES = frozenset({"negative", "neg", "n", "-"})
 
-    required_keys = [
-        "pepmass",
-        "instrument",
-        "name",
-        "adduct",
-        "ionmode",
-        "fragmentation_method",
-        "collision_energy",
-    ]
-
+    # --- Build required keys as a frozenset for fast difference operations ---
+    required_keys_set = frozenset(
+        {
+            "pepmass",
+            "instrument",
+            "name",
+            "adduct",
+            "ionmode",
+            "fragmentation_method",
+            "collision_energy",
+        }
+    )
     if not ignore_spectral_data:
-        required_keys.append("$$spectrumData")
+        required_keys_set = required_keys_set | frozenset({"$$spectrumData"})
+
+    # --- Use plain dicts instead of OrderedDict (Python 3.7+ preserves insertion order) ---
+    blocks = []
+    blocks_loaded_successfully_n = 0
+    current_block_primary = {}
+    current_block_secondary = {}
+    blocks_not_used = 0
 
     incomplete_blocks = defaultdict(int)
     cur_id = 0
     filename = os.path.basename(file_path)
-    for line in lines:
-        line = line.strip()
-        if line == "BEGIN IONS":
-            current_block_primary = OrderedDict()
-            current_block_secondary = OrderedDict()
-            current_block_secondary["AnnoMe_internal_ID"] = f"{filename}___{cur_id}"
-            cur_id += 1
 
-        elif line == "END IONS":
-            # Track missing keys in the current block for later display
-            missing_keys = natsort.natsorted([key.lower() for key in required_keys if key not in current_block_primary.keys() and key not in current_block_secondary.keys()])
-            if len(missing_keys) > 0:
-                incomplete_blocks[str(missing_keys)] += 1
+    # --- Collect peak lines as raw strings, batch-parse at END IONS ---
+    peak_lines = []
 
-            # Check if the block has the required keys to be considered valid
-            use_block = "pepmass" in current_block_primary and is_float(current_block_primary["pepmass"]) and "name" in current_block_primary
-            if use_block or not check_required_keys:
-                blocks_loaded_successfully_n += 1
-                if return_as_polars_table:
-                    for meta in blocks.keys():
-                        if meta in current_block_secondary.keys():
-                            blocks[meta].append(current_block_secondary.get(meta))
-                        else:
-                            if meta in current_block_primary.keys():
-                                blocks[meta].append(current_block_primary.get(meta))
-                            else:
-                                blocks[meta].append(None)
-                    for meta in current_block_primary.keys():
-                        if meta not in blocks.keys():
-                            blocks[meta] = [None] * (blocks_loaded_successfully_n - 1)
-                            blocks[meta].append(current_block_primary.get(meta))
-                    for meta in current_block_secondary.keys():
-                        if meta not in blocks.keys():
-                            blocks[meta] = [None] * (blocks_loaded_successfully_n - 1)
-                            blocks[meta].append(current_block_secondary.get(meta))
-                else:
+    # --- Stream line-by-line instead of readlines() to avoid doubling memory ---
+    with open(file_path, "r", errors="ignore") as file:
+        for raw_line in file:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            if line == "BEGIN IONS":
+                current_block_primary = {}
+                current_block_secondary = {}
+                current_block_secondary["AnnoMe_internal_ID"] = f"{filename}___{cur_id}"
+                cur_id += 1
+                peak_lines = []
+
+            elif line == "END IONS":
+                # Batch-parse collected peak lines into spectrum data
+                if not ignore_spectral_data and peak_lines:
+                    mzs = []
+                    intensities = []
+                    for pl_line in peak_lines:
+                        parts = pl_line.split()
+                        mzs.append(float(parts[0]))
+                        intensities.append(float(parts[1]))
+                    current_block_secondary["$$spectrumData"] = [mzs, intensities]
+
+                # Track missing keys using frozenset difference (fast, no sorting per block)
+                all_block_keys = frozenset(current_block_primary.keys()) | frozenset(current_block_secondary.keys())
+                missing = required_keys_set - all_block_keys
+                if missing:
+                    # Use a sorted tuple as a hashable, stable key for the counter
+                    incomplete_blocks[tuple(sorted(missing))] += 1
+
+                # Check if the block has the required keys to be considered valid
+                # Inline float check: try/except is only hit on bad data
+                pepmass_val = current_block_primary.get("pepmass")
+                use_block = False
+                if pepmass_val is not None and "name" in current_block_primary:
+                    try:
+                        float(pepmass_val)
+                        use_block = True
+                    except (ValueError, TypeError):
+                        pass
+
+                if use_block or not check_required_keys:
+                    blocks_loaded_successfully_n += 1
+                    # Always collect as a merged dict; polars conversion happens at the end
                     blocks.append({**current_block_primary, **current_block_secondary})
-            else:
-                blocks_not_used += 1
-
-            # Reset current blocks for the next iteration
-            current_block_primary = OrderedDict()
-            current_block_secondary = OrderedDict()
-
-        elif line == "":
-            pass
-
-        elif "=" in line:
-            key, value = line.split("=", 1)
-            key = key.strip().lower()
-            value = value.strip()
-            is_primary = False
-
-            if key in ["collision_energy", "ms_ionization_energy"]:
-                if re.match(r"^\d+(\.\d+)? *(HCD|CID)$", value, re.IGNORECASE):
-                    match = re.match(r"^(\d+(\.\d+)?) *(HCD|CID)$", value, re.IGNORECASE)
-                    if match:
-                        value = match.group(1)
-                        method_value = match.group(3).upper()
-                        value = str(value)
-                        current_block_primary["fragmentation_method"] = method_value
-
-                try:
-                    if value.startswith("[") and value.endswith("]"):
-                        # Already a list, normalize whitespace and sort
-                        items = [float(v.strip()) for v in value[1:-1].split(",") if v.strip()]
-                        items.sort()
-                        value = items
-                    elif "," in value:
-                        # Comma-separated list, parse, sort, and format as python list string
-                        items = [float(v.strip()) for v in value.split(",") if v.strip()]
-                        items.sort()
-                        value = items
-                    else:
-                        # Single value, wrap in list
-                        try:
-                            num = round(float(value), 0)
-                            value = [num]
-                        except ValueError:
-                            pass  # Leave as is if not a number
-                except ValueError:
-                    # If conversion fails, keep the original value
-                    pass
-
-                key = "collision_energy"
-                is_primary = True
-
-            elif key in [
-                "fragmentation_mode",
-                "ms_frag_mode",
-                "fragmentation_method",
-                "ms_dissociation_method",
-            ]:
-                key = "fragmentation_method"
-                is_primary = True
-
-            elif key in ["ionmode", "ion_mode", "ms_ion_mode", "polarity"]:
-                if key == "polarity":
-                    if not value in ["1", "0"]:
-                        raise ValueError(f"Invalid polarity value: {value}. Use '1' for positive and '0' for negative.")
-                    value = "+" if value == "1" else "-"
-                if value.lower() in ["positive", "pos", "p", "+"]:
-                    value = "+"
-                elif value.lower() in ["negative", "neg", "n", "-"]:
-                    value = "-"
                 else:
-                    value = "NA"
-                key = "ionmode"
-                is_primary = True
+                    blocks_not_used += 1
 
-            elif key in ["feature_id", "accession"]:
-                key = "feature_id"
+                # Reset for next block
+                current_block_primary = {}
+                current_block_secondary = {}
+                peak_lines = []
 
-            elif key in ["precursor_type", "adduct"]:
-                key = "adduct"
-                is_primary = True
+            elif "=" in line:
+                key, value = line.split("=", 1)
+                key = key.strip().lower()
+                value = value.strip()
+                is_primary = False
 
-            elif key in [
-                "precursormz",
-                "precursor_mz",
-                "pepmass",
-                "precursor_mz_value",
-            ]:
-                key = "pepmass"
-                is_primary = True
+                if key in _COLLISION_ENERGY_KEYS:
+                    # Use pre-compiled regex (single match instead of match+match)
+                    ce_match = _RE_CE_WITH_METHOD.match(value)
+                    if ce_match:
+                        value = ce_match.group(1)
+                        current_block_primary["fragmentation_method"] = ce_match.group(2).upper()
 
-            elif key in [
-                "instrument",
-                "instrument_model",
-                "instrument_model_name",
-                "instrument_name",
-                "source_instrument",
-                "ms_mass_analyzer",
-                "instrument_type",
-            ]:
-                key = "instrument"
-                if key in current_block_primary:
-                    # If already exists, append the new value
-                    value = current_block_primary[key] + f"; {value}"
-                is_primary = True
+                    try:
+                        if value.startswith("[") and value.endswith("]"):
+                            items = sorted(float(v.strip()) for v in value[1:-1].split(",") if v.strip())
+                            value = items
+                        elif "," in value:
+                            items = sorted(float(v.strip()) for v in value.split(",") if v.strip())
+                            value = items
+                        else:
+                            try:
+                                value = [round(float(value), 0)]
+                            except ValueError:
+                                pass
+                    except ValueError:
+                        pass
 
-            elif key in ["name", "compound_name"]:
-                value = value.lower().strip()
-                key = "name"
-                is_primary = True
+                    key = "collision_energy"
+                    is_primary = True
 
-            elif key.lower() in ["mslevel", "ms_level"]:
-                key = "MSLEVEL"
+                elif key in _FRAGMENTATION_KEYS:
+                    key = "fragmentation_method"
+                    is_primary = True
 
-            if is_primary:
-                current_block_primary[key] = str(value)
+                elif key in _IONMODE_KEYS:
+                    if key == "polarity":
+                        if value not in ("1", "0"):
+                            raise ValueError(f"Invalid polarity value: {value}. Use '1' for positive and '0' for negative.")
+                        value = "+" if value == "1" else "-"
+                    val_lower = value.lower()
+                    if val_lower in _POSITIVE_VALUES:
+                        value = "+"
+                    elif val_lower in _NEGATIVE_VALUES:
+                        value = "-"
+                    else:
+                        value = "NA"
+                    key = "ionmode"
+                    is_primary = True
+
+                elif key in _FEATURE_ID_KEYS:
+                    key = "feature_id"
+
+                elif key in _ADDUCT_KEYS:
+                    key = "adduct"
+                    is_primary = True
+
+                elif key in _PEPMASS_KEYS:
+                    key = "pepmass"
+                    is_primary = True
+
+                elif key in _INSTRUMENT_KEYS:
+                    key = "instrument"
+                    if key in current_block_primary:
+                        value = current_block_primary[key] + f"; {value}"
+                    is_primary = True
+
+                elif key in _NAME_KEYS:
+                    value = value.lower().strip()
+                    key = "name"
+                    is_primary = True
+
+                elif key in _MSLEVEL_KEYS:
+                    key = "MSLEVEL"
+
+                if is_primary:
+                    current_block_primary[key] = str(value)
+                else:
+                    current_block_secondary[key] = str(value)
+
+            elif line.lower().startswith("num peaks"):
+                # Just a header line; peak_lines list is already initialized at BEGIN IONS
+                pass
+
             else:
-                current_block_secondary[key] = str(value)
+                # Collect raw peak line for batch parsing at END IONS
+                if not ignore_spectral_data:
+                    peak_lines.append(line)
 
-        elif line.lower().startswith("num peaks"):
-            if not ignore_spectral_data:
-                if "spectrumData" not in current_block_secondary:
-                    current_block_secondary["$$spectrumData"] = [[], []]
-
-        else:
-            if not ignore_spectral_data:
-                if "$$spectrumData" not in current_block_secondary:
-                    current_block_secondary["$$spectrumData"] = [[], []]
-                mz, inte = line.split()
-                current_block_secondary["$$spectrumData"][0].append(float(mz))
-                current_block_secondary["$$spectrumData"][1].append(float(inte))
-
-    if len(incomplete_blocks) > 0:
+    # --- Print warnings ---
+    if incomplete_blocks:
         print(f"{Fore.RED}")
         print("   - Warning: Some blocks are missing required keys:")
-        for keys, count in natsort.natsorted(incomplete_blocks.items(), key=lambda x: str(x[0].lower())):
-            print(f"      - {keys}: {count} blocks")
+        for keys, count in natsort.natsorted(incomplete_blocks.items(), key=lambda x: str(x[0]).lower()):
+            print(f"      - {list(keys)}: {count} blocks")
         print(f"{Style.RESET_ALL}")
 
     if blocks_not_used > 0:
@@ -1147,16 +1268,17 @@ def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=F
         print(f"   - Warning: {blocks_not_used} blocks were not used due to missing required keys.")
         print(f"{Style.RESET_ALL}")
 
+    # --- Convert to polars or filter list ---
     if return_as_polars_table:
-        blocks = pl.DataFrame(blocks)
-        assert blocks_loaded_successfully_n == blocks.shape[0], f"Expected {blocks_loaded_successfully_n} blocks, but got {blocks.shape[0]}"
-        if "MSLEVEL" in blocks.columns:
-            blocks = blocks.filter((pl.col("MSLEVEL") != "1") | pl.col("MSLEVEL").is_null())
+        # Build polars DataFrame from list of dicts in one shot (avoids O(cols*rows) padding)
+        result = pl.DataFrame(blocks)
+        assert blocks_loaded_successfully_n == result.shape[0], f"Expected {blocks_loaded_successfully_n} blocks, but got {result.shape[0]}"
+        if "MSLEVEL" in result.columns:
+            result = result.filter((pl.col("MSLEVEL") != "1") | pl.col("MSLEVEL").is_null())
+        return result
     else:
         assert blocks_loaded_successfully_n == len(blocks), f"Expected {blocks_loaded_successfully_n} blocks, but got {len(blocks)}"
-        blocks = [block for block in blocks if ("MSLEVEL" in block and block["MSLEVEL"] != "1") or "MSLEVEL" not in block]
-
-    return blocks
+        return [block for block in blocks if block.get("MSLEVEL", "2") != "1"]
 
 
 def standardize_blocks(blocks, standards):

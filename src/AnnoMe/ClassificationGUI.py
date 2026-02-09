@@ -50,7 +50,6 @@ import tempfile
 from pprint import pprint
 import pickle
 import inspect
-import traceback
 
 
 # Import classification functions
@@ -70,9 +69,9 @@ from .Filters import parse_mgf_file
 # Global color constants for file type categories
 COLOR_TRAIN_RELEVANT = QColor(197, 216, 157)  # Light green
 COLOR_TRAIN_OTHER = QColor(210, 83, 83)  # Peach
-COLOR_VALIDATION_RELEVANT = QColor(156, 171, 132)  # Light blue
-COLOR_VALIDATION_OTHER = QColor(158, 59, 59)  # Light yellow
-COLOR_INFERENCE = QColor(69, 104, 130)  # Lavender
+COLOR_VALIDATION_RELEVANT = QColor(156, 171, 132)  # Muted green
+COLOR_VALIDATION_OTHER = QColor(158, 59, 59)  # Dark red
+COLOR_INFERENCE = QColor(69, 104, 130)  # Dark blue
 
 
 class EmbeddingWorker(QThread):
@@ -95,10 +94,10 @@ class EmbeddingWorker(QThread):
             self.progress.emit("Generating embeddings...")
 
             # copy input file to avoid any problems between matching MS2Spectra imported data and parse_mgf_file imported data
-            xxx = {}
+            original_file_paths = {}
 
             for ds in self.datasets:
-                xxx[ds["name"]] = ds["file"]
+                original_file_paths[ds["name"]] = ds["file"]
 
                 cur_id = 0
                 filename = os.path.basename(ds["file"])
@@ -115,12 +114,16 @@ class EmbeddingWorker(QThread):
 
                 print(f"Added internal ID to {cur_id} entries in {filename}")
 
-            df = generate_embeddings(self.datasets, self.data_to_add)
-
-            # Clean up temporary files
-            for ds in self.datasets:
-                os.remove(ds["file"])
-                ds["file"] = xxx[ds["name"]]
+            try:
+                df = generate_embeddings(self.datasets, self.data_to_add)
+            finally:
+                # Clean up temporary files and restore original paths
+                for ds in self.datasets:
+                    try:
+                        os.remove(ds["file"])
+                    except OSError:
+                        pass
+                    ds["file"] = original_file_paths[ds["name"]]
 
             self.progress.emit("Adding metadata...")
 
@@ -168,7 +171,7 @@ class TrainingWorker(QThread):
 
             # Iterate through all keys in trained_classifiers (format: "classifier_set_name / subset_name")
             for combined_key in trained_classifiers.keys():
-                xxx = self.df_subset.copy()
+                df_working_copy = self.df_subset.copy()
 
                 # Extract classifier_set_name and subset_name from the key
                 parts = combined_key.split(" / ")
@@ -187,8 +190,8 @@ class TrainingWorker(QThread):
                 classifiers_list = trained_classifiers[combined_key][1]
                 min_threshold = trained_classifiers[combined_key][2] if len(trained_classifiers[combined_key]) > 2 else 120
 
-                df_subset_infe = predict(xxx, classifiers_list, subset_name, subset_fn)
-                long_table, pivot_table = generate_prediction_overview(xxx, df_subset_infe, self.output_dir, file_prefix=display_key.replace(" // ", "_"), min_prediction_threshold=min_threshold)
+                df_subset_infe = predict(df_working_copy, classifiers_list, subset_name, subset_fn)
+                long_table, pivot_table = generate_prediction_overview(df_working_copy, df_subset_infe, self.output_dir, file_prefix=display_key.replace(" // ", "_"), min_prediction_threshold=min_threshold)
                 long_tables[display_key] = long_table
                 pivot_tables[display_key] = pivot_table
 
@@ -319,6 +322,8 @@ class SpectrumViewer(QDialog):
 class ClassificationGUI(QMainWindow):
     """Main GUI for AnnoMe Classification."""
 
+    EXCLUDE_COLS = frozenset({"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"})
+
     def __init__(self):
         super().__init__()
         self.mgf_files = {}  # filename -> {data, entries, unique_smiles, type}
@@ -335,6 +340,7 @@ class ClassificationGUI(QMainWindow):
         self.subset_filter_functions = {}  # subset_name -> filter_function
         self.classifiers_config = None  # ML classifiers configuration
         self.pending_config_data = None  # For load_full_configuration workflow
+        self._editing_subset_index = None  # Track which subset is being edited
 
         set_random_seeds(42)
 
@@ -1320,8 +1326,7 @@ classifiers_to_compare = {
         sources = sorted(self.df_embeddings["source"].unique())
 
         # Get all metadata columns (exclude standard embedding-related columns)
-        exclude_cols = {"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"}
-        all_keys = sorted([col for col in self.df_embeddings.columns if col not in exclude_cols])
+        all_keys = sorted([col for col in self.df_embeddings.columns if col not in self.EXCLUDE_COLS])
 
         self.meta_table.setRowCount(len(all_keys))
         self.meta_table.setColumnCount(len(sources))
@@ -1396,8 +1401,7 @@ classifiers_to_compare = {
             return
 
         # Get the meta-key for this row
-        exclude_cols = {"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"}
-        all_keys = sorted([col for col in self.df_embeddings.columns if col not in exclude_cols])
+        all_keys = sorted([col for col in self.df_embeddings.columns if col not in self.EXCLUDE_COLS])
 
         if row >= len(all_keys):
             return
@@ -1421,6 +1425,35 @@ classifiers_to_compare = {
         for value, count in sorted(value_counts.items(), key=lambda x: str(x[0])):
             self.value_list.addItem(f"{value}: {count}")
 
+    def _count_subset_matches(self, subset_expr):
+        """Count matches for a subset expression across all embeddings, grouped by file type.
+
+        Compiles the expression once and uses vectorized aggregation for performance.
+        """
+        type_counts = defaultdict(int)
+        if self.df_embeddings is None:
+            return type_counts
+
+        file_type_map = {filename: data["type"] for filename, data in self.mgf_files.items()}
+        meta_cols = [col for col in self.df_embeddings.columns if col not in self.EXCLUDE_COLS]
+        compiled = compile(subset_expr, "<string>", "eval")
+        eval_globals = {"abs": abs, "float": float, "int": int, "str": str}
+
+        def eval_row(row):
+            meta = {col: row[col] for col in meta_cols}
+            try:
+                return bool(eval(compiled, {**eval_globals, "meta": meta}))
+            except Exception:
+                return False
+
+        mask = self.df_embeddings.apply(eval_row, axis=1)
+        matched_sources = self.df_embeddings.loc[mask, "source"]
+        for source, count in matched_sources.value_counts().items():
+            file_type = file_type_map.get(source, "unknown")
+            type_counts[file_type] += count
+
+        return type_counts
+
     def check_subset_syntax(self):
         """Check if the subset syntax is valid."""
         subset_expr = self.subset_input.text().strip()
@@ -1433,17 +1466,16 @@ classifiers_to_compare = {
             QMessageBox.warning(self, "Warning", "Please generate embeddings first (Section 2)")
             return
 
-        # Test with metadata from embeddings
-        exclude_cols = {"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"}
-        test_meta = {col: "test_value" for col in self.df_embeddings.columns if col not in exclude_cols}
-        test_meta["CE"] = "20.0"
-        test_meta["ionmode"] = "pos"
+        # Test with actual metadata from the first row of embeddings
+        meta_cols = [col for col in self.df_embeddings.columns if col not in self.EXCLUDE_COLS]
+        test_row = self.df_embeddings.iloc[0]
+        test_meta = {col: test_row[col] for col in meta_cols}
 
         try:
             # Try to compile and evaluate
             compiled = compile(subset_expr, "<string>", "eval")
             result = eval(compiled, {"meta": test_meta, "abs": abs, "float": float, "int": int, "str": str})
-            QMessageBox.information(self, "Success", "Subset syntax is valid!")
+            QMessageBox.information(self, "Success", f"Subset syntax is valid! (test result on first spectrum: {result})")
         except Exception as e:
             QMessageBox.warning(self, "Syntax Error", f"Invalid subset syntax:\n{str(e)}")
 
@@ -1464,9 +1496,10 @@ classifiers_to_compare = {
             QMessageBox.warning(self, "Warning", "Please generate embeddings first (Section 2)")
             return
 
-        # Test the subset with a sample from the embeddings
-        exclude_cols = {"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"}
-        test_meta = {col: "test_value" for col in self.df_embeddings.columns if col not in exclude_cols}
+        # Test the subset with actual data from the first row of embeddings
+        meta_cols = [col for col in self.df_embeddings.columns if col not in self.EXCLUDE_COLS]
+        test_row = self.df_embeddings.iloc[0]
+        test_meta = {col: test_row[col] for col in meta_cols}
         try:
             compiled = compile(subset_expr, "<string>", "eval")
             eval(compiled, {"meta": test_meta, "abs": abs, "float": float, "int": int, "str": str})
@@ -1475,28 +1508,15 @@ classifiers_to_compare = {
             return
 
         # Count matches for each type using the embeddings dataframe
-        type_counts = defaultdict(int)
+        type_counts = self._count_subset_matches(subset_expr)
 
-        # Get file types from mgf_files (mapping source to type)
-        file_type_map = {filename: data["type"] for filename, data in self.mgf_files.items()}
-
-        # Iterate through embeddings dataframe
-        for idx, row in self.df_embeddings.iterrows():
-            source = row.get("source", "")
-            file_type = file_type_map.get(source, "unknown")
-
-            # Create meta dict from row (exclude special columns)
-            meta = {col: row[col] for col in self.df_embeddings.columns if col not in exclude_cols}
-
-            try:
-                compiled = compile(subset_expr, "<string>", "eval")
-                if eval(compiled, {"meta": meta, "abs": abs, "float": float, "int": int, "str": str}):
-                    type_counts[file_type] += 1
-            except:
-                pass
-
-        # Add to subsets list
-        self.subsets.append({"name": subset_name, "expression": subset_expr, "counts": type_counts})
+        # Add or replace subset depending on editing mode
+        new_subset = {"name": subset_name, "expression": subset_expr, "counts": type_counts}
+        if self._editing_subset_index is not None:
+            self.subsets[self._editing_subset_index] = new_subset
+            self._editing_subset_index = None
+        else:
+            self.subsets.append(new_subset)
 
         # Update table
         self.update_subset_table()
@@ -1553,17 +1573,16 @@ classifiers_to_compare = {
         if row < 0 or row >= len(self.subsets):
             return
 
-        # Get the subset name and expression and put them in the text fields
+        # Store the index being edited (subset stays in list until replaced)
+        self._editing_subset_index = row
+
+        # Load values into text fields
         subset_name = self.subsets[row].get("name", "")
         subset_expr = self.subsets[row]["expression"]
         self.subset_name_input.setText(subset_name)
         self.subset_input.setText(subset_expr)
 
-        # Delete the subset from the list
-        del self.subsets[row]
-        self.update_subset_table()
-
-        QMessageBox.information(self, "Edit Subset", "Subset loaded into text fields for editing.\nModify it and click 'Add Subset' when done.")
+        QMessageBox.information(self, "Edit Subset", "Subset loaded into text fields for editing.\nModify and click 'Add Subset' to save changes.\nThe original subset is preserved until replaced.")
 
     def delete_selected_subset(self):
         """Delete the selected subset(s)."""
@@ -1572,6 +1591,16 @@ classifiers_to_compare = {
         if not selected_rows:
             QMessageBox.warning(self, "Warning", "Please select a subset to delete")
             return
+
+        # Adjust editing index if a deletion would invalidate it
+        if self._editing_subset_index is not None:
+            if self._editing_subset_index in selected_rows:
+                # The subset being edited is being deleted — cancel editing
+                self._editing_subset_index = None
+            else:
+                # Adjust for deletions before the editing index
+                shift = sum(1 for r in selected_rows if r < self._editing_subset_index)
+                self._editing_subset_index -= shift
 
         # Delete subsets (in reverse order to maintain indices)
         for row in sorted(selected_rows, reverse=True):
@@ -1724,6 +1753,9 @@ classifiers_to_compare = {
         self.progress_dialog.setMinimumDuration(0)
         self.progress_dialog.setValue(0)
 
+        # Set busy cursor during embedding generation
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
         # Start worker thread
         self.embedding_worker = EmbeddingWorker(datasets, data_to_add, self.mgf_files)
         self.embedding_worker.progress.connect(self.on_embedding_progress)
@@ -1739,6 +1771,7 @@ classifiers_to_compare = {
 
     def on_embeddings_generated(self, df):
         """Handle embeddings generation completion."""
+        QApplication.restoreOverrideCursor()
         self.progress_dialog.close()
 
         # Verify that the number of rows matches the total number of MGF entries
@@ -1755,9 +1788,9 @@ classifiers_to_compare = {
             # get list of all ids to use from df
             ids_to_use = set(df["AnnoMe_internal_ID"].tolist())
             # remove all spectra where a corresponding internal id is not present in the embeddings
-            for mgf_file in self.mgf_files.values():
+            for filename, mgf_file in self.mgf_files.items():
                 original_count = mgf_file["num_entries"]
-                mgf_file["entries"] = [entry for entry in mgf_file["entries"] if entry["AnnoMe_internal_ID"] in ids_to_use]
+                mgf_file["entries"] = [entry for i, entry in enumerate(mgf_file["entries"]) if f"{filename}___{i}" in ids_to_use]
                 mgf_file["num_entries"] = len(mgf_file["entries"])
                 # recalculate unique smiles
                 smiles_set = set()
@@ -1797,6 +1830,7 @@ classifiers_to_compare = {
 
     def on_embedding_error(self, error_msg):
         """Handle embedding generation error."""
+        QApplication.restoreOverrideCursor()
         self.progress_dialog.close()
         self.embedding_status.setText("Status: Error occurred")
         self.generate_embeddings_btn.setEnabled(True)
@@ -2049,32 +2083,12 @@ classifiers_to_compare = {
 
             # Step 5: Load subsets and recalculate counts
             if "subsets" in config_data:
-                # Get metadata columns from embeddings
-                exclude_cols = {"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"}
-
-                # Get file types from mgf_files (mapping source to type)
-                file_type_map = {filename: data["type"] for filename, data in self.mgf_files.items()}
-
                 for subset_info in config_data["subsets"]:
                     subset_name = subset_info.get("name", "Unnamed")
                     subset_expr = subset_info["expression"]
 
                     # Count matches for each type using the embeddings dataframe
-                    type_counts = defaultdict(int)
-
-                    for idx, row in self.df_embeddings.iterrows():
-                        source = row.get("source", "")
-                        file_type = file_type_map.get(source, "unknown")
-
-                        # Create meta dict from row (exclude special columns)
-                        meta = {col: row[col] for col in self.df_embeddings.columns if col not in exclude_cols}
-
-                        try:
-                            compiled = compile(subset_expr, "<string>", "eval")
-                            if eval(compiled, {"meta": meta, "abs": abs, "float": float, "int": int, "str": str}):
-                                type_counts[file_type] += 1
-                        except:
-                            pass
+                    type_counts = self._count_subset_matches(subset_expr)
 
                     # Add to subsets list with recalculated counts
                     self.subsets.append({"name": subset_name, "expression": subset_expr, "counts": type_counts})
@@ -2140,10 +2154,11 @@ classifiers_to_compare = {
         classifiers_config_text = self.classifiers_config_text.toPlainText().strip()
         if classifiers_config_text:
             try:
-                # Evaluate the user's config
-                exec(classifiers_config_text)
+                # Evaluate the user's config in an explicit namespace
+                namespace = {}
+                exec(classifiers_config_text, namespace)
 
-                if "classifiers_to_compare" not in locals().keys():
+                if "classifiers_to_compare" not in namespace:
                     QMessageBox.warning(
                         self,
                         "Error",
@@ -2151,7 +2166,7 @@ classifiers_to_compare = {
                     )
                     return
 
-                self.classifiers_config = locals()["classifiers_to_compare"]
+                self.classifiers_config = namespace["classifiers_to_compare"]
                 if not isinstance(self.classifiers_config, dict):
                     QMessageBox.warning(self, "Error", "classifiers_to_compare must be a dictionary")
                     return
@@ -2213,13 +2228,15 @@ classifiers_to_compare = {
             subset_name = subset_data["name"]
             subset_expr = subset_data["expression"]
 
-            # Create a closure to capture the current subset_expr
+            # Create a closure to capture the current subset_expr (compile once for performance)
             def make_subset_func(expr):
+                compiled = compile(expr, "<string>", "eval")
+                eval_globals = {"abs": abs, "float": float, "int": int, "str": str}
+
                 def subset_func(row):
                     meta = {k: v for k, v in row.items() if k not in ["$$spectrumdata", "peaks", "embeddings"]}
                     try:
-                        compiled = compile(expr, "<string>", "eval")
-                        res = eval(compiled, {"meta": meta, "abs": abs, "float": float, "int": int, "str": str})
+                        res = eval(compiled, {**eval_globals, "meta": meta})
                         return res
                     except Exception as ex:
                         print(f"Error evaluating subset expression for row {meta}: {ex}")
@@ -2237,6 +2254,9 @@ classifiers_to_compare = {
         self.progress_dialog.setMinimumDuration(0)
         self.progress_dialog.setValue(0)
 
+        # Set busy cursor during training
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
         # Start worker thread with all subsets
         self.training_worker = TrainingWorker(self.df_embeddings, subsets_dict, output_dir, classifiers_to_compare=self.classifiers_config)
         self.training_worker.progress.connect(self.on_training_progress)
@@ -2252,6 +2272,7 @@ classifiers_to_compare = {
 
     def on_training_finished(self, df_train, df_validation, df_inference, df_metrics, trained_classifiers, tables):
         """Handle training completion."""
+        QApplication.restoreOverrideCursor()
         long_tables, pivot_tables = tables
         output_dir = self.output_dir_input.text()
 
@@ -2296,6 +2317,7 @@ classifiers_to_compare = {
 
     def on_training_error(self, error_msg):
         """Handle training error."""
+        QApplication.restoreOverrideCursor()
         self.progress_dialog.close()
         self.training_status.setText("Status: Error occurred")
         self.train_btn.setEnabled(True)
@@ -2473,10 +2495,14 @@ classifiers_to_compare = {
 
         # Set up the table with 8 columns (classifier and subset as separate columns)
         self.results_table.setRowCount(len(combined_summary))
-        self.results_table.setColumnCount(8)
+        self.results_table.setColumnCount(9)
         self.results_table.setHorizontalHeaderLabels(
-            ["Classifier", "Subset", "MGF File", "Type", "Prediction: Other (Count)", "Prediction: Other (%)", "Prediction: Relevant (Count)", "Prediction: Relevant (%)"]
+            ["Classifier", "Subset", "MGF File", "Type", "Total (n)", "Prediction: Other (Count)", "Prediction: Other (%)", "Prediction: Relevant (Count)", "Prediction: Relevant (%)"]
         )
+
+        # Define match/mismatch colors (once, outside loop)
+        COLOR_MATCH = QColor(144, 238, 144)  # Light green
+        COLOR_MISMATCH = QColor(255, 182, 193)  # Light red
 
         # Populate the table
         for row_idx, row in combined_summary.iterrows():
@@ -2504,8 +2530,6 @@ classifiers_to_compare = {
 
             # Subset column (second column)
             self.results_table.setItem(row_idx, 1, QTableWidgetItem(subset))
-            # Subset column (second column)
-            self.results_table.setItem(row_idx, 1, QTableWidgetItem(subset))
 
             # Source column
             self.results_table.setItem(row_idx, 2, QTableWidgetItem(source))
@@ -2524,9 +2548,8 @@ classifiers_to_compare = {
                 type_item.setBackground(QBrush(COLOR_INFERENCE))
             self.results_table.setItem(row_idx, 3, type_item)
 
-            # Define match/mismatch colors
-            COLOR_MATCH = QColor(144, 238, 144)  # Light green
-            COLOR_MISMATCH = QColor(255, 182, 193)  # Light red
+            # Total count (no background color)
+            self.results_table.setItem(row_idx, 4, QTableWidgetItem(str(int(total))))
 
             # Not relevant count
             item = QTableWidgetItem(str(int(not_relevant)))
@@ -2536,7 +2559,7 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 4, item)
+            self.results_table.setItem(row_idx, 5, item)
 
             # Not relevant %
             item = QTableWidgetItem(f"{not_relevant_pct:.1f}%")
@@ -2546,7 +2569,7 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 5, item)
+            self.results_table.setItem(row_idx, 6, item)
 
             # Relevant count
             item = QTableWidgetItem(str(int(relevant)))
@@ -2556,7 +2579,7 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 6, item)
+            self.results_table.setItem(row_idx, 7, item)
 
             # Relevant %
             item = QTableWidgetItem(f"{relevant_pct:.1f}%")
@@ -2566,7 +2589,7 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 7, item)
+            self.results_table.setItem(row_idx, 8, item)
 
         # Auto-resize columns
         self.results_table.resizeColumnsToContents()
@@ -2610,8 +2633,6 @@ classifiers_to_compare = {
             return
 
         try:
-            import pickle
-
             exported_count = 0
 
             for subset_name, results in self.subset_results.items():

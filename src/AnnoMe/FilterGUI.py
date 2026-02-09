@@ -1295,7 +1295,7 @@ class MGFFilterGUI(QMainWindow):
                     df = result["df"]
 
                     if smiles_field:
-                        print(f"Auto-detected SMILES field: {smiles_field}")
+                        print(f"   - Auto-detected SMILES field: {smiles_field}")
 
                     self.mgf_files[file_path] = {
                         "fields": fields,

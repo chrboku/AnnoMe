@@ -1,4 +1,4 @@
-from AnnoMe.Filters import parse_mgf_file, download_MS2DeepScore_model
+from AnnoMe.Filters import parse_mgf_file, download_MS2DeepScore_model, optimize_dataframe_dtypes
 
 # Standard library imports
 import ast
@@ -1024,6 +1024,9 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
     print(f"Number of rows with MSLEVEL == 1: {num_mslevel_1}")
     df = df[df["MSLEVEL"] != "1"].reset_index(drop=True)
     print(f"After removing MSLEVEL == 1, remaining rows: {Fore.YELLOW}{len(df)}{Style.RESET_ALL}")
+
+    # Optimize column dtypes for memory efficiency
+    df = optimize_dataframe_dtypes(df)
     
     return df
 
