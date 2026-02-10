@@ -47,6 +47,8 @@ from rdkit.Chem import Descriptors
 import natsort
 import tempfile
 from pprint import pprint
+import traceback
+import csv
 
 from . import Filters
 
@@ -2631,18 +2633,59 @@ class MGFFilterGUI(QMainWindow):
 
             # Write to Excel file
             excel_path = os.path.join(base_dir, f"{base_name}_overview.xlsx")
-            Filters.list_to_excel_table(table_data, excel_path, sheet_name="Overview", img_prefix="$$$IMG:", column_width=40, row_height=40 if include_images else 10)
-
-            # Cleanup temporary directory
-            temp_dir.cleanup()
-
-            print(f"  {Fore.GREEN}Overview Excel file exported to: {excel_path}{Style.RESET_ALL}")
-
-            return excel_path
+            
+            # Try to export as Excel, fall back to TSV if memory issues
+            try:
+                Filters.list_to_excel_table(table_data, excel_path, sheet_name="Overview", img_prefix="$$$IMG:", column_width=40, row_height=40 if include_images else 10)
+                
+                # Cleanup temporary directory
+                temp_dir.cleanup()
+                
+                print(f"  {Fore.GREEN}Overview Excel file exported to: {excel_path}{Style.RESET_ALL}")
+                
+                return excel_path
+                
+            except Exception as excel_error:
+                print(f"  {Fore.YELLOW}Warning: Could not export Excel file: {str(excel_error)}{Style.RESET_ALL}")
+                print(f"  {Fore.CYAN}Exporting as TSV file instead...{Style.RESET_ALL}")
+                
+                # Cleanup temporary directory since we won't use images
+                temp_dir.cleanup()
+                
+                # Export as TSV instead
+                tsv_path = os.path.join(base_dir, f"{base_name}_overview.tsv")
+                
+                try:
+                    
+                    with open(tsv_path, 'w', newline='', encoding='utf-8') as f:
+                        if table_data:
+                            # Get all column headers from first row (and ensure all rows have same columns)
+                            headers = list(table_data[0].keys())
+                            
+                            writer = csv.DictWriter(f, fieldnames=headers, delimiter='\t')
+                            writer.writeheader()
+                            
+                            # Write data rows, removing image paths
+                            for row in table_data:
+                                clean_row = {}
+                                for key, value in row.items():
+                                    # Remove image path references
+                                    if isinstance(value, str) and value.startswith("$$$IMG:"):
+                                        clean_row[key] = "(see SMILES)"
+                                    else:
+                                        clean_row[key] = value
+                                writer.writerow(clean_row)
+                    
+                    print(f"  {Fore.GREEN}Overview TSV file exported to: {tsv_path}{Style.RESET_ALL}")
+                    
+                    return tsv_path
+                    
+                except Exception as tsv_error:
+                    print(f"  {Fore.RED}Error exporting TSV file: {str(tsv_error)}{Style.RESET_ALL}")
+                    return None
 
         except Exception as e:
             print(f"  {Fore.RED}Error generating overview Excel: {str(e)}{Style.RESET_ALL}")
-            import traceback
 
             traceback.print_exc()
             return None
