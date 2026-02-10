@@ -2627,7 +2627,7 @@ class MGFFilterGUI(QMainWindow):
                     else:
                         row_data[f"H_{filter_name}"] = ""
 
-                table_data.append(row_data)"]
+                table_data.append(row_data)
 
             # Write to Excel file
             excel_path = os.path.join(base_dir, f"{base_name}_overview.xlsx")
