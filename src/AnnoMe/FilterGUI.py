@@ -1165,6 +1165,17 @@ class MGFFilterGUI(QMainWindow):
         export_all_layout.addStretch()
         layout.addLayout(export_all_layout)
 
+        # Checkbox for "Export Overview Excel"
+        export_excel_layout = QHBoxLayout()
+        self.export_excel_checkbox = QCheckBox("Export Overview Excel (with SMILES images and match statistics)")
+        self.export_excel_checkbox.setChecked(True)
+        self.export_excel_checkbox.setToolTip(
+            "Generate an Excel file with:\n- Unique canonicalized SMILES codes\n- Structure images\n- Source MGF files\n- Spectrum counts per SMILES\n- Substructure match results for each filter"
+        )
+        export_excel_layout.addWidget(self.export_excel_checkbox)
+        export_excel_layout.addStretch()
+        layout.addLayout(export_excel_layout)
+
         # List of filters with checkboxes
         self.export_filter_list = QListWidget()
         self.export_filter_list.setSelectionMode(QListWidget.MultiSelection)
@@ -2499,6 +2510,143 @@ class MGFFilterGUI(QMainWindow):
         if file_path:
             self.output_file_input.setText(file_path)
 
+    def _export_overview_excel(self, filtered_df, smiles_field, selected_filters, base_dir, base_name):
+        """
+        Export an overview Excel file containing unique SMILES with images, source files,
+        and substructure match information for each filter.
+
+        Args:
+            filtered_df: Polars DataFrame containing filtered spectra
+            smiles_field: Name of the SMILES field column
+            selected_filters: List of filter names to include in overview
+            base_dir: Directory where Excel file should be saved
+            base_name: Base name for the Excel file
+        """
+        try:
+            print(f"\n{Fore.CYAN}Generating overview Excel file...{Style.RESET_ALL}")
+
+            # Create temporary directory for molecule images
+            temp_dir = tempfile.TemporaryDirectory()
+
+            # Get unique SMILES and group spectra by SMILES
+            unique_smiles_df = filtered_df.select([smiles_field, "__AnnoMe_source"]).filter(pl.col(smiles_field).is_not_null()).unique()
+
+            # Group by SMILES to get statistics
+            smiles_stats = filtered_df.group_by(smiles_field).agg(
+                [
+                    pl.count().alias("spectrum_count"),
+                    pl.col("__AnnoMe_source").unique().alias("source_files"),
+                    # Collect common fields (first non-null value for each SMILES)
+                    *[
+                        pl.col(col).drop_nulls().first().alias(col)
+                        for col in filtered_df.columns
+                        if col not in [smiles_field, "$$spectrumdata", "$$spectrumData", "peaks"] and not col.startswith("__AnnoMe_")
+                    ],
+                ]
+            )
+
+            # Sort by SMILES for consistent output
+            smiles_stats = smiles_stats.sort(smiles_field)
+
+            # Convert to list of dictionaries for easier processing
+            smiles_list = smiles_stats.to_dicts()
+
+            print(f"  Processing {len(smiles_list)} unique SMILES...")
+
+            # Disable image generation if there are too many SMILES (performance optimization)
+            include_images = len(smiles_list) <= 10000
+            if not include_images:
+                print(f"  {Fore.YELLOW}Warning: More than 10,000 unique SMILES found. Image generation disabled for performance.{Style.RESET_ALL}")
+
+            # Create table data structure
+            table_data = []
+
+            for idx, smiles_row in enumerate(smiles_list):
+                smiles_code = smiles_row[smiles_field]
+
+                if not smiles_code or not self._is_valid_smiles_value(smiles_code):
+                    continue
+
+                # Create row data dictionary
+                row_data = OrderedDict()
+
+                # Add SMILES code
+                row_data["A_SMILES"] = smiles_code
+
+                # Add structure image (only if enabled)
+                if include_images:
+                    try:
+                        img = Filters.draw_smiles([smiles_code], max_draw=1)
+                        img_path = os.path.join(temp_dir.name, f"img_{idx}.png")
+                        with open(img_path, "wb") as f:
+                            f.write(img.data)
+                        row_data["B_Structure"] = f"$$$IMG:{img_path}"
+                    except Exception as e:
+                        print(f"  Warning: Could not draw structure for SMILES {smiles_code}: {e}")
+                        row_data["B_Structure"] = "ERROR: could not draw structure"
+
+                # Add spectrum count
+                row_data["C_SpectrumCount"] = smiles_row["spectrum_count"]
+
+                # Add source MGF files (comma-separated list)
+                source_files = smiles_row.get("source_files", [])
+                if isinstance(source_files, list):
+                    row_data["D_SourceFiles"] = ", ".join(sorted(set(source_files)))
+                else:
+                    row_data["D_SourceFiles"] = str(source_files)
+
+                # Add common fields (Name, Formula, CAS, etc.)
+                for col_name in ["name", "NAME", "Name", "compound", "COMPOUND", "Compound"]:
+                    if col_name in smiles_row and smiles_row[col_name]:
+                        row_data["E_Name"] = smiles_row[col_name]
+                        break
+
+                for col_name in ["formula", "FORMULA", "Formula", "sumformula", "SUMFORMULA", "SumFormula"]:
+                    if col_name in smiles_row and smiles_row[col_name]:
+                        row_data["F_Formula"] = smiles_row[col_name]
+                        break
+
+                for col_name in ["cas", "CAS", "Cas"]:
+                    if col_name in smiles_row and smiles_row[col_name]:
+                        row_data["G_CAS"] = smiles_row[col_name]
+                        break
+
+                # Check each filter and add match status with spectrum count
+                for filter_name in selected_filters:
+                    if filter_name not in self.filter_matched_smiles:
+                        continue
+
+                    matched_smiles_set = self.filter_matched_smiles[filter_name]
+
+                    if smiles_code in matched_smiles_set:
+                        # Count how many spectra with this SMILES match the filter
+                        match_count_df = filtered_df.filter((pl.col(smiles_field) == smiles_code))
+                        match_count = len(match_count_df)
+
+                        row_data[f"H_{filter_name}"] = f"substructure match ({match_count})"
+                    else:
+                        row_data[f"H_{filter_name}"] = ""
+
+                table_data.append(row_data)"]
+
+            # Write to Excel file
+            excel_path = os.path.join(base_dir, f"{base_name}_overview.xlsx")
+            Filters.list_to_excel_table(table_data, excel_path, sheet_name="Overview", img_prefix="$$$IMG:", column_width=40, row_height=40 if include_images else 10)
+
+            # Cleanup temporary directory
+            temp_dir.cleanup()
+
+            print(f"  {Fore.GREEN}Overview Excel file exported to: {excel_path}{Style.RESET_ALL}")
+
+            return excel_path
+
+        except Exception as e:
+            print(f"  {Fore.RED}Error generating overview Excel: {str(e)}{Style.RESET_ALL}")
+            import traceback
+
+            traceback.print_exc()
+            return None
+
     def _export_single_filter_optimized(self, export_info):
         """Worker function to export a single filter - uses Polars DataFrame directly.
 
@@ -2695,6 +2843,17 @@ class MGFFilterGUI(QMainWindow):
 
         progress.setValue(len(export_infos) + 2)
 
+        # Export overview Excel file if requested
+        excel_path = None
+        if self.export_excel_checkbox.isChecked():
+            try:
+                excel_path = self._export_overview_excel(filtered_df, smiles_field, selected_filters, base_dir, base_name)
+            except Exception as e:
+                print(f"{Fore.RED}Error generating overview Excel: {str(e)}{Style.RESET_ALL}")
+                import traceback
+
+                traceback.print_exc()
+
         # Build concise summary message
         n_filters = len(exported_files)
         k_no_matches = filters_with_no_matches
@@ -2707,6 +2866,8 @@ class MGFFilterGUI(QMainWindow):
             msg += f"  • {k_no_matches} filter(s) with no matching spectra\n"
         msg += f"  • {u_matched} spectra matched to 1 or more filters (all-match file)\n"
         msg += f"  • {i_no_match} spectra did not match any filter (no-match file)\n"
+        if excel_path:
+            msg += f"  • Overview Excel file created\n"
         msg += f"\nFiles saved to: {base_dir}"
 
         if skipped_filters:

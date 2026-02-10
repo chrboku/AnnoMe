@@ -1,6 +1,6 @@
 [project]
 name = "annome"
-version = "0.23.1"
+version = "0.24.0"
 description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
 authors = [
