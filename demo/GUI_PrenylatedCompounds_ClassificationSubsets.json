@@ -1,0 +1,36 @@
+{
+  "subsets": [
+    {
+      "name": "hcd_pos_20.0",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') == \"20.0\""
+    },
+    {
+      "name": "hcd_pos_30.0",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') == \"30.0\""
+    },
+    {
+      "name": "hcd_pos_60.0",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') == \"60.0\""
+    },
+    {
+      "name": "hcd_neg_20.0",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') == \"20.0\""
+    },
+    {
+      "name": "hcd_neg_30.0",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') == \"30.0\""
+    },
+    {
+      "name": "hcd_neg_60.0",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') == \"60.0\""
+    },
+    {
+      "name": "hcd_pos_stepped",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') in ['45.0', 'stepped20,45,70ev(absolute)']"
+    },
+    {
+      "name": "hcd_neg_stepped",
+      "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') in ['45.0', 'stepped20,45,70ev(absolute)']"
+    }
+  ]
+}

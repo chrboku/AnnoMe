@@ -227,12 +227,16 @@ def _optimize_pandas_dtypes(df, infer_schema_length=0, max_values_for_categorica
             pass
 
         # Keep as object, but check if it should be Categorical
-        unique_count = non_null_series.nunique()
+        try:
+            unique_count = non_null_series.nunique()
 
-        if unique_count <= max_values_for_categorical_column:
-            df[col_name] = df[col_name].astype("category")
-            print(f"  - {col_name}: object → category ({unique_count} unique values)")
-            num_conversions += 1
+            if unique_count <= max_values_for_categorical_column:
+                df[col_name] = df[col_name].astype("category")
+                print(f"  - {col_name}: object → category ({unique_count} unique values)")
+                num_conversions += 1
+                continue
+        except Exception as e:
+            pass
 
     if num_conversions > 0:
         estimated_size_after = df.memory_usage(deep=True).sum()
@@ -1095,7 +1099,7 @@ def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=F
         }
     )
     if not ignore_spectral_data:
-        required_keys_set = required_keys_set | frozenset({"$$spectrumData"})
+        required_keys_set = required_keys_set | frozenset({"$$SpectrumData"})
 
     # --- Use plain dicts instead of OrderedDict (Python 3.7+ preserves insertion order) ---
     blocks = []
@@ -1125,6 +1129,9 @@ def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=F
                 cur_id += 1
                 peak_lines = []
 
+            elif line.lower().startswith("annome_internal_id"):
+                pass
+
             elif line == "END IONS":
                 # Batch-parse collected peak lines into spectrum data
                 if not ignore_spectral_data and peak_lines:
@@ -1134,7 +1141,7 @@ def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=F
                         parts = pl_line.split()
                         mzs.append(float(parts[0]))
                         intensities.append(float(parts[1]))
-                    current_block_secondary["$$spectrumData"] = [mzs, intensities]
+                    current_block_secondary["$$SpectrumData"] = [mzs, intensities]
 
                 # Track missing keys using frozenset difference (fast, no sorting per block)
                 all_block_keys = frozenset(current_block_primary.keys()) | frozenset(current_block_secondary.keys())
@@ -1317,16 +1324,16 @@ def export_mgf_file(blocks, output_file_path):
         for feature_blocks in blocks:
             file.write("BEGIN IONS\n")
             for key, value in feature_blocks.items():
-                if key == "$$spectrumData":
+                if key == "$$SpectrumData":
                     pass
                 elif key.lower() == "collision_energy":
                     file.write(f"{key}={str(value).replace(' ', '')}\n")
                 else:
                     file.write(f"{key}={value}\n")
-            if "$$spectrumData" in feature_blocks:
-                # file.write("Num peaks {}\n".format(len(feature_blocks["$$spectrumData"][0])))
-                for mzi in range(len(feature_blocks["$$spectrumData"][0])):
-                    file.write(f"{feature_blocks['$$spectrumData'][0][mzi]} {feature_blocks['$$spectrumData'][1][mzi]}\n")
+            if "$$SpectrumData" in feature_blocks:
+                # file.write("Num peaks {}\n".format(len(feature_blocks["$$SpectrumData"][0])))
+                for mzi in range(len(feature_blocks["$$SpectrumData"][0])):
+                    file.write(f"{feature_blocks['$$SpectrumData'][0][mzi]} {feature_blocks['$$SpectrumData'][1][mzi]}\n")
             file.write("END IONS\n\n")
 
 
@@ -1342,16 +1349,16 @@ def export_mgf_file_from_polars_table(df, output_file_path):
         for row in df.iter_rows(named=True):
             file.write("BEGIN IONS\n")
             for key, value in row.items():
-                if key == "$$spectrumData":
+                if key == "$$SpectrumData":
                     pass
                 elif key.lower() == "collision_energy":
                     file.write(f"{key}={str(value).replace(' ', '')}\n")
                 elif value is not None:
                     file.write(f"{key}={value}\n")
-            if "$$spectrumData" in row and row["$$spectrumData"] is not None:
-                # file.write("Num peaks {}\n".format(len(row["$$spectrumData"][0])))
-                for mzi in range(len(row["$$spectrumData"][0])):
-                    file.write(f"{row['$$spectrumData'][0][mzi]} {row['$$spectrumData'][1][mzi]}\n")
+            if "$$SpectrumData" in row and row["$$SpectrumData"] is not None:
+                # file.write("Num peaks {}\n".format(len(row["$$SpectrumData"][0])))
+                for mzi in range(len(row["$$SpectrumData"][0])):
+                    file.write(f"{row['$$SpectrumData'][0][mzi]} {row['$$SpectrumData'][1][mzi]}\n")
             file.write("END IONS\n\n")
 
 
@@ -1526,7 +1533,7 @@ def filter_blocks_with_required_fields(blocks):
 
 def filter_low_intensity_peaks(blocks, intensity_threshold=0.01):
     """
-    Filters out m/z and intensity pairs in the $$spectrumData field where the intensity
+    Filters out m/z and intensity pairs in the $$SpectrumData field where the intensity
     is less than a specified percentage of the maximum intensity in the block.
 
     Args:
@@ -1534,15 +1541,15 @@ def filter_low_intensity_peaks(blocks, intensity_threshold=0.01):
         intensity_threshold (float): The relative intensity threshold (default: 0.01).
 
     Returns:
-        list: A list of blocks with filtered $$spectrumData.
+        list: A list of blocks with filtered $$SpectrumData.
     """
     for block in blocks:
-        if "$$spectrumData" in block:
-            mz, intensity = block["$$spectrumData"]
+        if "$$SpectrumData" in block:
+            mz, intensity = block["$$SpectrumData"]
             max_intensity = np.max(intensity) if len(intensity) > 0 and np.sum(intensity) > 0 else 0
             if max_intensity > 0:
                 use_inds = np.argwhere(intensity >= max_intensity * intensity_threshold).flatten()
-                block["$$spectrumData"] = [mz[use_inds], intensity[use_inds]]
+                block["$$SpectrumData"] = [mz[use_inds], intensity[use_inds]]
     return blocks
 
 
@@ -1719,8 +1726,21 @@ def prep_smarts_key(smart, replace=True, convert_to_rdkit=True):
     Returns:
         rdkit.Chem.rdchem.Mol: The RDKit Mol object corresponding to the prepared SMARTS string.
     """
+
+    replacements = [
+        ("[c,C]", "[C,c]"),
+        ("[o,O]", "[O,o]"),
+        ("[C,c]", "C"),
+        ("[O,o]", "O"),
+        ("c", "C"),
+        ("o", "O"),
+        ("C", "[C,c]"),
+        ("O", "[O,o]"),
+    ]
+
     if replace:
-        smart = smart.replace("c", "C").replace("o", "O").replace("C", "[C,c]").replace("O", "[O,o]")
+        for old, new in replacements:
+            smart = smart.replace(old, new)
     if not convert_to_rdkit:
         return smart
     else:

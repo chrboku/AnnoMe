@@ -6,6 +6,7 @@ import json
 import traceback
 import tomllib
 import re
+import hashlib
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -45,12 +46,13 @@ from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 import math
 import pandas as pd
+import polars as pl
 import numpy as np
 import tempfile
 from pprint import pprint
 import pickle
 import inspect
-
+from matchms import Spectrum
 
 # Import classification functions
 from .Classification import (
@@ -74,6 +76,32 @@ COLOR_VALIDATION_OTHER = QColor(158, 59, 59)  # Dark red
 COLOR_INFERENCE = QColor(69, 104, 130)  # Dark blue
 
 
+def calculate_file_hash(file_path, algorithm="sha256"):
+    """Calculate hash of a file for integrity checking.
+
+    Args:
+        file_path: Path to the file to hash
+        algorithm: Hash algorithm to use ('md5' or 'sha256')
+
+    Returns:
+        Hex string of the file hash, or None if file doesn't exist
+    """
+    if not os.path.exists(file_path):
+        return None
+
+    hash_obj = hashlib.sha256() if algorithm == "sha256" else hashlib.md5()
+
+    try:
+        with open(file_path, "rb") as f:
+            # Read file in chunks to handle large files efficiently
+            for chunk in iter(lambda: f.read(8192), b""):
+                hash_obj.update(chunk)
+        return hash_obj.hexdigest()
+    except Exception as e:
+        print(f"Error calculating hash for {file_path}: {e}")
+        return None
+
+
 class EmbeddingWorker(QThread):
     """Worker thread for generating embeddings."""
 
@@ -95,42 +123,76 @@ class EmbeddingWorker(QThread):
 
             # copy input file to avoid any problems between matching MS2Spectra imported data and parse_mgf_file imported data
             original_file_paths = {}
+            dfs = []
 
             for ds in self.datasets:
                 original_file_paths[ds["name"]] = ds["file"]
 
                 cur_id = 0
                 filename = os.path.basename(ds["file"])
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
-                with open(ds["file"], "r") as fin:
-                    for line in fin:
-                        temp_file.write(line)
-                        if line.lower().startswith("begin ions"):
-                            temp_file.write(f"AnnoMe_internal_ID={filename}___{cur_id}\n")
+                # path to save embeddings cache
+                mgf_pickle_file = ds["file"] + "_embeddings.pickle"
+                # get has of input mgf file
+                mgf_hash = calculate_file_hash(ds["file"], algorithm="sha256")
+
+                # if pickle file exists and the hash matches the calculated has, load the embeddings from there
+                if os.path.exists(mgf_pickle_file):
+                    with open(mgf_pickle_file, "rb") as f:
+                        cached_hash, df = pickle.load(f)
+                        if cached_hash == mgf_hash:
+                            print(f"Loaded embeddings from cache for {filename}")
+                            dfs.append(df)
+                        else:
+                            print(f"Hash mismatch for {filename}, regenerating embeddings")
+                else:
+                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
+                    with open(ds["file"], "r") as fin:
+                        lines = []
+                        for line in fin:
+                            if line.lower().startswith("begin ions"):
+                                if len(lines) > 0:
+                                    lines.insert(0, f"AnnoMe_internal_ID={filename}___{cur_id}\n")
+                                    cur_id += 1
+                                    temp_file.write(line)
+                                    for l in lines:
+                                        temp_file.write(l)
+                                    lines = []
+                            else:
+                                if not line.lower().startswith("annome_internal_id"):
+                                    lines.append(line)
+
+                        if len(lines) > 0:
+                            lines.insert(0, f"AnnoMe_internal_ID={filename}___{cur_id}\n")
                             cur_id += 1
-                temp_file.close()
+                            temp_file.write("BEGIN IONS\n")
+                            for l in lines:
+                                temp_file.write(l)
 
-                ds["file"] = temp_file.name
+                    temp_file.close()
+                    ds["file"] = temp_file.name
 
-                print(f"Added internal ID to {cur_id} entries in {filename}")
-
-            try:
-                df = generate_embeddings(self.datasets, self.data_to_add)
-            finally:
-                # Clean up temporary files and restore original paths
-                for ds in self.datasets:
                     try:
-                        os.remove(ds["file"])
-                    except OSError:
-                        pass
-                    ds["file"] = original_file_paths[ds["name"]]
+                        df = generate_embeddings([ds], self.data_to_add)
+                        df = add_all_metadata([ds], df)
+                        dfs.append(df)
+                    except Exception as e:
+                        error_msg = f"Error generating embeddings for {filename}: {str(e)}\n{traceback.format_exc()}"
+                        print(error_msg)
+                        self.error.emit(error_msg)
+                        return
+                    finally:
+                        # Clean up temporary files and restore original paths
+                        try:
+                            os.remove(ds["file"])
+                        except OSError:
+                            pass
+                        ds["file"] = original_file_paths[ds["name"]]
 
-            self.progress.emit("Adding metadata...")
+                    # write tuple of hash and df to pickle file
+                    with open(mgf_pickle_file, "wb") as f:
+                        pickle.dump((mgf_hash, df), f)
 
-            df = add_all_metadata(self.datasets, df)
-
-            self.progress.emit("Adding all MGF metadata fields...")
-
+            df = pd.concat(dfs, axis=0, ignore_index=True)
             self.finished.emit(df)
 
         except Exception as e:
@@ -207,11 +269,10 @@ class TrainingWorker(QThread):
 class SpectrumViewer(QDialog):
     """Dialog for viewing spectrum details."""
 
-    def __init__(self, spectrum_data, meta_data, prediction_data, parent=None):
+    def __init__(self, spectrum_data, meta_data, parent=None):
         super().__init__(parent)
         self.spectrum_data = spectrum_data
         self.meta_data = meta_data
-        self.prediction_data = prediction_data
 
         self.setWindowTitle("Spectrum Viewer")
         self.setGeometry(100, 100, 1200, 800)
@@ -236,23 +297,6 @@ class SpectrumViewer(QDialog):
         meta_group.setLayout(meta_layout)
         top_layout.addWidget(meta_group)
 
-        # Prediction panel
-        pred_group = QGroupBox("Classification Results")
-        pred_layout = QVBoxLayout()
-        pred_text = QTextEdit()
-        pred_text.setReadOnly(True)
-        if self.prediction_data:
-            pred_html = "<table border='1' cellpadding='5' style='width:100%'>"
-            for key, value in self.prediction_data.items():
-                pred_html += f"<tr><td><b>{key}</b></td><td>{value}</td></tr>"
-            pred_html += "</table>"
-            pred_text.setHtml(pred_html)
-        else:
-            pred_text.setHtml("<p>No classification results available</p>")
-        pred_layout.addWidget(pred_text)
-        pred_group.setLayout(pred_layout)
-        top_layout.addWidget(pred_group)
-
         top_widget.setLayout(top_layout)
         layout.addWidget(top_widget)
 
@@ -265,6 +309,7 @@ class SpectrumViewer(QDialog):
 
             matplotlib.use("Qt5Agg")
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
             from matplotlib.figure import Figure
 
             # Create matplotlib figure
@@ -272,12 +317,17 @@ class SpectrumViewer(QDialog):
             canvas = FigureCanvas(fig)
             ax = fig.add_subplot(111)
 
+            # Add matplotlib toolbar
+            toolbar = NavigationToolbar(canvas, self)
+            spectrum_layout.addWidget(toolbar)
+
             # Plot spectrum
             if self.spectrum_data is not None:
-                import numpy as np
-
                 # spectrum_data is a 2D array with [0,:] = m/z and [1,:] = intensity
-                if isinstance(self.spectrum_data, (list, tuple)) and len(self.spectrum_data) == 2:
+                if isinstance(self.spectrum_data, Spectrum):
+                    mz_values = self.spectrum_data.peaks.mz
+                    intensity_values = self.spectrum_data.peaks.intensities
+                elif isinstance(self.spectrum_data, (list, tuple)) and len(self.spectrum_data) == 2:
                     mz_values = self.spectrum_data[0]
                     intensity_values = self.spectrum_data[1]
                 elif hasattr(self.spectrum_data, "shape") and len(self.spectrum_data.shape) == 2:
@@ -294,6 +344,7 @@ class SpectrumViewer(QDialog):
                 ax.set_ylabel("Intensity", fontsize=12)
                 ax.set_title("MS/MS Spectrum", fontsize=14)
                 ax.grid(True, alpha=0.3)
+
                 fig.tight_layout()
             else:
                 ax.text(0.5, 0.5, "No spectrum data available", ha="center", va="center", fontsize=14)
@@ -343,6 +394,8 @@ class ClassificationGUI(QMainWindow):
         self.classifiers_config = None  # ML classifiers configuration
         self.pending_config_data = None  # For load_full_configuration workflow
         self._editing_subset_index = None  # Track which subset is being edited
+        self.expected_embeddings_hash = None  # Expected hash from loaded configuration file
+        self.expected_embeddings_path = None  # Expected path from loaded configuration file
 
         set_random_seeds(42)
 
@@ -453,15 +506,22 @@ class ClassificationGUI(QMainWindow):
                 <li><b>validation - other:</b> Validation data with other compounds</li>
                 <li><b>inference:</b> Unknown data for prediction</li>
             </ul>
+            <h4>Table Columns:</h4>
+            <ul>
+                <li><b># Parsed:</b> Total entries parsed from the MGF file</li>
+                <li><b># With Embeddings:</b> Entries for which embeddings were calculated (shown after Step 2)</li>
+                <li><b># Entries:</b> Currently available entries (after filtering)</li>
+                <li><b># Unique SMILES:</b> Number of unique chemical structures</li>
+            </ul>
             <h4>Steps:</h4>
             <ol>
                 <li>Click <b>Load MGF File(s)</b> to select one or more MGF files</li>
-                <li>Review statistics (entries, unique SMILES)</li>
+                <li>Review statistics (parsed entries, unique SMILES)</li>
                 <li>Assign appropriate type to each file using dropdown</li>
                 <li>Remove unwanted files with <b>Remove Selected File(s)</b></li>
             </ol>
             <p><b>Tip:</b> You need both training data (train-relevant and train-other) and validation data for proper classifier training.</p>
-            <p><b>Note:</b> Not all spectra will be used, due to limitations in the embedding generation. Once the embeddings have been generated, only those spectra will remain, for which an embedding was successfully calculated. Other will be removed. This table will not be updated retrospectively.</p>
+            <p><b>Note:</b> Not all spectra will be used, due to limitations in the embedding generation. Once the embeddings have been generated, only those spectra will remain, for which an embedding was successfully calculated. The table will be updated to show these counts.</p>
         """)
         help_layout.addWidget(help_text)
         help_group.setLayout(help_layout)
@@ -475,8 +535,8 @@ class ClassificationGUI(QMainWindow):
         # File table
         layout.addWidget(QLabel("Loaded MGF Files:"))
         self.file_table = QTableWidget()
-        self.file_table.setColumnCount(4)
-        self.file_table.setHorizontalHeaderLabels(["File Name", "# Entries", "# Unique SMILES", "Type"])
+        self.file_table.setColumnCount(6)
+        self.file_table.setHorizontalHeaderLabels(["File Name", "# Parsed", "# With Embeddings", "# Entries", "# Unique SMILES", "Type"])
         self.file_table.horizontalHeader().setStretchLastSection(False)
         self.file_table.setSelectionBehavior(QAbstractItemView.SelectRows)
 
@@ -485,6 +545,8 @@ class ClassificationGUI(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.Interactive)
         header.setSectionResizeMode(2, QHeaderView.Interactive)
         header.setSectionResizeMode(3, QHeaderView.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.Interactive)
+        header.setSectionResizeMode(5, QHeaderView.Interactive)
 
         layout.addWidget(self.file_table, 1)  # Stretch to fill available space
 
@@ -1032,6 +1094,7 @@ classifiers_to_compare = {
 
             matplotlib.use("Qt5Agg")
             from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
             from matplotlib.figure import Figure
 
             self.spectrum_figure = Figure(figsize=(6, 4))
@@ -1040,11 +1103,16 @@ classifiers_to_compare = {
             self.spectrum_ax.text(0.5, 0.5, "Select a spectrum to view", ha="center", va="center", fontsize=12)
             self.spectrum_ax.set_xlim(0, 1)
             self.spectrum_ax.set_ylim(0, 1)
-            spectrum_layout.addWidget(self.spectrum_canvas)
+
+            # Add matplotlib toolbar
+            self.spectrum_toolbar = NavigationToolbar(self.spectrum_canvas, self)
+            spectrum_layout.addWidget(self.spectrum_toolbar)
+
+            spectrum_layout.addWidget(self.spectrum_canvas, 1)  # Stretch factor to fill vertical space
         except ImportError:
             spectrum_label = QLabel("Matplotlib not available for spectrum visualization")
             spectrum_label.setAlignment(Qt.AlignCenter)
-            spectrum_layout.addWidget(spectrum_label)
+            spectrum_layout.addWidget(spectrum_label, 1)  # Stretch factor to fill vertical space
 
         spectrum_widget.setLayout(spectrum_layout)
         main_splitter.addWidget(spectrum_widget)
@@ -1099,7 +1167,7 @@ classifiers_to_compare = {
                 # Collect all meta keys (excluding special keys)
                 for entry in entries:
                     # Filter out special keys that aren't metadata
-                    meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
+                    meta_keys = {k for k in entry.keys() if k not in ["peaks"]}
                     self.all_meta_keys.update(meta_keys)
 
                 filename = os.path.basename(file_path)
@@ -1107,6 +1175,8 @@ classifiers_to_compare = {
                     "path": file_path,
                     "entries": entries,
                     "num_entries": len(entries),
+                    "num_parsed": len(entries),
+                    "num_with_embeddings": None,
                     "unique_smiles": len(smiles_set),
                     "type": "inference",  # Default type
                 }
@@ -1126,11 +1196,19 @@ classifiers_to_compare = {
             # Filename
             self.file_table.setItem(row, 0, QTableWidgetItem(filename))
 
-            # Number of entries
-            self.file_table.setItem(row, 1, QTableWidgetItem(str(data["num_entries"])))
+            # Number of parsed entries
+            self.file_table.setItem(row, 1, QTableWidgetItem(str(data.get("num_parsed", data["num_entries"]))))
+
+            # Number with embeddings
+            num_with_emb = data.get("num_with_embeddings")
+            emb_text = str(num_with_emb) if num_with_emb is not None else "-"
+            self.file_table.setItem(row, 2, QTableWidgetItem(emb_text))
+
+            # Number of entries (after filtering)
+            self.file_table.setItem(row, 3, QTableWidgetItem(str(data["num_entries"])))
 
             # Unique SMILES
-            self.file_table.setItem(row, 2, QTableWidgetItem(str(data["unique_smiles"])))
+            self.file_table.setItem(row, 4, QTableWidgetItem(str(data["unique_smiles"])))
 
             # Type dropdown with color coding
             type_combo = QComboBox()
@@ -1151,7 +1229,7 @@ classifiers_to_compare = {
             elif file_type == "inference":
                 type_combo.setStyleSheet(f"background-color: rgb({COLOR_INFERENCE.red()}, {COLOR_INFERENCE.green()}, {COLOR_INFERENCE.blue()});")
 
-            self.file_table.setCellWidget(row, 3, type_combo)
+            self.file_table.setCellWidget(row, 5, type_combo)
 
         # Auto-resize columns to contents
         self.file_table.resizeColumnsToContents()
@@ -1163,7 +1241,7 @@ classifiers_to_compare = {
             # Update the combo box color
             for row in range(self.file_table.rowCount()):
                 if self.file_table.item(row, 0).text() == filename:
-                    combo = self.file_table.cellWidget(row, 3)
+                    combo = self.file_table.cellWidget(row, 5)
                     if combo:
                         if new_type == "train - relevant":
                             combo.setStyleSheet(f"background-color: rgb({COLOR_TRAIN_RELEVANT.red()}, {COLOR_TRAIN_RELEVANT.green()}, {COLOR_TRAIN_RELEVANT.blue()});")
@@ -1210,7 +1288,7 @@ classifiers_to_compare = {
             self.all_meta_keys = set()
             for data in self.mgf_files.values():
                 for entry in data["entries"]:
-                    meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
+                    meta_keys = {k for k in entry.keys() if k not in ["peaks"]}
                     self.all_meta_keys.update(meta_keys)
 
             # Update table
@@ -1291,11 +1369,19 @@ classifiers_to_compare = {
 
                     # Collect all meta keys
                     for entry in entries:
-                        meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
+                        meta_keys = {k for k in entry.keys() if k not in ["peaks"]}
                         self.all_meta_keys.update(meta_keys)
 
                     filename = file_info["filename"]
-                    self.mgf_files[filename] = {"path": mgf_path, "entries": entries, "num_entries": len(entries), "unique_smiles": len(smiles_set), "type": file_type}
+                    self.mgf_files[filename] = {
+                        "path": mgf_path,
+                        "entries": entries,
+                        "num_entries": len(entries),
+                        "num_parsed": len(entries),
+                        "num_with_embeddings": None,
+                        "unique_smiles": len(smiles_set),
+                        "type": file_type,
+                    }
                     loaded_count += 1
 
                 except Exception as e:
@@ -1723,12 +1809,11 @@ classifiers_to_compare = {
             self.output_dir_input.setText(directory)
 
     def generate_embeddings_clicked(self):
-        """Generate embeddings from loaded datasets."""
+        """Generate embeddings from loaded datasets or load from cache if available."""
         if not self.mgf_files:
             QMessageBox.warning(self, "Warning", "No MGF files loaded")
             return
 
-        # Prepare datasets
         datasets = []
         for filename, data in self.mgf_files.items():
             datasets.append({"name": filename, "type": data["type"], "file": data["path"], "fragmentation_method": "fragmentation_method", "colour": "#80BF02"})
@@ -1792,8 +1877,9 @@ classifiers_to_compare = {
             # remove all spectra where a corresponding internal id is not present in the embeddings
             for filename, mgf_file in self.mgf_files.items():
                 original_count = mgf_file["num_entries"]
-                mgf_file["entries"] = [entry for i, entry in enumerate(mgf_file["entries"]) if f"{filename}___{i}" in ids_to_use]
+                mgf_file["entries"] = [entry for i, entry in enumerate(mgf_file["entries"]) if entry["AnnoMe_internal_ID"] in ids_to_use]
                 mgf_file["num_entries"] = len(mgf_file["entries"])
+                mgf_file["num_with_embeddings"] = len(mgf_file["entries"])
                 # recalculate unique smiles
                 smiles_set = set()
                 for entry in mgf_file["entries"]:
@@ -1805,6 +1891,13 @@ classifiers_to_compare = {
                 print(
                     f"{mgf_file['path']} had {original_count} entries, but it was possible to calculate the MS2DeepScore embeddings for only {mgf_file['num_entries']} entries. The other entries will be removed."
                 )
+        else:
+            # All embeddings calculated successfully - update num_with_embeddings for all files
+            for filename, mgf_file in self.mgf_files.items():
+                mgf_file["num_with_embeddings"] = mgf_file["num_entries"]
+
+        # Update the file table to reflect the embedding counts
+        self.update_file_table()
 
         # All checks passed, proceed normally
         self.df_embeddings = df
@@ -1828,7 +1921,13 @@ classifiers_to_compare = {
             self.go_to_section(self.section3)
             self.continue_loading_configuration()
         else:
-            QMessageBox.information(self, "Success", f"Embeddings generated and saved to:\n{pickle_file}")
+            QMessageBox.information(
+                self,
+                "Success",
+                f"Embeddings generated and saved to:\n{pickle_file}\n\n"
+                f"💡 Tip: Save your project configuration via the menu bar (File → Save Project)\n"
+                f"to easily skip the embedding generation step next time you load this project.",
+            )
 
     def on_embedding_error(self, error_msg):
         """Handle embedding generation error."""
@@ -1988,6 +2087,17 @@ classifiers_to_compare = {
             for filename, data in self.mgf_files.items():
                 config_data["mgf_files"].append({"path": data["path"], "type": data["type"]})
 
+            # Calculate and save embeddings pickle file hash if it exists
+            output_dir = self.output_dir_input.text()
+            if output_dir:
+                pickle_file = os.path.join(output_dir, "df_embeddings.pkl")
+                if os.path.exists(pickle_file):
+                    file_hash = calculate_file_hash(pickle_file)
+                    if file_hash:
+                        config_data["embeddings_pickle_path"] = pickle_file
+                        config_data["embeddings_pickle_hash"] = file_hash
+                        print(f"Saved embeddings hash: {file_hash}")
+
             with open(file_path, "w") as f:
                 json.dump(config_data, f, indent=4)
 
@@ -2011,6 +2121,7 @@ classifiers_to_compare = {
             self.subsets.clear()
             self.df_embeddings = None
             self.pending_config_data = config_data
+            # Don't clear expected hash yet - we'll set it from config data below
 
             # Step 1: Load MGF files
             if "mgf_files" in config_data:
@@ -2039,7 +2150,7 @@ classifiers_to_compare = {
 
                         # Collect all meta keys
                         for entry in entries:
-                            meta_keys = {k for k in entry.keys() if k not in ["$$spectrumdata", "peaks"]}
+                            meta_keys = {k for k in entry.keys() if k not in ["peaks"]}
                             self.all_meta_keys.update(meta_keys)
 
                         filename = os.path.basename(file_path_mgf)
@@ -2047,6 +2158,8 @@ classifiers_to_compare = {
                             "path": file_path_mgf,
                             "entries": entries,
                             "num_entries": len(entries),
+                            "num_parsed": len(entries),
+                            "num_with_embeddings": None,
                             "unique_smiles": len(smiles_set),
                             "type": file_info.get("type", "inference"),
                         }
@@ -2060,16 +2173,75 @@ classifiers_to_compare = {
             if "output_directory" in config_data:
                 self.output_dir_input.setText(config_data["output_directory"])
 
-            # Step 3: Generate embeddings automatically (workflow continues in on_embeddings_generated)
+            # Step 2.5: Store expected embeddings hash and path from configuration
+            if "embeddings_pickle_hash" in config_data and "embeddings_pickle_path" in config_data:
+                self.expected_embeddings_hash = config_data["embeddings_pickle_hash"]
+                self.expected_embeddings_path = config_data["embeddings_pickle_path"]
+                print(f"Stored expected embeddings hash from configuration: {self.expected_embeddings_hash[:16]}...")
+
+            # Step 3: Try to load embeddings from pickle if hash matches, otherwise generate
+            embeddings_loaded = False
             if self.mgf_files:
-                # Navigate to embeddings section
-                self.go_to_section(self.section2)
-                self.generate_embeddings_clicked()
+                # Check if configuration includes embeddings pickle hash
+                if "embeddings_pickle_hash" in config_data and "embeddings_pickle_path" in config_data:
+                    pickle_path = config_data["embeddings_pickle_path"]
+                    expected_hash = config_data["embeddings_pickle_hash"]
+
+                    # Verify the pickle file exists and hash matches
+                    if os.path.exists(pickle_path):
+                        actual_hash = calculate_file_hash(pickle_path)
+
+                        if actual_hash == expected_hash:
+                            try:
+                                # Load embeddings from pickle
+                                print(f"Loading embeddings from cached pickle file: {pickle_path}")
+                                df = pd.read_pickle(pickle_path)
+
+                                # Verify data integrity
+                                total_mgf_entries = sum(data["num_entries"] for data in self.mgf_files.values())
+
+                                if len(df) == total_mgf_entries:
+                                    # Successfully loaded embeddings
+                                    self.df_embeddings = df
+                                    self.embedding_status.setText(f"Status: Embeddings loaded from cache ({len(df)} entries) ✓")
+                                    self.train_btn.setEnabled(True)
+                                    self.generate_embeddings_btn.setEnabled(True)
+                                    self.classifiers_config_text.setEnabled(True)
+                                    self.load_default_classifiers_btn.setEnabled(True)
+                                    embeddings_loaded = True
+
+                                    # Clear expected hash after successful load
+                                    self.expected_embeddings_hash = None
+                                    self.expected_embeddings_path = None
+
+                                    # Navigate to embeddings section
+                                    self.go_to_section(self.section2)
+
+                                    QMessageBox.information(self, "Embeddings Loaded", f"Embeddings loaded from cache:\n{pickle_path}\n\nHash verified successfully. Skipping embedding generation.")
+
+                                    # Continue with workflow
+                                    self.continue_loading_configuration()
+                                else:
+                                    print(f"Warning: Embeddings count mismatch. Expected {total_mgf_entries}, got {len(df)}. Regenerating embeddings.")
+                            except Exception as e:
+                                print(f"Error loading embeddings from pickle: {e}. Will regenerate embeddings.")
+                        else:
+                            print(f"Embeddings pickle hash mismatch. Expected: {expected_hash}, Got: {actual_hash}. Will regenerate embeddings.")
+                    else:
+                        print(f"Embeddings pickle file not found at: {pickle_path}. Will regenerate embeddings.")
+
+                # If embeddings weren't loaded, generate them
+                if not embeddings_loaded:
+                    # Navigate to embeddings section
+                    self.go_to_section(self.section2)
+                    self.generate_embeddings_clicked()
             else:
                 self.pending_config_data = None
 
         except Exception as e:
             self.pending_config_data = None
+            self.expected_embeddings_hash = None
+            self.expected_embeddings_path = None
             QMessageBox.critical(self, "Error", f"Failed to load full configuration:\n{str(e)}")
 
     def continue_loading_configuration(self):
@@ -2204,6 +2376,73 @@ classifiers_to_compare = {
             self.classifiers_config = None
 
         output_dir = self.output_dir_input.text()
+
+        # Check if output directory exists and is not empty
+        if os.path.exists(output_dir):
+            # Check if directory has any contents
+            dir_contents = os.listdir(output_dir)
+            if dir_contents:
+                # Directory is not empty - ask user what to do
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Warning)
+                msg.setWindowTitle("Output Directory Not Empty")
+                msg.setText(f"The output directory already contains files:\n\n{output_dir}\n\nFound {len(dir_contents)} item(s).")
+                msg.setInformativeText("What would you like to do?\n\nNote: Deletion cannot be undone!")
+
+                # Add custom buttons
+                suffix_btn = msg.addButton("Use Suffix", QMessageBox.ActionRole)
+                delete_btn = msg.addButton("Delete All", QMessageBox.DestructiveRole)
+                cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
+
+                # Make suffix button the default
+                msg.setDefaultButton(suffix_btn)
+
+                msg.exec_()
+                clicked_btn = msg.clickedButton()
+
+                if clicked_btn == delete_btn:
+                    # User wants to delete - remove all contents
+                    try:
+                        import shutil
+
+                        for item in dir_contents:
+                            item_path = os.path.join(output_dir, item)
+                            if os.path.isfile(item_path) or os.path.islink(item_path):
+                                os.unlink(item_path)
+                            elif os.path.isdir(item_path):
+                                shutil.rmtree(item_path)
+                        print(f"Cleared output directory: {output_dir}")
+                    except Exception as e:
+                        QMessageBox.critical(self, "Error", f"Failed to delete directory contents:\n{str(e)}")
+                        return
+
+                elif clicked_btn == suffix_btn:
+                    # User wants to use a suffix - find an available directory name
+                    import datetime
+
+                    base_dir = output_dir.rstrip(os.sep).rstrip("/").rstrip("\\")
+                    counter = 1
+                    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+                    # Try timestamp first
+                    new_output_dir = f"{base_dir}_{timestamp}"
+                    if os.path.exists(new_output_dir) and os.listdir(new_output_dir):
+                        # Timestamp exists and not empty, try counter
+                        while True:
+                            new_output_dir = f"{base_dir}_{counter}"
+                            if not os.path.exists(new_output_dir) or not os.listdir(new_output_dir):
+                                break
+                            counter += 1
+
+                    output_dir = new_output_dir
+                    self.output_dir_input.setText(output_dir)
+                    print(f"Using new output directory with suffix: {output_dir}")
+
+                else:
+                    # User cancelled - ask them to select a different directory
+                    QMessageBox.information(self, "Select Different Directory", "Please select a different output directory or clear the existing one manually before training.")
+                    return
+
         os.makedirs(output_dir, exist_ok=True)
 
         # Clear previous results
@@ -2236,7 +2475,7 @@ classifiers_to_compare = {
                 eval_globals = {"abs": abs, "float": float, "int": int, "str": str}
 
                 def subset_func(row):
-                    meta = {k: v for k, v in row.items() if k not in ["$$spectrumdata", "peaks", "embeddings"]}
+                    meta = {k: v for k, v in row.items() if k not in ["peaks", "embeddings"]}
                     try:
                         res = eval(compiled, {**eval_globals, "meta": meta})
                         return res
@@ -2315,7 +2554,10 @@ classifiers_to_compare = {
         self.populate_subset_results_list()
         self.populate_spectrum_file_list()
 
-        QMessageBox.information(self, "Success", f"Classifiers trained for {num_combinations} combination(s)\nOutput written to {output_dir}.")
+        # Generate master Excel file consolidating all validation results
+        self.generate_master_excel(output_dir)
+
+        QMessageBox.information(self, "Success", f"Classifiers trained for {num_combinations} combination(s)\nOutput written to {output_dir}.\nMaster summary file generated.")
 
     def on_training_error(self, error_msg):
         """Handle training error."""
@@ -2324,6 +2566,107 @@ classifiers_to_compare = {
         self.training_status.setText("Status: Error occurred")
         self.train_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", error_msg)
+
+    def generate_master_excel(self, output_dir):
+        """Generate master Excel file consolidating results from all subsets."""
+        try:
+            import polars as pl
+
+            print(f"\nGenerating master overview of all datasets")
+
+            # Initialize an empty list to store DataFrames
+            all_results = []
+
+            # Iterate all .xlsx files
+            for xlsx_file in os.listdir(output_dir):
+                if xlsx_file.endswith("_data.xlsx"):
+                    file_path = os.path.join(output_dir, xlsx_file)
+                    print(f"found xlsx file: {xlsx_file}")
+                    try:
+                        # Try to read the 'overall' sheet
+                        df = pl.read_excel(file_path, sheet_name="overall")
+                        # Add a new column with the dataset name (derived from filename)
+                        subset_name = xlsx_file.replace("_data.xlsx", "")
+                        df = df.with_columns(pl.lit(subset_name).alias("subset"))
+                        # Append the DataFrame to the list
+                        all_results.append(df)
+                        print(f"  Loaded {xlsx_file} from root of output directory")
+                    except Exception as e:
+                        print(f"  Could not load 'overall' sheet from {xlsx_file}: {e}")
+                        # Sheet 'overall' might not exist in this file, or it might not be a valid Excel file
+                        pass
+
+            if len(all_results) == 0:
+                print("No datasets with 'overall' sheet found in the output directory.")
+                return
+
+            # Concatenate all DataFrames into a single DataFrame
+            all_results = pl.concat(all_results, how="vertical")
+
+            # Process the data according to the user's requirements
+            all_results = all_results.with_columns(pl.when(pl.col("annotated_as_times:relevant") != 0).then(pl.lit("relevant")).otherwise(pl.lit("other")).alias("annotated_as"))
+
+            all_results = all_results.rename({"row_count": "n_features"})
+
+            # Calculate percent_features grouped by source, subset, and type
+            all_results = all_results.with_columns((100.0 * pl.col("n_features") / pl.col("n_features").sum().over(["source", "subset"])).round(1).alias("percent_features"))
+
+            # Clean up source column
+            all_results = all_results.with_columns(pl.col("source").str.replace(" - gt ", " - ", literal=True))
+
+            # Extract gt_type from source
+            all_results = all_results.with_columns(
+                pl.col("type").str.extract(r"(.*) - (other|relevant)", 1).alias("source_cleaned"),
+                pl.col("type").str.extract(r"(.*) - (other|relevant)", 2).alias("gt_type"),
+            )
+
+            # Add TN for other/other, FP for other/relevant, FN for relevant/other, and TP for relevant/relevant in columns gt_type/annotated_as
+            all_results = all_results.with_columns(
+                pl.when((pl.col("gt_type") == "other") & (pl.col("annotated_as") == "other"))
+                .then(pl.lit("TN"))
+                .when((pl.col("gt_type") == "other") & (pl.col("annotated_as") == "relevant"))
+                .then(pl.lit("FP"))
+                .when((pl.col("gt_type") == "relevant") & (pl.col("annotated_as") == "other"))
+                .then(pl.lit("FN"))
+                .when((pl.col("gt_type") == "relevant") & (pl.col("annotated_as") == "relevant"))
+                .then(pl.lit("TP"))
+                .otherwise(pl.lit(""))
+                .alias("pred_type"),
+            )
+
+            # Order the DataFrame
+            sort_columns = ["type", "source"]
+            if "gt_type" in all_results.columns:
+                sort_columns.append("gt_type")
+            sort_columns.append("annotated_as")
+
+            all_results = all_results.sort(sort_columns)
+
+            # Reorder the columns
+            base_columns = ["type", "source"]
+            if "gt_type" in all_results.columns:
+                base_columns.append("gt_type")
+            if "pred_type" in all_results.columns:
+                base_columns.append("pred_type")
+            base_columns.extend(["annotated_as", "n_features", "percent_features"])
+
+            # Only select columns that exist
+            available_columns = all_results.columns
+            final_columns = [col for col in base_columns if col in available_columns]
+            all_results = all_results.select(final_columns)
+
+            # Export to master Excel file
+            output_excel_file = os.path.join(output_dir, "master_summary.xlsx")
+            all_results.write_excel(output_excel_file, worksheet="all_results")
+
+            print(f"Exported master summary to {output_excel_file}")
+
+        except Exception as e:
+            print(f"Error generating master Excel file: {e}")
+            # Don't fail the entire training process if summary generation fails
+            import traceback
+
+            traceback.print_exc()
 
     def export_filtered_mgf_files(self, combined_key, subset_output_dir):
         """Export filtered MGF files based on classification results.
@@ -2484,6 +2827,9 @@ classifiers_to_compare = {
             # Calculate not relevant count
             summary["not_relevant_count"] = summary["total"] - summary["relevant_count"]
 
+            # Remove rows where total is 0
+            summary = summary[summary["total"] > 0]
+
             # Add combination name to each row
             summary["combination"] = combined_key
             all_rows.append(summary)
@@ -2494,6 +2840,9 @@ classifiers_to_compare = {
 
         # Combine all summaries
         combined_summary = pd.concat(all_rows, ignore_index=True)
+
+        # Disable sorting during population to avoid re-sorting scrambling rows
+        self.results_table.setSortingEnabled(True)
 
         # Set up the table with 8 columns (classifier and subset as separate columns)
         self.results_table.setRowCount(len(combined_summary))
@@ -2593,7 +2942,8 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MISMATCH))
             self.results_table.setItem(row_idx, 8, item)
 
-        # Auto-resize columns
+        # Re-enable sorting and auto-resize columns
+        self.results_table.setSortingEnabled(True)
         self.results_table.resizeColumnsToContents()
 
     def export_results(self):
@@ -2685,25 +3035,60 @@ classifiers_to_compare = {
             if filename in subset_files:
                 self.spectrum_file_list.addItem(filename)
 
+    def _get_entry_index_from_internal_id(self, internal_id, data):
+        """Extract the 0-based entry index from an AnnoMe_internal_ID string.
+
+        The ID format is 'filename___curId' where curId is the 0-based
+        sequential index assigned during embedding generation, matching
+        the order of entries returned by parse_mgf_file.
+
+        Falls back to scanning data["entries"] for a matching ID if the
+        format is unexpected.
+        """
+        if internal_id and "___" in str(internal_id):
+            try:
+                return int(str(internal_id).rsplit("___", 1)[1])
+            except (ValueError, IndexError):
+                pass
+        # Fallback: linear search through entries
+        for idx, entry in enumerate(data["entries"]):
+            if entry.get("AnnoMe_internal_ID", "") == internal_id:
+                return idx
+        return -1
+
     def on_spectrum_selected(self):
         """Update the embedded spectrum viewer when a spectrum is selected."""
         current_row = self.spectrum_table.currentRow()
-        if current_row < 0 or not self.spectrum_file_list.selectedItems():
+        if current_row < 0 or not self.spectrum_file_list.selectedItems() or not self.spectrum_subset_list.selectedItems():
             return
 
-        filename = self.spectrum_file_list.selectedItems()[0].text()
+        # Get selected subset and its results
+        selected_subset = self.spectrum_subset_list.selectedItems()[0].text()
+        if selected_subset not in self.subset_results:
+            return
+
+        results = self.subset_results[selected_subset]
+        long_table = results.get("long_table")
+        if long_table is None or long_table.empty:
+            return
+
         id_item = self.spectrum_table.item(current_row, 0)
         if not id_item:
             return
 
-        spectrum_idx = int(id_item.data(Qt.DisplayRole)) - 1
-        data = self.mgf_files.get(filename)
-        if not data or spectrum_idx < 0 or spectrum_idx >= len(data["entries"]):
+        # Use the AnnoMe_internal_ID (stored in UserRole) to find the correct entry in long_table
+        internal_id = id_item.data(Qt.UserRole)
+        filename = self.spectrum_file_list.selectedItems()[0].text()
+
+        # Find the spectrum row in long_table by AnnoMe_internal_ID
+        matching_rows = long_table[long_table["AnnoMe_internal_ID"] == internal_id]
+        if matching_rows.empty:
             return
 
-        entry = data["entries"][spectrum_idx]
-        # Extract metadata
-        meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "$$spectrumData", "peaks"]}
+        row = matching_rows.iloc[0]
+
+        # Extract metadata (exclude spectrum data columns)
+        meta_data = {k: v for k, v in row.items() if k not in ["$$SpectrumData", "peaks", "embeddings"]}
 
         # Get classification from table
         classification_item = self.spectrum_table.item(current_row, 7)
@@ -2722,37 +3107,9 @@ classifiers_to_compare = {
 
         # Build detailed prediction info to add to metadata
         spectrum_name = meta_data.get("name", "")
-        spectrum_source = meta_data.get("source", filename)
-        spectrum_ce = meta_data.get("CE", "")
-        spectrum_rt = meta_data.get("RTINSECONDS", "")
-        spectrum_mz = meta_data.get("precursor_mz", "")
-
-        prediction_info = []
-        for subset_name, results in self.subset_results.items():
-            for df_name, df_key in [("inference", "df_inference"), ("validation", "df_validation"), ("train", "df_train")]:
-                df = results.get(df_key)
-                if df is not None and not df.empty:
-                    mask = (
-                        (df["source"].astype(str) == str(spectrum_source))
-                        & (df["name"].astype(str) == str(spectrum_name))
-                        & (df["CE"].astype(str) == str(spectrum_ce))
-                        & (df["RTINSECONDS"].astype(str) == str(spectrum_rt))
-                        & (df["precursor_mz"].astype(str) == str(spectrum_mz))
-                    )
-                    matching_rows = df[mask]
-                    if not matching_rows.empty:
-                        row = matching_rows.iloc[0]
-                        if "prediction_results" in row:
-                            pred_results = row["prediction_results"]
-                            if pred_results and len(pred_results) > 0:
-                                prediction_info.append(f"<b>{subset_name} ({df_name}):</b> {len(pred_results)} predictions")
 
         # Update metadata display with classification info included
         meta_html = "<table border='1' cellpadding='5' style='width:100%'>"
-
-        # Add prediction info at the top if available
-        if prediction_info:
-            meta_html += "<tr style='background-color: #e8f4f8;'><td colspan='2'><b>Prediction Details:</b><br>" + "<br>".join(prediction_info) + "</td></tr>"
 
         # Add all metadata
         for key, value in sorted(meta_data.items()):
@@ -2762,15 +3119,16 @@ classifiers_to_compare = {
 
         # Update spectrum plot
         try:
-            import numpy as np
-
-            spectrum_data = entry.get("$$spectrumdata", entry.get("$$spectrumData", None))
+            spectrum_data = row.get("cleaned_spectra", None)
 
             self.spectrum_ax.clear()
 
             if spectrum_data is not None:
                 # Parse m/z and intensity values as floats
-                if isinstance(spectrum_data, (list, tuple)) and len(spectrum_data) == 2:
+                if isinstance(spectrum_data, Spectrum):
+                    mz_values = spectrum_data.peaks.mz
+                    intensity_values = spectrum_data.peaks.intensities
+                elif isinstance(spectrum_data, (list, tuple)) and len(spectrum_data) == 2:
                     # Convert string values to floats
                     mz_values = [float(x) for x in spectrum_data[0]]
                     intensity_values = [float(x) for x in spectrum_data[1]]
@@ -2927,8 +3285,8 @@ classifiers_to_compare = {
 
     def view_spectrum_details(self):
         """View details of selected spectrum."""
-        if not self.spectrum_file_list.selectedItems():
-            QMessageBox.warning(self, "Warning", "Please select a file")
+        if not self.spectrum_file_list.selectedItems() or not self.spectrum_subset_list.selectedItems():
+            QMessageBox.warning(self, "Warning", "Please select a file and subset")
             return
 
         current_row = self.spectrum_table.currentRow()
@@ -2936,72 +3294,50 @@ classifiers_to_compare = {
             QMessageBox.warning(self, "Warning", "Please select a spectrum")
             return
 
-        filename = self.spectrum_file_list.selectedItems()[0].text()
-        # Get spectrum index from the ID column (first column)
+        # Get selected subset and its results
+        selected_subset = self.spectrum_subset_list.selectedItems()[0].text()
+        if selected_subset not in self.subset_results:
+            QMessageBox.warning(self, "Warning", "Subset results not available")
+            return
+
+        results = self.subset_results[selected_subset]
+        long_table = results.get("long_table")
+        if long_table is None or long_table.empty:
+            QMessageBox.warning(self, "Warning", "No data available in long_table")
+            return
+
+        # Get spectrum index from the ID column (first column) using AnnoMe_internal_ID
         id_item = self.spectrum_table.item(current_row, 0)
         if not id_item:
             return
-        spectrum_idx = int(id_item.data(Qt.DisplayRole)) - 1  # Convert back to 0-based index
 
-        data = self.mgf_files.get(filename)
-        if not data or spectrum_idx < 0 or spectrum_idx >= len(data["entries"]):
+        internal_id = id_item.data(Qt.UserRole)
+
+        # Find the spectrum row in long_table by AnnoMe_internal_ID
+        matching_rows = long_table[long_table["AnnoMe_internal_ID"] == internal_id]
+        if matching_rows.empty:
+            QMessageBox.warning(self, "Warning", "Spectrum not found in data")
             return
 
-        entry = data["entries"][spectrum_idx]
-        # Extract metadata directly from entry (keys are not nested in params)
-        meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "$$spectrumData", "peaks"]}
+        row = matching_rows.iloc[0]
 
-        # Get spectrum data - stored in $$spectrumdata (case insensitive check)
-        spectrum_data = entry.get("$$spectrumdata", entry.get("$$spectrumData", None))
+        # Extract metadata directly from row (keys are not nested in params)
+        meta_data = {k: v for k, v in row.items() if k not in ["$$SpectrumData", "peaks", "embeddings"]}
+
+        # Get spectrum data - stored in $$SpectrumData (case insensitive check)
+        spectrum_data = row.get("cleaned_spectra", None)
 
         # Get classification result from table
         classification_item = self.spectrum_table.item(current_row, 7)
         classification = classification_item.text() if classification_item else ""
 
-        # Get prediction data if available from subset results
-        prediction_data = {}
-        if classification:
-            prediction_data["Classification Result"] = classification
-
-        # Find detailed prediction results for this spectrum
-        spectrum_name = meta_data.get("name", "")
-        spectrum_source = meta_data.get("source", filename)
-        spectrum_ce = meta_data.get("CE", "")
-        spectrum_rt = meta_data.get("RTINSECONDS", "")
-        spectrum_mz = meta_data.get("precursor_mz", "")
-
-        for subset_name, results in self.subset_results.items():
-            # Check long_table and all dataframes
-            for df_name, df_key in [("long_table", "long_table"), ("train", "df_train"), ("validation", "df_validation"), ("inference", "df_inference")]:
-                df = results.get(df_key)
-                if df is not None and not df.empty:
-                    # Try to find this spectrum in the dataframe
-                    mask = (
-                        (df["source"] == spectrum_source)
-                        & (df["name"] == spectrum_name)
-                        & (df["CE"].astype(str) == str(spectrum_ce))
-                        & (df["RTINSECONDS"].astype(str) == str(spectrum_rt))
-                        & (df["precursor_mz"].astype(str) == str(spectrum_mz))
-                    )
-                    matching_rows = df[mask]
-                    if not matching_rows.empty:
-                        row = matching_rows.iloc[0]
-                        # Extract classification info
-                        if "classification:relevant" in row:
-                            prediction_data[f"{subset_name} ({df_name})"] = row["classification:relevant"]
-                        # Extract prediction results if available
-                        if "prediction_results" in row:
-                            pred_results = row["prediction_results"]
-                            if pred_results and len(pred_results) > 0:
-                                prediction_data[f"{subset_name} ({df_name}) - Details"] = "; ".join(str(p) for p in pred_results[:10])  # Show first 10
-
-        dialog = SpectrumViewer(spectrum_data, meta_data, prediction_data, self)
+        dialog = SpectrumViewer(spectrum_data, meta_data, self)
         dialog.exec_()
 
     def export_individual_spectrum(self):
         """Export individual spectrum to Excel."""
-        if not self.spectrum_file_list.selectedItems():
-            QMessageBox.warning(self, "Warning", "Please select a file")
+        if not self.spectrum_file_list.selectedItems() or not self.spectrum_subset_list.selectedItems():
+            QMessageBox.warning(self, "Warning", "Please select a file and subset")
             return
 
         current_row = self.spectrum_table.currentRow()
@@ -3009,20 +3345,35 @@ classifiers_to_compare = {
             QMessageBox.warning(self, "Warning", "Please select a spectrum")
             return
 
-        filename = self.spectrum_file_list.selectedItems()[0].text()
-        # Get spectrum index from the ID column
+        # Get selected subset and its results
+        selected_subset = self.spectrum_subset_list.selectedItems()[0].text()
+        if selected_subset not in self.subset_results:
+            QMessageBox.warning(self, "Warning", "Subset results not available")
+            return
+
+        results = self.subset_results[selected_subset]
+        long_table = results.get("long_table")
+        if long_table is None or long_table.empty:
+            QMessageBox.warning(self, "Warning", "No data available in long_table")
+            return
+
+        # Get spectrum index from the ID column using AnnoMe_internal_ID
         id_item = self.spectrum_table.item(current_row, 0)
         if not id_item:
             return
-        spectrum_idx = int(id_item.data(Qt.DisplayRole)) - 1
 
-        data = self.mgf_files.get(filename)
-        if not data or spectrum_idx < 0 or spectrum_idx >= len(data["entries"]):
+        internal_id = id_item.data(Qt.UserRole)
+
+        # Find the spectrum row in long_table by AnnoMe_internal_ID
+        matching_rows = long_table[long_table["AnnoMe_internal_ID"] == internal_id]
+        if matching_rows.empty:
+            QMessageBox.warning(self, "Warning", "Spectrum not found in data")
             return
 
-        entry = data["entries"][spectrum_idx]
-        # Extract metadata directly from entry
-        meta_data = {k: v for k, v in entry.items() if k not in ["$$spectrumdata", "$$spectrumData", "peaks"]}
+        row = matching_rows.iloc[0]
+
+        # Extract metadata directly from row
+        meta_data = {k: v for k, v in row.items() if k not in ["$$SpectrumData", "peaks", "embeddings"]}
 
         # Add classification from table
         classification_item = self.spectrum_table.item(current_row, 7)

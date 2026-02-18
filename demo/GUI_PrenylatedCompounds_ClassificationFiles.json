@@ -1,0 +1,224 @@
+{
+  "files": [
+    {
+      "filename": "filtered_BOKU_iBAM_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_BOKU_iBAM_matched.mgf",
+      "type": "validation - relevant"
+    },
+    {
+      "filename": "filtered_BOKU_iBAM_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_BOKU_iBAM_noMatch.mgf",
+      "type": "validation - other"
+    },
+    {
+      "filename": "HCD_neg__sirius.mgf",
+      "path": "./resources/libraries_other/HCD_neg__sirius.mgf",
+      "type": "validation - relevant"
+    },
+    {
+      "filename": "HCD_pos__sirius.mgf",
+      "path": "./resources/libraries_other/HCD_pos__sirius.mgf",
+      "type": "validation - relevant"
+    },
+    {
+      "filename": "n_GU_neg__sirius.mgf",
+      "path": "./resources/libraries_other/n_GU_neg__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "n_GU_pos__sirius.mgf",
+      "path": "./resources/libraries_other/n_GU_pos__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "n_PT22_neg__sirius.mgf",
+      "path": "./resources/libraries_other/n_PT22_neg__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "n_PT22_pos__sirius.mgf",
+      "path": "./resources/libraries_other/n_PT22_pos__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "n_PT24_neg__sirius.mgf",
+      "path": "./resources/libraries_other/n_PT24_neg__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "n_PT24_pos__sirius.mgf",
+      "path": "./resources/libraries_other/n_PT24_pos__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "n_wheat_neg__sirius.mgf",
+      "path": "./resources/libraries_other/n_wheat_neg__sirius.mgf",
+      "type": "validation - other"
+    },
+    {
+      "filename": "n_wheat_pos__sirius.mgf",
+      "path": "./resources/libraries_other/n_wheat_pos__sirius.mgf",
+      "type": "validation - other"
+    },
+    {
+      "filename": "PT22CH_neg__sirius.mgf",
+      "path": "./resources/libraries_other/PT22CH_neg__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "PT22CH_pos__sirius.mgf",
+      "path": "./resources/libraries_other/PT22CH_pos__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "Samp1_neg__sirius.mgf",
+      "path": "./resources/libraries_other/Samp1_neg__sirius.mgf",
+      "type": "inference"
+    },
+    {
+      "filename": "Wheat_neg__sirius.mgf",
+      "path": "./resources/libraries_other/Wheat_neg__sirius.mgf",
+      "type": "validation - other"
+    },
+    {
+      "filename": "Wheat_pos__sirius.mgf",
+      "path": "./resources/libraries_other/Wheat_pos__sirius.mgf",
+      "type": "validation - other"
+    },
+    {
+      "filename": "filtered_20241003_enamdisc_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_enamdisc_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_enamdisc_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_enamdisc_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_enammol_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_enammol_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_enammol_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_enammol_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_mcebio_neg_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_neg_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_mcebio_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_mcebio_pos_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_pos_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_mcebio_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_mcedrug_neg_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_neg_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_mcedrug_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_mcedrug_pos_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_pos_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_mcedrug_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_mcescaf_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_mcescaf_pos_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_pos_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_mcescaf_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_nihnp_neg_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_neg_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_nihnp_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_nihnp_pos_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_pos_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20241003_nihnp_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_otavapep_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_otavapep_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20241003_otavapep_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20241003_otavapep_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20250228_mcediv_50k_sub_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20250228_mcediv_50k_sub_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20250228_mcediv_50k_sub_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20250228_mcediv_50k_sub_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20250228_targetmolnphts_np_neg_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_np_neg_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20250228_targetmolnphts_np_neg_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_np_neg_ms2_noMatch.mgf",
+      "type": "train - other"
+    },
+    {
+      "filename": "filtered_20250228_targetmolnphts_pos_ms2_matched.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_pos_ms2_matched.mgf",
+      "type": "train - relevant"
+    },
+    {
+      "filename": "filtered_20250228_targetmolnphts_pos_ms2_noMatch.mgf",
+      "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_pos_ms2_noMatch.mgf",
+      "type": "train - other"
+    }
+  ]
+}

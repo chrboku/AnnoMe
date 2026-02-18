@@ -809,7 +809,7 @@ def select_randomly_n_spectra(input_mgf_path, n = None, encoding="utf-8"):
 
     return temp.name, True
 
-def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW, total = None):
+def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW, col_score = Fore.CYAN, total = None):
     """
     Generates and prints various classification metrics including confusion matrix, balanced accuracy, precision, F1 score, recall, and ROC AUC.
     Args:
@@ -845,23 +845,23 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
 
     # Print overall metrics
     val = balanced_accuracy_score(gt, pred)
-    print(f"   - [{print_pre}] {col_correct}Balanced accuracy: {val:.3f}{Style.RESET_ALL}")
+    print(f"   - [{print_pre}] {col_score}Balanced accuracy: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "balanced_accuracy", "value": val})
 
     val = precision_score(gt, pred, average="weighted")
-    print(f"   - [{print_pre}] {col_correct}Precision: {val:.3f}{Style.RESET_ALL}")
+    print(f"   - [{print_pre}] {col_score}Precision: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted precision", "value": val})
 
     val = f1_score(gt, pred, average='weighted')
-    print(f"   - [{print_pre}] {col_correct}F1 Score: {val:.3f}{Style.RESET_ALL}")
+    print(f"   - [{print_pre}] {col_score}F1 Score: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted F1 score", "value": val})
 
     val = recall_score(gt, pred, average='weighted')
-    print(f"   - [{print_pre}] {col_correct}Recall: {val:.3f}{Style.RESET_ALL}")
+    print(f"   - [{print_pre}] {col_score}Recall: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted recall value", "value": val})
 
     val = roc_auc_score(np.array([1 if x == "relevant" else 0 for x in gt]), np.array([1 if x == "relevant" else 0 for x in pred]))
-    print(f"   - [{print_pre}] {col_correct}ROC AUC: {val:.3f}{Style.RESET_ALL}")
+    print(f"   - [{print_pre}] {col_score}ROC AUC: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted roc auc", "value": val})
 
     return conf_matrix_percent, pd.DataFrame(metric_data)
@@ -2009,7 +2009,7 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers_to_comp
 
                         print(f"\nAverage score: {avg_score:.3f} ± {std_score:.3f} (min: {min_score:.3f}, max: {max_score:.3f})")
                         print(f"Average duration: {avg_duration:.2f} seconds")
-                        print("Average Confusion Matrix (Percentages, rows: ground-truth, columns: predictions):")
+                        print("Average Confusion Matrix (percentages, rows: ground-truth, columns: predictions):")
                         print(avg_conf_matrix_percent_df)
         
                 trained_classifiers_per_subset[f"{classifier_set_name} / {subset}"] = (subsets[subset], trained_classifiers, min_prediction_threshold)
@@ -2250,6 +2250,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
             ]
         ]
         .reset_index(drop=True)
+        .astype(str)
         .pivot_table(
             index=[
                 "source",
@@ -2297,7 +2298,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     x.columns = ['_'.join(filter(None, col)).strip() for col in x.columns.values]
     x.columns = [re.sub(r"_Unnamed: \d+_level_\d+", "", col) for col in x.columns]
     x.columns = [re.sub(r"Unnamed: \d+_level_\d+_", "", col) for col in x.columns]
-    overall = x.groupby(['source', 'annotated_as_times:relevant']).size().reset_index(name='row_count')
+    overall = x.groupby(['type', 'source', 'annotated_as_times:relevant']).size().reset_index(name='row_count')
 
     # Save the DataFrames to an Excel file
     out_file = os.path.join(output_dir, f"{file_prefix}_data.xlsx")
@@ -2307,7 +2308,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     if not pivot_table.empty:
         pivot_table.to_excel(writer, sheet_name='pivot_table', index=True)
     if not overall.empty:
-        overall.to_excel(writer, sheet_name='overall', index=False)
+        overall.to_excel(writer, sheet_name='overall', index=True)
     writer.close()
     print(f"Saved table to {out_file}")
 

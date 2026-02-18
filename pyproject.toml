@@ -1,6 +1,6 @@
 [project]
 name = "annome"
-version = "0.24.3"
+version = "0.25.0"
 description = "Python package for MSMS spectra classification using in-house reference spectra"
 readme = "README.md"
 authors = [
@@ -32,6 +32,8 @@ dependencies = [
     "xlsxwriter>=3.2.5",
     "pyqt5-qt5==5.15.2",
     "pyqt5>=5.15.11",
+    "fastexcel>=0.19.0",
+    "pyarrow>=23.0.1",
 ]
 
 [project.scripts]

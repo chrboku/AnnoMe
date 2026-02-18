@@ -1,0 +1,262 @@
+{
+    "mgf_files": [
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_BOKU_iBAM_matched.mgf",
+            "type": "validation - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_BOKU_iBAM_noMatch.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/HCD_neg__sirius.mgf",
+            "type": "validation - relevant"
+        },
+        {
+            "path": "./resources/libraries_other/HCD_pos__sirius.mgf",
+            "type": "validation - relevant"
+        },
+        {
+            "path": "./resources/libraries_other/n_GU_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/n_GU_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/n_PT22_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/n_PT22_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/n_PT24_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/n_PT24_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/n_wheat_neg__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/n_wheat_pos__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/PT22CH_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/PT22CH_pos__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/Samp1_neg__sirius.mgf",
+            "type": "inference"
+        },
+        {
+            "path": "./resources/libraries_other/Wheat_neg__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/Wheat_pos__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enamdisc_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enamdisc_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enammol_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enammol_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_otavapep_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_otavapep_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_mcediv_50k_sub_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_mcediv_50k_sub_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_np_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_np_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        }
+    ],
+    "output_directory": "./output/classification_results_PrenylatedFlavonoids_ComparisonClassifiers",
+    "subsets": [
+        {
+            "name": "hcd_pos_20.0",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') == \"20.0\"",
+            "counts": {
+                "train - other": 78941,
+                "validation - relevant": 68,
+                "train - relevant": 149
+            }
+        },
+        {
+            "name": "hcd_pos_30.0",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') == \"30.0\"",
+            "counts": {
+                "train - other": 37700,
+                "validation - relevant": 68,
+                "train - relevant": 70
+            }
+        },
+        {
+            "name": "hcd_pos_60.0",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') == \"60.0\"",
+            "counts": {
+                "train - other": 79630,
+                "validation - relevant": 68,
+                "train - relevant": 148
+            }
+        },
+        {
+            "name": "hcd_neg_20.0",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') == \"20.0\"",
+            "counts": {
+                "train - other": 50148,
+                "inference": 5436,
+                "train - relevant": 155,
+                "validation - relevant": 67
+            }
+        },
+        {
+            "name": "hcd_neg_30.0",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') == \"30.0\"",
+            "counts": {
+                "train - other": 17985,
+                "inference": 4434,
+                "validation - relevant": 67,
+                "train - relevant": 56
+            }
+        },
+        {
+            "name": "hcd_neg_60.0",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') == \"60.0\"",
+            "counts": {
+                "train - other": 50810,
+                "train - relevant": 167,
+                "validation - relevant": 66
+            }
+        },
+        {
+            "name": "hcd_pos_stepped",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') in ['45.0', 'stepped20,45,70ev(absolute)']",
+            "counts": {
+                "train - other": 20509,
+                "inference": 13523,
+                "validation - other": 3928,
+                "validation - relevant": 115,
+                "train - relevant": 28
+            }
+        },
+        {
+            "name": "hcd_neg_stepped",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') in ['45.0', 'stepped20,45,70ev(absolute)']",
+            "counts": {
+                "train - other": 10095,
+                "inference": 4925,
+                "validation - other": 1518,
+                "validation - relevant": 115,
+                "train - relevant": 71
+            }
+        }
+    ],
+    "classifier_configuration": "from sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.svm import SVC\nfrom sklearn.gaussian_process import GaussianProcessClassifier\nfrom sklearn.tree import DecisionTreeClassifier\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.neural_network import MLPClassifier\nfrom sklearn.ensemble import AdaBoostClassifier\nfrom sklearn.naive_bayes import GaussianNB\nfrom sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis\nfrom sklearn.discriminant_analysis import LinearDiscriminantAnalysis\nfrom sklearn.ensemble import ExtraTreesClassifier\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.ensemble import BaggingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.linear_model import RidgeClassifier\nfrom sklearn.ensemble import VotingClassifier\nfrom sklearn.model_selection import StratifiedKFold\n\nclassifiers_to_compare = {\n    \"NeuralNet\": {\n        \"description\": \"Default set of diverse classifiers for comparison\",\n        \"classifiers\": {\n            \"Neural Net\": MLPClassifier(alpha=1, max_iter=1000, random_state=42),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 8,\n    },\n    \"NaiveBayes\": {\n        \"description\": \"Default set of diverse classifiers for comparison\",\n        \"classifiers\": {\n            \"Naive Bayes\": GaussianNB(),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 8,\n    },\n    \"LinearSVM\": {\n        \"description\": \"Default set of diverse classifiers for comparison\",\n        \"classifiers\": {\n            \"Linear SVM\": SVC(kernel=\"linear\", C=0.025, random_state=42),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 8,\n    },\n    \"QDA\": {\n        \"description\": \"Default set of diverse classifiers for comparison\",\n        \"classifiers\": {\n            \"QDA\": QuadraticDiscriminantAnalysis(),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 8,\n    },\n    \"LDA\": {\n        \"description\": \"Default set of diverse classifiers for comparison\",\n        \"classifiers\": {\n            \"LDA\": LinearDiscriminantAnalysis(solver=\"svd\", store_covariance=True, n_components=1),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 8,\n    },\n    \"LogReg\": {\n        \"description\": \"Default set of diverse classifiers for comparison\",\n        \"classifiers\": {\n            \"Logistic Regression\": LogisticRegression(random_state=42, max_iter=1000),\n        },\n        \"cross_validation\": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits\n        \"min_prediction_threshold\": 8,\n    }\n}"
+}

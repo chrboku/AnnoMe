@@ -620,7 +620,7 @@ class MGFFilterGUI(QMainWindow):
                 for block in file_data["blocks"]:
                     # Exclude special keys
                     for key in block.keys():
-                        if key not in ["$$spectrumdata", "$$spectrumData", "peaks"]:
+                        if key not in ["$$SpectrumData", "$$SpectrumData", "peaks"]:
                             all_meta_keys.add(key)
 
             # Build list of records (one per spectrum)
@@ -1178,6 +1178,21 @@ class MGFFilterGUI(QMainWindow):
         export_excel_layout.addStretch()
         layout.addLayout(export_excel_layout)
 
+        # Checkbox for "Export Per Input File"
+        export_perfile_layout = QHBoxLayout()
+        self.export_perfile_checkbox = QCheckBox("Export Spectra Per Input File")
+        self.export_perfile_checkbox.setChecked(False)
+        self.export_perfile_checkbox.setToolTip(
+            "Export matched and non-matched spectra on a per-MGF file basis.\n\n"
+            "For each input MGF file, creates:\n"
+            "  • <base>_<source>_matched.mgf - spectra matching at least one filter\n"
+            "  • <base>_<source>_noMatch.mgf - spectra matching no filters\n\n"
+            "Note: Overall allMatch and noMatch files will still be created."
+        )
+        export_perfile_layout.addWidget(self.export_perfile_checkbox)
+        export_perfile_layout.addStretch()
+        layout.addLayout(export_perfile_layout)
+
         # List of filters with checkboxes
         self.export_filter_list = QListWidget()
         self.export_filter_list.setSelectionMode(QListWidget.MultiSelection)
@@ -1226,7 +1241,7 @@ class MGFFilterGUI(QMainWindow):
                 }
 
             # Get fields from DataFrame columns (excluding internal columns)
-            fields = [col for col in df.columns if not col.startswith("__AnnoMe_") and col not in ["$$spectrumdata", "$$spectrumData", "peaks"]]
+            fields = [col for col in df.columns if not col.startswith("__AnnoMe_") and col not in ["$$SpectrumData", "$$SpectrumData", "peaks"]]
 
             # Auto-detect SMILES field (case-insensitive)
             smiles_field = None
@@ -2542,7 +2557,7 @@ class MGFFilterGUI(QMainWindow):
                     *[
                         pl.col(col).drop_nulls().first().alias(col)
                         for col in filtered_df.columns
-                        if col not in [smiles_field, "$$spectrumdata", "$$spectrumData", "peaks"] and not col.startswith("__AnnoMe_")
+                        if col not in [smiles_field, "$$SpectrumData", "$$SpectrumData", "peaks"] and not col.startswith("__AnnoMe_")
                     ],
                 ]
             )
@@ -2633,38 +2648,37 @@ class MGFFilterGUI(QMainWindow):
 
             # Write to Excel file
             excel_path = os.path.join(base_dir, f"{base_name}_overview.xlsx")
-            
+
             # Try to export as Excel, fall back to TSV if memory issues
             try:
                 Filters.list_to_excel_table(table_data, excel_path, sheet_name="Overview", img_prefix="$$$IMG:", column_width=40, row_height=40 if include_images else 10)
-                
+
                 # Cleanup temporary directory
                 temp_dir.cleanup()
-                
+
                 print(f"  {Fore.GREEN}Overview Excel file exported to: {excel_path}{Style.RESET_ALL}")
-                
+
                 return excel_path
-                
+
             except Exception as excel_error:
                 print(f"  {Fore.YELLOW}Warning: Could not export Excel file: {str(excel_error)}{Style.RESET_ALL}")
                 print(f"  {Fore.CYAN}Exporting as TSV file instead...{Style.RESET_ALL}")
-                
+
                 # Cleanup temporary directory since we won't use images
                 temp_dir.cleanup()
-                
+
                 # Export as TSV instead
                 tsv_path = os.path.join(base_dir, f"{base_name}_overview.tsv")
-                
+
                 try:
-                    
-                    with open(tsv_path, 'w', newline='', encoding='utf-8') as f:
+                    with open(tsv_path, "w", newline="", encoding="utf-8") as f:
                         if table_data:
                             # Get all column headers from first row (and ensure all rows have same columns)
                             headers = list(table_data[0].keys())
-                            
-                            writer = csv.DictWriter(f, fieldnames=headers, delimiter='\t')
+
+                            writer = csv.DictWriter(f, fieldnames=headers, delimiter="\t")
                             writer.writeheader()
-                            
+
                             # Write data rows, removing image paths
                             for row in table_data:
                                 clean_row = {}
@@ -2675,11 +2689,11 @@ class MGFFilterGUI(QMainWindow):
                                     else:
                                         clean_row[key] = value
                                 writer.writerow(clean_row)
-                    
+
                     print(f"  {Fore.GREEN}Overview TSV file exported to: {tsv_path}{Style.RESET_ALL}")
-                    
+
                     return tsv_path
-                    
+
                 except Exception as tsv_error:
                     print(f"  {Fore.RED}Error exporting TSV file: {str(tsv_error)}{Style.RESET_ALL}")
                     return None
@@ -2880,6 +2894,57 @@ class MGFFilterGUI(QMainWindow):
                     if os.path.exists(no_match_path):
                         os.remove(no_match_path)
 
+            # Export per-file matched and non-matched files if requested
+            per_file_match_counts = {}
+            per_file_nomatch_counts = {}
+            if not progress.wasCanceled() and self.export_perfile_checkbox.isChecked():
+                progress.setLabelText("Exporting per-file results...")
+                QApplication.processEvents()
+
+                # Get all unique source files from the filtered data
+                unique_sources = filtered_df.select(pl.col("__AnnoMe_source")).unique().to_series().to_list()
+
+                for source_name in unique_sources:
+                    if progress.wasCanceled():
+                        break
+
+                    # Remove .mgf extension from source if present for filename
+                    source_base = os.path.splitext(source_name)[0] if source_name.lower().endswith(".mgf") else source_name
+
+                    # Export matched spectra for this source file (matching at least one filter)
+                    source_match_df_with_source = filtered_df.filter((pl.col("__AnnoMe_source") == source_name) & pl.col(smiles_field).is_in(all_matched_smiles))
+
+                    if len(source_match_df_with_source) > 0:
+                        # Remove internal tracking columns
+                        data_cols = [col for col in source_match_df_with_source.columns if not col.startswith("__AnnoMe_")]
+                        source_match_df = source_match_df_with_source.select(data_cols)
+
+                        source_match_path = os.path.join(base_dir, f"{base_name}_{source_base}_matched.mgf")
+                        per_file_match_counts[source_name] = len(source_match_df)
+                        Filters.export_mgf_file_from_polars_table(source_match_df, source_match_path)
+                    else:
+                        # Delete file if it exists but would be empty
+                        source_match_path = os.path.join(base_dir, f"{base_name}_{source_base}_matched.mgf")
+                        if os.path.exists(source_match_path):
+                            os.remove(source_match_path)
+
+                    # Export non-matched spectra for this source file
+                    source_no_match_df_with_source = filtered_df.filter((pl.col("__AnnoMe_source") == source_name) & (~pl.col(smiles_field).is_in(all_matched_smiles) | pl.col(smiles_field).is_null()))
+
+                    if len(source_no_match_df_with_source) > 0:
+                        # Remove internal tracking columns
+                        data_cols = [col for col in source_no_match_df_with_source.columns if not col.startswith("__AnnoMe_")]
+                        source_no_match_df = source_no_match_df_with_source.select(data_cols)
+
+                        source_no_match_path = os.path.join(base_dir, f"{base_name}_{source_base}_noMatch.mgf")
+                        per_file_nomatch_counts[source_name] = len(source_no_match_df)
+                        Filters.export_mgf_file_from_polars_table(source_no_match_df, source_no_match_path)
+                    else:
+                        # Delete file if it exists but would be empty
+                        source_no_match_path = os.path.join(base_dir, f"{base_name}_{source_base}_noMatch.mgf")
+                        if os.path.exists(source_no_match_path):
+                            os.remove(source_no_match_path)
+
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Error during export: {str(e)}")
             return
@@ -2909,6 +2974,17 @@ class MGFFilterGUI(QMainWindow):
             msg += f"  • {k_no_matches} filter(s) with no matching spectra\n"
         msg += f"  • {u_matched} spectra matched to 1 or more filters (all-match file)\n"
         msg += f"  • {i_no_match} spectra did not match any filter (no-match file)\n"
+        if per_file_match_counts or per_file_nomatch_counts:
+            msg += f"\n  Per-file exports:\n"
+            all_sources = sorted(set(list(per_file_match_counts.keys()) + list(per_file_nomatch_counts.keys())))
+            for source_name in all_sources:
+                match_count = per_file_match_counts.get(source_name, 0)
+                nomatch_count = per_file_nomatch_counts.get(source_name, 0)
+                msg += f"    • {source_name}:\n"
+                if match_count > 0:
+                    msg += f"        - {match_count} matched spectra\n"
+                if nomatch_count > 0:
+                    msg += f"        - {nomatch_count} non-matched spectra\n"
         if excel_path:
             msg += f"  • Overview Excel file created\n"
         msg += f"\nFiles saved to: {base_dir}"
