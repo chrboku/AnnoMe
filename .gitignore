@@ -20,3 +20,6 @@ resources/*
 # for publication
 forPublication/
 output/
+
+# others
+run.bat

@@ -1,5 +1,6 @@
 import sys
 import os
+import argparse
 from collections import defaultdict, OrderedDict
 import io
 import json
@@ -40,7 +41,7 @@ from PyQt5.QtWidgets import (
     QAction,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
 from PyQt5.QtGui import QPixmap, QImage, QColor, QBrush
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
@@ -377,7 +378,7 @@ class ClassificationGUI(QMainWindow):
 
     EXCLUDE_COLS = frozenset({"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"})
 
-    def __init__(self):
+    def __init__(self, config_path=None, auto_start_training=False):
         super().__init__()
         self.mgf_files = {}  # filename -> {data, entries, unique_smiles, type}
         self.all_meta_keys = set()
@@ -396,10 +397,16 @@ class ClassificationGUI(QMainWindow):
         self._editing_subset_index = None  # Track which subset is being edited
         self.expected_embeddings_hash = None  # Expected hash from loaded configuration file
         self.expected_embeddings_path = None  # Expected path from loaded configuration file
+        self._auto_start_training = auto_start_training  # Automatically start training after config load
+        self._results_combined_summary = None  # Full combined_summary for the results histogram
 
         set_random_seeds(42)
 
         self.init_ui()
+
+        # Schedule automatic config loading after the window is shown
+        if config_path is not None:
+            QTimer.singleShot(200, lambda: self.load_full_configuration(file_path=config_path))
 
     def get_version(self):
         """Read version from pyproject.toml"""
@@ -982,8 +989,8 @@ classifiers_to_compare = {
 
     def init_section5(self):
         """Initialize the results inspection section."""
-        content = QWidget()
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(6, 6, 6, 6)
 
         # Export buttons at the top
         button_layout = QHBoxLayout()
@@ -997,21 +1004,61 @@ classifiers_to_compare = {
         button_layout.addStretch()
         main_layout.addLayout(button_layout)
 
-        # Results table - shows all combinations
+        # Horizontal splitter: table on left, histogram on right (user-resizable)
+        self.results_splitter = QSplitter(Qt.Horizontal)
+        self.results_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+        # Left panel – results table
         self.results_table = QTableWidget()
         self.results_table.setSortingEnabled(True)
-        main_layout.addWidget(self.results_table, 1)  # Stretch to fill available space
+        self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.results_table.itemSelectionChanged.connect(self.on_results_table_selection_changed)
+        self.results_splitter.addWidget(self.results_table)
 
-        content.setLayout(main_layout)
+        # Right panel – vertically scrollable histogram
+        self._results_histogram_available = False
+        try:
+            import matplotlib
 
-        # Set up scroll area for this section
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
+            matplotlib.use("Qt5Agg")
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+            from matplotlib.figure import Figure
 
-        section_layout = QVBoxLayout()
-        section_layout.addWidget(scroll)
-        self.section5.setLayout(section_layout)
+            hist_panel = QWidget()
+            hist_panel_layout = QVBoxLayout()
+            hist_panel_layout.setContentsMargins(0, 0, 0, 0)
+
+            self.results_figure = Figure()
+            self.results_canvas = FigureCanvas(self.results_figure)
+
+            self.results_hist_toolbar = NavigationToolbar(self.results_canvas, self)
+            hist_panel_layout.addWidget(self.results_hist_toolbar)
+
+            # QScrollArea with vertical-only scroll – canvas height is managed
+            # manually in update_results_histogram so all subplots are visible.
+            self.results_hist_scroll = QScrollArea()
+            self.results_hist_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            self.results_hist_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            self.results_hist_scroll.setWidgetResizable(False)  # we control canvas size
+            self.results_hist_scroll.setWidget(self.results_canvas)
+            hist_panel_layout.addWidget(self.results_hist_scroll, 1)
+
+            hist_panel.setLayout(hist_panel_layout)
+            self.results_splitter.addWidget(hist_panel)
+            self._results_histogram_available = True
+        except ImportError:
+            placeholder = QLabel("Matplotlib not available for histogram visualisation")
+            placeholder.setAlignment(Qt.AlignCenter)
+            self.results_splitter.addWidget(placeholder)
+
+        # Default split: 50 % table / 50 % histogram
+        self.results_splitter.setStretchFactor(0, 1)
+        self.results_splitter.setStretchFactor(1, 1)
+
+        main_layout.addWidget(self.results_splitter, 1)
+
+        self.section5.setLayout(main_layout)
 
     def init_section6(self):
         """Initialize the individual spectra inspection section."""
@@ -1866,11 +1913,14 @@ classifiers_to_compare = {
 
         if len(df) != total_mgf_entries:
             self.embedding_status.setText("Status: Error - Data integrity check failed ✗")
-            QMessageBox.warning(
-                self,
-                "Warning",
-                f"Data integrity check failed:\nExpected {total_mgf_entries} entries from parsing the MGF files, but got {len(df)} entries in embeddings. Only those spectra with valid embeddings are included further.",
+            _integrity_msg = QMessageBox(self)
+            _integrity_msg.setIcon(QMessageBox.Warning)
+            _integrity_msg.setWindowTitle("Warning")
+            _integrity_msg.setText(
+                f"Data integrity check failed:\nExpected {total_mgf_entries} entries from parsing the MGF files, but got {len(df)} entries in embeddings. Only those spectra with valid embeddings are included further."
             )
+            _ok_btn = _integrity_msg.addButton(QMessageBox.Ok)
+            self._exec_with_autoclose(_integrity_msg, _ok_btn)
 
             # get list of all ids to use from df
             ids_to_use = set(df["AnnoMe_internal_ID"].tolist())
@@ -2105,9 +2155,17 @@ classifiers_to_compare = {
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
 
-    def load_full_configuration(self):
-        """Load complete workflow configuration and automatically execute workflow steps."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Full Configuration", "", "JSON Files (*.json);;All Files (*)")
+    def load_full_configuration(self, file_path=None):
+        """Load complete workflow configuration and automatically execute workflow steps.
+
+        Parameters
+        ----------
+        file_path : str, optional
+            Path to the configuration JSON file. When *None* (default) a file-open
+            dialog is shown so the user can pick the file interactively.
+        """
+        if file_path is None:
+            file_path, _ = QFileDialog.getOpenFileName(self, "Load Full Configuration", "", "JSON Files (*.json);;All Files (*)")
 
         if not file_path:
             return
@@ -2276,21 +2334,58 @@ classifiers_to_compare = {
             # Navigate to training section
             self.go_to_section(self.section4)
 
-            QMessageBox.information(
-                self,
-                "Success",
+            _ready_msg = QMessageBox(self)
+            _ready_msg.setIcon(QMessageBox.Information)
+            _ready_msg.setWindowTitle("Success")
+            _ready_msg.setText(
                 f"Configuration loaded and workflow executed:\n"
                 f"- Loaded {len(self.mgf_files)} MGF files\n"
                 f"- Generated embeddings ({len(self.df_embeddings)} entries)\n"
                 f"- Loaded {len(self.subsets)} subsets\n"
                 f"- Loaded classifier configuration\n\n"
-                f"Ready to train classifiers!",
+                f"Ready to train classifiers!"
             )
+            _ready_ok = _ready_msg.addButton(QMessageBox.Ok)
+            self._exec_with_autoclose(_ready_msg, _ready_ok)
+
+            # Automatically start training if requested via -startTraining flag
+            if self._auto_start_training:
+                print("Auto-starting training as requested by -startTraining flag...")
+                QTimer.singleShot(100, self.train_classifiers_clicked)
 
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to complete configuration loading:\n{str(e)}")
         finally:
             self.pending_config_data = None
+
+    # ---------------------------------------------------------------------- #
+    # Utility helpers                                                          #
+    # ---------------------------------------------------------------------- #
+
+    def _exec_with_autoclose(self, msg, default_button, timeout_ms=30000):
+        """Execute a QMessageBox and auto-click *default_button* after *timeout_ms* ms.
+
+        A countdown (updated every second) is appended to the dialog text so the
+        user can see how long they have to react.
+        """
+        interval_ms = 1000
+        remaining = [timeout_ms // interval_ms]
+        original_text = msg.text()
+
+        def _tick():
+            remaining[0] -= 1
+            if remaining[0] <= 0:
+                countdown_timer.stop()
+                default_button.click()
+            else:
+                msg.setText(f"{original_text}\n\n(Auto-closing with default option in {remaining[0]}s)")
+
+        countdown_timer = QTimer(msg)
+        countdown_timer.setInterval(interval_ms)
+        countdown_timer.timeout.connect(_tick)
+        msg.setText(f"{original_text}\n\n(Auto-closing with default option in {remaining[0]}s)")
+        countdown_timer.start()
+        msg.exec_()
 
     def show_about(self):
         """Show about dialog with GUI description and version."""
@@ -2397,7 +2492,7 @@ classifiers_to_compare = {
                 # Make suffix button the default
                 msg.setDefaultButton(suffix_btn)
 
-                msg.exec_()
+                self._exec_with_autoclose(msg, suffix_btn)
                 clicked_btn = msg.clickedButton()
 
                 if clicked_btn == delete_btn:
@@ -2581,7 +2676,6 @@ classifiers_to_compare = {
             for xlsx_file in os.listdir(output_dir):
                 if xlsx_file.endswith("_data.xlsx"):
                     file_path = os.path.join(output_dir, xlsx_file)
-                    print(f"found xlsx file: {xlsx_file}")
                     try:
                         # Try to read the 'overall' sheet
                         df = pl.read_excel(file_path, sheet_name="overall")
@@ -2590,7 +2684,6 @@ classifiers_to_compare = {
                         df = df.with_columns(pl.lit(subset_name).alias("subset"))
                         # Append the DataFrame to the list
                         all_results.append(df)
-                        print(f"  Loaded {xlsx_file} from root of output directory")
                     except Exception as e:
                         print(f"  Could not load 'overall' sheet from {xlsx_file}: {e}")
                         # Sheet 'overall' might not exist in this file, or it might not be a valid Excel file
@@ -2635,15 +2728,17 @@ classifiers_to_compare = {
             )
 
             # Order the DataFrame
-            sort_columns = ["type", "source"]
+            sort_columns = ["subset", "type", "source"]
             if "gt_type" in all_results.columns:
                 sort_columns.append("gt_type")
-            sort_columns.append("annotated_as")
-
+            if "pred_type" in all_results.columns:
+                sort_columns.append("pred_type")
+            if "annotated_as" in all_results.columns:
+                sort_columns.append("annotated_as")
             all_results = all_results.sort(sort_columns)
 
             # Reorder the columns
-            base_columns = ["type", "source"]
+            base_columns = ["subset", "type", "source"]
             if "gt_type" in all_results.columns:
                 base_columns.append("gt_type")
             if "pred_type" in all_results.columns:
@@ -2656,7 +2751,7 @@ classifiers_to_compare = {
             all_results = all_results.select(final_columns)
 
             # Export to master Excel file
-            output_excel_file = os.path.join(output_dir, "master_summary.xlsx")
+            output_excel_file = os.path.join(output_dir, "training_summary.xlsx")
             all_results.write_excel(output_excel_file, worksheet="all_results")
 
             print(f"Exported master summary to {output_excel_file}")
@@ -2788,11 +2883,47 @@ classifiers_to_compare = {
         # Refresh the results table in step 5 to show all combinations
         self.refresh_all_results_table()
 
+    def on_results_table_selection_changed(self):
+        """Update the histogram to reflect only the selected table rows.
+
+        If no rows are selected the full dataset is shown.
+        """
+        if not hasattr(self, "_results_combined_summary") or self._results_combined_summary is None:
+            return
+
+        selected_rows = list({idx.row() for idx in self.results_table.selectedIndexes()})
+
+        if not selected_rows:
+            # Nothing selected – show everything
+            self.update_results_histogram(self._results_combined_summary)
+            return
+
+        # Build a set of (combination, source) keys from the selected table rows
+        selected_keys = set()
+        for row in selected_rows:
+            classifier_item = self.results_table.item(row, 0)
+            subset_item = self.results_table.item(row, 1)
+            source_item = self.results_table.item(row, 2)
+            if classifier_item and subset_item and source_item:
+                combo = f"{classifier_item.text()} // {subset_item.text()}"
+                source = source_item.text()
+                selected_keys.add((combo, source))
+
+        if not selected_keys:
+            self.update_results_histogram(self._results_combined_summary)
+            return
+
+        filtered = self._results_combined_summary[self._results_combined_summary.apply(lambda r: (r["combination"], r["source"]) in selected_keys, axis=1)].reset_index(drop=True)
+
+        self.update_results_histogram(filtered if not filtered.empty else self._results_combined_summary)
+
     # Section 5 methods
     def refresh_all_results_table(self):
         """Refresh the results table to show all combinations at once."""
         if not self.subset_results:
             self.results_table.setRowCount(0)
+            self._results_combined_summary = None
+            self.update_results_histogram(None)
             return
 
         # Get file types for display
@@ -2836,6 +2967,8 @@ classifiers_to_compare = {
 
         if not all_rows:
             self.results_table.setRowCount(0)
+            self._results_combined_summary = None
+            self.update_results_histogram(None)
             return
 
         # Combine all summaries
@@ -2945,6 +3078,163 @@ classifiers_to_compare = {
         # Re-enable sorting and auto-resize columns
         self.results_table.setSortingEnabled(True)
         self.results_table.resizeColumnsToContents()
+
+        # Store full summary so the selection handler can filter it
+        self._results_combined_summary = combined_summary
+
+        # Redraw histogram
+        self.update_results_histogram(combined_summary)
+
+    def update_results_histogram(self, combined_summary):
+        """Redraw the classification results histogram.
+
+        Three groups of subplots are drawn in a single vertical column:
+          1. One subplot per classifier-set // subset combination
+          2. One subplot per source file
+          3. One subplot per dataset type
+
+        Each subplot shows 100 % stacked vertical bars (Other / Relevant).
+        The canvas height is computed from the number of subplots and the
+        scroll area provides vertical navigation.
+        """
+        if not self._results_histogram_available:
+            return
+
+        self.results_figure.clear()
+
+        if combined_summary is None or combined_summary.empty:
+            self.results_figure.set_size_inches(7, 3)
+            ax = self.results_figure.add_subplot(111)
+            ax.text(0.5, 0.5, "No results to display", ha="center", va="center", fontsize=12)
+            ax.set_axis_off()
+            dpi = self.results_figure.dpi
+            self.results_canvas.resize(int(7 * dpi), int(3 * dpi))
+            self.results_canvas.draw()
+            return
+
+        # ------------------------------------------------------------------ #
+        # Colour scheme – matches the table type colours                       #
+        # ------------------------------------------------------------------ #
+        TYPE_META = {
+            "train - relevant": {"bg": "#C5D89D", "bar_rel": "#5A9E4A", "bar_oth": "#A7C87A"},
+            "train - other": {"bg": "#D25353", "bar_rel": "#7B1F1F", "bar_oth": "#C06060"},
+            "validation - relevant": {"bg": "#9CAB84", "bar_rel": "#4A7A3A", "bar_oth": "#7A9A64"},
+            "validation - other": {"bg": "#9E3B3B", "bar_rel": "#5A1010", "bar_oth": "#8A4040"},
+            "inference": {"bg": "#456882", "bar_rel": "#7BAED0", "bar_oth": "#A0C4DC"},
+        }
+        FALLBACK = {"bg": "#AAAAAA", "bar_rel": "#555555", "bar_oth": "#888888"}
+
+        # ---- Determine the three groups ----------------------------------- #
+        combos = sorted(combined_summary["combination"].unique())
+        files = sorted(combined_summary["source"].unique())
+        ordered_types = [t for t in TYPE_META if t in combined_summary["type"].values]
+        ordered_types += sorted(t for t in combined_summary["type"].unique() if t not in TYPE_META)
+
+        n_combos = len(combos)
+        n_files = len(files)
+        n_types = len(ordered_types)
+        n_total = n_combos + n_files + n_types
+
+        if n_total == 0:
+            self.results_canvas.draw()
+            return
+
+        # ---- Size the figure for vertical scrollability ------------------- #
+        SUBPLOT_HEIGHT_IN = 1.5  # height per subplot (was 2.6)
+        SUBPLOT_WIDTH_IN = 8.0  # slightly wider for long y-labels
+        dpi = self.results_figure.dpi
+        fig_h = max(2.0, n_total * SUBPLOT_HEIGHT_IN)
+        self.results_figure.set_size_inches(SUBPLOT_WIDTH_IN, fig_h)
+
+        # ---- Create one subplot per row using gridspec -------------------- #
+        # Do NOT set hspace here: explicit hspace on a GridSpec prevents
+        # tight_layout from adjusting vertical spacing between subplots.
+        gs = self.results_figure.add_gridspec(n_total, 1)
+        axes = [self.results_figure.add_subplot(gs[i]) for i in range(n_total)]
+
+        # ---- Helper: draw 100% stacked bars for a DataFrame slice --------- #
+        # ---- Match / mismatch / inference colours (mirror the table) ------- #
+        C_MATCH = "#90EE90"  # light green  – correct prediction
+        C_MISMATCH = "#FFB6C1"  # light pink   – wrong prediction
+        C_INFERENCE = "#7BAED0"  # steel blue   – inference (no ground truth)
+        C_MATCH_TXT = "#2d6e2d"  # dark green for annotation text on green
+        C_MISMATCH_TXT = "#8b0000"  # dark red   for annotation text on pink
+        C_INFERENCE_TXT = "#1a3a50"  # dark blue  for annotation text on blue
+
+        def _bar_colours(file_type):
+            """Return (colour_other, colour_relevant, text_other, text_relevant)."""
+            if "inference" in file_type:
+                return C_INFERENCE, C_INFERENCE, C_INFERENCE_TXT, C_INFERENCE_TXT
+            elif "relevant" in file_type:
+                # correct = relevant bar; wrong = other bar
+                return C_MISMATCH, C_MATCH, C_MISMATCH_TXT, C_MATCH_TXT
+            else:
+                # correct = other bar; wrong = relevant bar
+                return C_MATCH, C_MISMATCH, C_MATCH_TXT, C_MISMATCH_TXT
+
+        def _draw_stacked(ax, sub, x_labels, title, group_bg=None):
+            for yi, (_, row) in enumerate(sub.iterrows()):
+                total = row["total"]
+                if total == 0:
+                    continue
+                rel_pct = row["relevant_count"] / total * 100
+                oth_pct = row["not_relevant_count"] / total * 100
+                c_oth, c_rel, ct_oth, ct_rel = _bar_colours(row["type"])
+
+                # Horizontal stacked bars: Other from 0, Relevant starts at oth_pct
+                ax.barh(yi, oth_pct, color=c_oth, alpha=0.92)
+                ax.barh(yi, rel_pct, left=oth_pct, color=c_rel, alpha=0.92)
+                if rel_pct > 6:
+                    ax.text(oth_pct + rel_pct / 2, yi, f"{rel_pct:.0f}%", ha="center", va="center", fontsize=7, color=ct_rel, fontweight="bold")
+                if oth_pct > 6:
+                    ax.text(oth_pct / 2, yi, f"{oth_pct:.0f}%", ha="center", va="center", fontsize=7, color=ct_oth, fontweight="bold")
+
+            ax.set_yticks(range(len(x_labels)))
+            ax.set_yticklabels(x_labels, fontsize=7)
+            ax.set_xlim(0, 100)
+            ax.margins(x=0)
+            ax.set_xlabel("%", fontsize=8)
+            ax.tick_params(axis="x", labelsize=7)
+            if group_bg:
+                ax.set_facecolor(group_bg + "22")
+            ax.set_title(title, fontsize=8, fontweight="bold", pad=3, loc="left")
+
+        # ---- Group 1: one subplot per combination ------------------------- #
+        for idx, combo in enumerate(combos):
+            sub = combined_summary[combined_summary["combination"] == combo].reset_index(drop=True)
+            _draw_stacked(axes[idx], sub, x_labels=sub["source"].tolist(), title=f"[Combination]  {combo}")
+
+        # ---- Group 2: one subplot per source file ------------------------- #
+        for idx, fname in enumerate(files):
+            sub = combined_summary[combined_summary["source"] == fname].reset_index(drop=True)
+            ftype = sub["type"].iloc[0] if not sub.empty else ""
+            meta = TYPE_META.get(ftype, FALLBACK)
+            _draw_stacked(axes[n_combos + idx], sub, x_labels=sub["combination"].tolist(), title=f"[File]  {fname}  ({ftype})")
+
+        # ---- Group 3: one subplot per dataset type ------------------------ #
+        for idx, type_name in enumerate(ordered_types):
+            sub = combined_summary[combined_summary["type"] == type_name].reset_index(drop=True)
+            meta = TYPE_META.get(type_name, FALLBACK)
+            if len(sub["combination"].unique()) == 1:
+                x_labels = sub["source"].tolist()
+            else:
+                x_labels = [f"{c}\n{s}" for c, s in zip(sub["combination"], sub["source"])]
+            _draw_stacked(axes[n_combos + n_files + idx], sub, x_labels=x_labels, title=f"[Type]  {type_name}")
+
+        # Resize canvas to match the computed figure dimensions so the scroll
+        # area can provide vertical navigation.
+        canvas_w = int(SUBPLOT_WIDTH_IN * dpi)
+        canvas_h = int(fig_h * dpi)
+        self.results_canvas.resize(canvas_w, canvas_h)
+
+        # ---- Finalize ----------------------------------------------------- #
+        # Call tight_layout BEFORE canvas.resize() so it operates on the figure
+        # size we set with set_size_inches (the Qt resize event would otherwise
+        # reset it first, making tight_layout compute against a stale size).
+        # rect=[left, bottom, right, top] in figure-fraction coordinates.
+        # Generous left margin so y-tick labels (filenames) are never clipped.
+        self.results_figure.tight_layout()
+        self.results_canvas.draw()
 
     def export_results(self):
         """Export results to Excel."""
@@ -3411,8 +3701,39 @@ classifiers_to_compare = {
 
 
 def main():
-    app = QApplication(sys.argv)
-    window = ClassificationGUI()
+    parser = argparse.ArgumentParser(
+        prog="AnnoMe-Classification",
+        description="AnnoMe Classification GUI",
+        add_help=True,
+    )
+    parser.add_argument(
+        "-loadConfig",
+        metavar="PATH",
+        default=None,
+        help="Path to a JSON configuration file that will be loaded automatically on startup.",
+    )
+    parser.add_argument(
+        "-startTraining",
+        action="store_true",
+        default=False,
+        help="Automatically start classifier training after the configuration has been loaded. Requires -loadConfig to be specified as well.",
+    )
+
+    # argparse uses sys.argv[1:] by default; Qt also reads sys.argv so pass only
+    # non-Qt arguments.  The simplest approach is to parse known args only.
+    args, qt_args = parser.parse_known_args()
+
+    if args.startTraining and args.loadConfig is None:
+        parser.error("-startTraining requires -loadConfig <PATH> to be specified.")
+
+    # Build argument list for QApplication (program name + remaining unknown args)
+    qt_argv = [sys.argv[0]] + qt_args
+
+    app = QApplication(qt_argv)
+    window = ClassificationGUI(
+        config_path=args.loadConfig,
+        auto_start_training=args.startTraining,
+    )
     window.show()
     sys.exit(app.exec_())
 
