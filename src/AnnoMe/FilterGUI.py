@@ -1,6 +1,7 @@
 import sys
 import os
 import re
+import pathlib
 from collections import defaultdict, OrderedDict
 import io
 import json
@@ -23,7 +24,6 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QScrollArea,
     QCheckBox,
-    QTextEdit,
     QSplitter,
     QMessageBox,
     QProgressDialog,
@@ -51,6 +51,7 @@ import traceback
 import csv
 
 from . import Filters
+from .gui_components import RotatedTabBar, CollapsibleHelpPanel, make_text_icon, load_stylesheet
 
 
 class CollapsibleSection(QWidget):
@@ -158,7 +159,7 @@ class StructureViewerWindow(QMainWindow):
         matched_layout = QVBoxLayout()
 
         matched_header = QLabel(f"Matched Structures ({len(self.matched_smiles)} unique SMILES)")
-        matched_header.setStyleSheet("font-weight: bold; font-size: 14px;")
+        matched_header.setStyleSheet("font-weight: bold; font-size: 14px; color: #8CBF78;")
         matched_layout.addWidget(matched_header)
 
         self.matched_scroll = QScrollArea()
@@ -176,7 +177,7 @@ class StructureViewerWindow(QMainWindow):
         non_matched_layout = QVBoxLayout()
 
         non_matched_header = QLabel(f"Non-Matched Structures ({len(self.non_matched_smiles)} unique SMILES)")
-        non_matched_header.setStyleSheet("font-weight: bold; font-size: 14px;")
+        non_matched_header.setStyleSheet("font-weight: bold; font-size: 14px; color: #D25353;")
         non_matched_layout.addWidget(non_matched_header)
 
         self.non_matched_scroll = QScrollArea()
@@ -743,45 +744,72 @@ class MGFFilterGUI(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
 
-        # Create tab widget with tabs on the left
+        # ── Sidebar: tab bar + collapse button, top-aligned ────────────
+        self._sidebar_tab_bar = RotatedTabBar()
+
         self.tab_widget = QTabWidget()
+        self.tab_widget.setTabBar(self._sidebar_tab_bar)
         self.tab_widget.setTabPosition(QTabWidget.West)
 
-        # Section 1: Load MGF Files
-        section1_widget = QWidget()
-        section1_scroll = QScrollArea()
-        section1_scroll.setWidgetResizable(True)
-        section1_scroll.setWidget(section1_widget)
-        self.init_section1(section1_widget)
-        self.tab_widget.addTab(section1_scroll, "1. Load MGF Files")
+        # Define tabs: (full_label, short_label, icon_char)
+        tab_defs = [
+            ("1. Load MGF Files", "1.", "\U0001f4c2"),  # 📂
+            ("2. SMILES Canonicalization", "2.", "\U0001f500"),  # 🔀
+            ("3. Define SMARTS Filters", "3.", "\U0001f50d"),  # 🔍
+            ("4. Export Filtered Results", "4.", "\U0001f4e6"),  # 📦
+        ]
 
-        # Section 2: Canonicalization
-        section2_widget = QWidget()
-        section2_scroll = QScrollArea()
-        section2_scroll.setWidgetResizable(True)
-        section2_scroll.setWidget(section2_widget)
-        self.init_section2(section2_widget)
-        self.tab_widget.addTab(section2_scroll, "2. SMILES Canonicalization")
+        section_inits = [
+            self.init_section1,
+            self.init_section2,
+            self.init_section3,
+            self.init_section4,
+        ]
 
-        # Section 3: SMARTS Filters
-        section3_widget = QWidget()
-        section3_scroll = QScrollArea()
-        section3_scroll.setWidgetResizable(True)
-        section3_scroll.setWidget(section3_widget)
-        self.init_section3(section3_widget)
-        self.tab_widget.addTab(section3_scroll, "3. Define SMARTS Filters")
+        for (full_label, short_label, icon_char), init_fn in zip(tab_defs, section_inits):
+            widget = QWidget()
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(widget)
+            init_fn(widget)
 
-        # Section 4: Export Results
-        section4_widget = QWidget()
-        section4_scroll = QScrollArea()
-        section4_scroll.setWidgetResizable(True)
-        section4_scroll.setWidget(section4_widget)
-        self.init_section4(section4_widget)
-        self.tab_widget.addTab(section4_scroll, "4. Export Filtered Results")
+            # Register labels in our custom tab bar
+            self._sidebar_tab_bar.addTabLabel(full_label, short_label)
+            icon = make_text_icon(icon_char)
+            self.tab_widget.addTab(scroll, icon, full_label)
 
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.tab_widget)
+        # Collapse / expand toggle button
+        self._collapse_btn = QPushButton("\u25c0")  # ◀
+        self._collapse_btn.setToolTip("Collapse / expand sidebar")
+        self._collapse_btn.setFixedSize(28, 28)
+        self._collapse_btn.clicked.connect(self._toggle_sidebar_collapse)
+
+        # Build the main layout
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(self.tab_widget, 1)
         main_widget.setLayout(main_layout)
+
+        # Place the collapse button in a small widget below the tab bar
+        # We use a corner widget on the QTabWidget
+        corner_widget = QWidget()
+        corner_layout = QVBoxLayout()
+        corner_layout.setContentsMargins(4, 4, 4, 4)
+        corner_layout.addWidget(self._collapse_btn, 0, Qt.AlignLeft)
+        corner_widget.setLayout(corner_layout)
+        self.tab_widget.setCornerWidget(corner_widget, Qt.BottomLeftCorner)
+
+    def _toggle_sidebar_collapse(self):
+        """Toggle between full tab labels and short (numbered) labels."""
+        bar = self._sidebar_tab_bar
+        bar.setCollapsed(not bar.isCollapsed())
+        if bar.isCollapsed():
+            self._collapse_btn.setText("\u25b6")  # ▶
+            self._collapse_btn.setToolTip("Expand sidebar")
+        else:
+            self._collapse_btn.setText("\u25c0")  # ◀
+            self._collapse_btn.setToolTip("Collapse sidebar")
 
     def init_section1(self, parent_widget=None):
         """Initialize the MGF file loading section."""
@@ -791,11 +819,7 @@ class MGFFilterGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Load MGF Files</h3>
             <p>This section allows you to load one or more MGF files for filtering.</p>
             <ol>
@@ -807,10 +831,7 @@ class MGFFilterGUI(QMainWindow):
             </ol>
             <p><b>Tip:</b> You can select multiple files in the table (Ctrl+Click or Shift+Click) to apply settings to all at once.</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(350)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right
         controls = QWidget()
@@ -899,11 +920,7 @@ class MGFFilterGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>SMILES Canonicalization</h3>
             <p>Canonicalization converts all SMILES strings to a standard format.</p>
             <p><b>Why canonicalize?</b></p>
@@ -915,10 +932,7 @@ class MGFFilterGUI(QMainWindow):
             <p><b>Note:</b> This process may take some time for large datasets. A progress bar will show the status.</p>
             <p><b>Tip:</b> This step is optional but recommended for accurate filtering.</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(350)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right
         controls = QWidget()
@@ -953,11 +967,7 @@ class MGFFilterGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Define SMARTS Filters</h3>
             <p>SMARTS (SMiles ARbitrary Target Specification) is a pattern language for chemical structures.</p>
             <p><b>How to use:</b></p>
@@ -982,10 +992,7 @@ class MGFFilterGUI(QMainWindow):
             <p><b>Note:</b> Use AND (case-insensitive) to separate patterns that must all match, and &lt;&lt; pattern1 OR pattern2 &gt;&gt; for alternatives.</p>
             <p><b>Tip:</b> Use tools like <a href="https://smarts.plus">smarts.plus</a> to build and test SMARTS patterns.</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(350)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right
         controls = QWidget()
@@ -1127,11 +1134,7 @@ class MGFFilterGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Export Filtered Results</h3>
             <p>Export your filtered spectra to MGF files.</p>
             <p><b>Output files:</b></p>
@@ -1147,10 +1150,7 @@ class MGFFilterGUI(QMainWindow):
             </ol>
             <p><b>Note:</b> All loaded MGF files will be combined in the export. Each filter will create two files with the filter name as a suffix.</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(350)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right
         controls = QWidget()
@@ -3164,6 +3164,7 @@ class MGFFilterGUI(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
+    app.setStyleSheet(load_stylesheet())
     window = MGFFilterGUI()
     window.show()
     sys.exit(app.exec_())

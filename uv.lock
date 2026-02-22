@@ -60,7 +60,7 @@ requires-dist = [
     { name = "plotnine", specifier = ">=0.14.6" },
     { name = "polars", specifier = ">=1.31.0" },
     { name = "pyarrow", specifier = ">=23.0.1" },
-    { name = "pyqt5", specifier = ">=5.15.11" },
+    { name = "pyqt5", specifier = ">=5.15.2" },
     { name = "pyteomics", specifier = ">=4.7.5" },
     { name = "scikit-learn", specifier = ">=1.7.0" },
     { name = "seaborn", specifier = ">=0.13.2" },

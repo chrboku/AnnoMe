@@ -70,6 +70,8 @@ from .Classification import (
 
 # Import MGF parsing
 from .Filters import parse_mgf_file
+from .gui_components import RotatedTabBar, CollapsibleHelpPanel, make_text_icon, load_stylesheet
+
 
 # Global color constants for file type categories
 COLOR_TRAIN_RELEVANT = QColor(197, 216, 157)  # Light green
@@ -584,38 +586,87 @@ class ClassificationGUI(QMainWindow):
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
 
-        # Create tab widget with tabs on the left
+        # ── Sidebar: tab bar + collapse button ────────────
+        self._sidebar_tab_bar = RotatedTabBar()
+
         self.tab_widget = QTabWidget()
+        self.tab_widget.setTabBar(self._sidebar_tab_bar)
         self.tab_widget.setTabPosition(QTabWidget.West)
 
-        # Create sections as tab pages
+        # Define tabs: (full_label, short_label, icon_char)
+        tab_defs = [
+            ("1. Load MGF Files", "1.", "\U0001f4c2"),  # 📂
+            ("2. Generate Embeddings", "2.", "\U0001f9e0"),  # 🧠
+            ("3. Define Metadata Subsets", "3.", "\U0001f50d"),  # 🔍
+            ("4. Train Classifiers", "4.", "\U00002699"),  # ⚙
+            ("5. Inspect Classification Results", "5.", "\U0001f4ca"),  # 📊
+            ("6. Inspect Individual Spectra", "6.", "\U0001f52c"),  # 🔬
+        ]
+
+        # Create section widgets
         self.section1 = QWidget()
-        self.init_section1()
-        self.tab_widget.addTab(self.section1, "1. Load MGF Files")
-
         self.section2 = QWidget()
-        self.init_section2()
-        self.tab_widget.addTab(self.section2, "2. Generate Embeddings")
-
         self.section3 = QWidget()
-        self.init_section3()
-        self.tab_widget.addTab(self.section3, "3. Define Metadata Subsets")
-
         self.section4 = QWidget()
-        self.init_section4()
-        self.tab_widget.addTab(self.section4, "4. Train Classifiers")
-
         self.section5 = QWidget()
-        self.init_section5()
-        self.tab_widget.addTab(self.section5, "5. Inspect Classification Results")
-
         self.section6 = QWidget()
-        self.init_section6()
-        self.tab_widget.addTab(self.section6, "6. Inspect Individual Spectra")
 
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(self.tab_widget)
+        section_inits = [
+            self.init_section1,
+            self.init_section2,
+            self.init_section3,
+            self.init_section4,
+            self.init_section5,
+            self.init_section6,
+        ]
+
+        section_widgets = [
+            self.section1,
+            self.section2,
+            self.section3,
+            self.section4,
+            self.section5,
+            self.section6,
+        ]
+
+        for (full_label, short_label, icon_char), init_fn, section_w in zip(tab_defs, section_inits, section_widgets):
+            init_fn()  # populate the section widget
+            self._sidebar_tab_bar.addTabLabel(full_label, short_label)
+            icon = make_text_icon(icon_char)
+            self.tab_widget.addTab(section_w, icon, full_label)
+
+        # Collapse / expand toggle button
+        self._collapse_btn = QPushButton("\u25c0")  # ◀
+        self._collapse_btn.setToolTip("Collapse / expand sidebar")
+        self._collapse_btn.setFixedSize(28, 28)
+        self._collapse_btn.clicked.connect(self._toggle_sidebar_collapse)
+
+        main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(self.tab_widget, 1)
         main_widget.setLayout(main_layout)
+
+        # Place the collapse button below the tab bar
+        corner_widget = QWidget()
+        corner_layout = QVBoxLayout()
+        corner_layout.setContentsMargins(4, 4, 4, 4)
+        corner_layout.addWidget(self._collapse_btn, 0, Qt.AlignLeft)
+        corner_widget.setLayout(corner_layout)
+        self.tab_widget.setCornerWidget(corner_widget, Qt.BottomLeftCorner)
+
+    def _toggle_sidebar_collapse(self):
+        """Toggle between full labels and short labels on the sidebar."""
+        bar = self._sidebar_tab_bar
+        if bar.isIconOnly():
+            bar.setIconOnly(False)
+            self._collapse_btn.setText("\u25c0")
+        elif bar.isCollapsed():
+            bar.setCollapsed(False)
+            self._collapse_btn.setText("\u25c0")
+        else:
+            bar.setCollapsed(True)
+            self._collapse_btn.setText("\u25b6")
 
     def init_section1(self):
         """Initialize the MGF file loading section."""
@@ -623,11 +674,7 @@ class ClassificationGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left (25%)
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Load MGF Files</h3>
             <p>Load MSMS spectra from MGF files and assign dataset types for classification.</p>
             <h4>File Types:</h4>
@@ -655,10 +702,7 @@ class ClassificationGUI(QMainWindow):
             <p><b>Tip:</b> You need both training data (train-relevant and train-other) and validation data for proper classifier training.</p>
             <p><b>Note:</b> Not all spectra will be used, due to limitations in the embedding generation. Once the embeddings have been generated, only those spectra will remain, for which an embedding was successfully calculated. The table will be updated to show these counts.</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(400)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right (75%)
         controls = QWidget()
@@ -724,11 +768,7 @@ class ClassificationGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left (25%)
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Generate Embeddings</h3>
             <p>Convert MSMS spectra to numerical vectors using the MS2DeepScore [1] deep learning model.</p>
                           
@@ -749,10 +789,7 @@ class ClassificationGUI(QMainWindow):
             <h4>References:</h4>
             <p>[1] MS2DeepScore - a novel deep learning similarity measure to compare tandem mass spectra<br> Florian Huber, Sven van der Burg, Justin J.J. van der Hooft, Lars Ridder, 13, Article number: 84 (2021), Journal of Cheminformatics, doi: <a href = \"https://doi.org/10.1186/s13321-021-00558-4\">https://doi.org/10.1186/s13321-021-00558-4</a></p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(400)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right (75%)
         controls = QWidget()
@@ -799,11 +836,7 @@ class ClassificationGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left (25%)
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Define Metadata Subsets</h3>
             <p>Create custom subsets based on spectrum metadata to filter your data.</p>
             <p><b>Note:</b> Generate embeddings first (Section 2) to access metadata fields.</p>
@@ -831,10 +864,7 @@ class ClassificationGUI(QMainWindow):
             <br>
             <p><b>Tip:</b>Save and load pre-defined sets using the 'Export Subsets' and 'Import Subsets' buttons in the right, bottom corner</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(400)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right (75%)
         controls = QWidget()
@@ -963,11 +993,7 @@ class ClassificationGUI(QMainWindow):
         main_layout = QHBoxLayout()
 
         # Help text on the left (25%)
-        help_group = QGroupBox("Help")
-        help_layout = QVBoxLayout()
-        help_text = QTextEdit()
-        help_text.setReadOnly(True)
-        help_text.setHtml("""
+        help_panel = CollapsibleHelpPanel("""
             <h3>Train Classifiers</h3>
             <p>Train machine learning classifiers on the generated embeddings with optional metadata subsets.</p>
             <h4>Prerequisites:</h4>
@@ -1038,10 +1064,7 @@ classifiers_to_compare = {
             <p><b>Example:</b> With 3 classifiers and StratifiedKFold(n_splits=10), you get 3 × 10 = 30 models. If min_prediction_threshold=15, a spectrum needs at least 15 models to predict "relevant" to be classified as relevant.</p>
             <p><b>Note:</b> Training can take time depending on dataset size and number of classifiers.</p>
         """)
-        help_layout.addWidget(help_text)
-        help_group.setLayout(help_layout)
-        help_group.setMaximumWidth(400)
-        main_layout.addWidget(help_group, 1)  # 25% width
+        main_layout.addWidget(help_panel, 1)  # 25% width
 
         # Controls on the right (75%)
         controls = QWidget()
