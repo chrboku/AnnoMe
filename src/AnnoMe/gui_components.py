@@ -162,7 +162,7 @@ class CollapsibleHelpPanel(QWidget):
 
     def __init__(self, help_html: str, max_width: int = 350, parent=None):
         super().__init__(parent)
-        self._expanded = True
+        self._expanded = False
 
         # --- Expanded view: full help group box ---
         self._help_group = QGroupBox("Help")
@@ -173,13 +173,13 @@ class CollapsibleHelpPanel(QWidget):
         help_layout.addWidget(help_text)
         self._help_group.setLayout(help_layout)
         self._help_group.setMaximumWidth(max_width)
+        self._help_group.hide()
 
         # --- Collapsed view: icon-only button ---
         self._icon_btn = QPushButton("\u2753")  # ❓
         self._icon_btn.setToolTip("Click to expand help")
         self._icon_btn.setFixedSize(self._ICON_BTN_SIZE, self._ICON_BTN_SIZE)
         self._icon_btn.setStyleSheet("font-size: 18px; padding: 0px;")
-        self._icon_btn.hide()
         self._icon_btn.clicked.connect(self._expand)
 
         # Layout
@@ -188,6 +188,7 @@ class CollapsibleHelpPanel(QWidget):
         layout.addWidget(self._icon_btn, 0, Qt.AlignTop | Qt.AlignHCenter)
         layout.addWidget(self._help_group, 1)
         self.setLayout(layout)
+        self.setMaximumWidth(self._ICON_BTN_SIZE + 8)
 
         # Install event filter on help group to detect double-click → collapse
         self._help_group.installEventFilter(self)
