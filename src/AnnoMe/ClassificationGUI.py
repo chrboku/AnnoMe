@@ -8,6 +8,8 @@ import traceback
 import tomllib
 import re
 import hashlib
+import multiprocessing
+from joblib import Parallel, delayed
 from PyQt5.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -101,6 +103,117 @@ def calculate_file_hash(file_path, algorithm="sha256"):
     except Exception as e:
         print(f"Error calculating hash for {file_path}: {e}")
         return None
+
+
+def _always_true_filter(row):
+    """Trivial row filter that accepts every row.
+
+    Used as the subset function when the DataFrame has already been
+    pre-filtered outside of ``train_and_classify``.
+    """
+    return True
+
+
+def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifier_set_config, output_dir):
+    """Execute a single (subset, classifier_set) training job.
+
+    Designed to be called via ``joblib.Parallel`` in a separate process.
+    The *df_filtered* DataFrame must already be filtered for the given subset.
+
+    stdout and stderr are captured and returned in the result dict so the
+    GUI can display them in per-job log tabs.
+    """
+    import sys
+    import datetime
+
+    # Redirect stdout and stderr to capture all output
+    log_capture = io.StringIO()
+    old_stdout, old_stderr = sys.stdout, sys.stderr
+    sys.stdout = log_capture
+    sys.stderr = log_capture
+
+    start_time = datetime.datetime.now()
+    print(f"=== Job started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+
+    try:
+        # Each worker process needs its own random seed
+        set_random_seeds(42)
+
+        # Build a trivial subset dict – data is already pre-filtered
+        subsets = {subset_name: _always_true_filter}
+
+        # Wrap the single classifier set (or None for defaults)
+        if classifier_set_name is not None and classifier_set_config is not None:
+            classifiers_to_compare = {classifier_set_name: classifier_set_config}
+            effective_set_name = classifier_set_name
+        else:
+            classifiers_to_compare = None
+            effective_set_name = "default_set"
+
+        display_key = f"{effective_set_name} // {subset_name}"
+
+        # Give each job its own sub-directory for train_and_classify artefacts
+        job_output_dir = os.path.join(
+            output_dir,
+            display_key.replace(" // ", "_").replace(" ", "_"),
+        )
+        os.makedirs(job_output_dir, exist_ok=True)
+
+        df_train, df_validation, df_inference, df_metrics, trained_classifiers = train_and_classify(
+            df_filtered,
+            subsets=subsets,
+            output_dir=job_output_dir,
+            classifiers_to_compare=classifiers_to_compare,
+        )
+
+        # --- prediction overview -------------------------------------------
+        long_table = None
+        pivot_table = None
+
+        for combined_key in trained_classifiers.keys():
+            subset_fn_tc = trained_classifiers[combined_key][0]
+            classifiers_list = trained_classifiers[combined_key][1]
+            min_threshold = trained_classifiers[combined_key][2] if len(trained_classifiers[combined_key]) > 2 else 120
+
+            df_working_copy = df_filtered.copy()
+            df_subset_infe = predict(
+                df_working_copy,
+                classifiers_list,
+                subset_name,
+                subset_fn_tc,
+            )
+            long_table, pivot_table = generate_prediction_overview(
+                df_working_copy,
+                df_subset_infe,
+                output_dir,
+                file_prefix=display_key.replace(" // ", "_"),
+                min_prediction_threshold=min_threshold,
+            )
+            break  # only one key expected per job
+
+        end_time = datetime.datetime.now()
+        duration = end_time - start_time
+        total_seconds = int(duration.total_seconds())
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        print(f"\n=== Job finished at {end_time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+        print(f"=== Duration: {hours:02d}:{minutes:02d}:{seconds:02d} ===")
+
+        return {
+            "display_key": display_key,
+            "subset_name": subset_name,
+            "df_train": df_train,
+            "df_validation": df_validation,
+            "df_inference": df_inference,
+            "df_metrics": df_metrics,
+            "trained_classifiers": trained_classifiers,
+            "long_table": long_table,
+            "pivot_table": pivot_table,
+            "log": log_capture.getvalue(),
+        }
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
 
 
 class EmbeddingWorker(QThread):
@@ -203,64 +316,76 @@ class EmbeddingWorker(QThread):
 
 
 class TrainingWorker(QThread):
-    """Worker thread for training classifiers."""
+    """Worker thread that dispatches parallel training jobs via joblib."""
 
-    finished = pyqtSignal(object, object, object, object, object, object)  # df_train, df_validation, df_inference, df_metrics, trained_classifiers, pivot_tables
+    finished = pyqtSignal(object)  # list of result dicts from _parallel_train_job
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
     log = pyqtSignal(str)  # Emits log messages
 
-    def __init__(self, df_subset, subsets, output_dir, classifiers_to_compare=None):
+    def __init__(self, df_subset, subsets, output_dir, classifiers_to_compare=None, n_jobs=-1):
         super().__init__()
         self.df_subset = df_subset
         self.subsets = subsets
         self.output_dir = output_dir
         self.classifiers_to_compare = classifiers_to_compare
+        self.n_jobs = n_jobs
 
     def run(self):
         import sys
 
         try:
-            self.progress.emit("Training classifiers and predicting...\nSee console for further details")
+            # ----- pre-filter the DataFrame once per subset ---------------
+            self.progress.emit("Pre-filtering data for each subset…\nSee console for further details")
+            filtered_dfs = {}
+            for subset_name, subset_fn in self.subsets.items():
+                mask = self.df_subset.apply(subset_fn, axis=1)
+                filtered_dfs[subset_name] = self.df_subset[mask].reset_index(drop=True)
 
-            df_train, df_validation, df_inference, df_metrics, trained_classifiers = train_and_classify(
-                self.df_subset, subsets=self.subsets, output_dir=self.output_dir, classifiers_to_compare=self.classifiers_to_compare
+            # ----- build list of (subset × classifier_set) jobs ----------
+            jobs = []
+            if self.classifiers_to_compare is not None:
+                for subset_name in self.subsets:
+                    for cls_name, cls_config in self.classifiers_to_compare.items():
+                        jobs.append(
+                            (
+                                filtered_dfs[subset_name],
+                                subset_name,
+                                cls_name,
+                                cls_config,
+                            )
+                        )
+            else:
+                # No user config → each job will use the built-in default
+                for subset_name in self.subsets:
+                    jobs.append(
+                        (
+                            filtered_dfs[subset_name],
+                            subset_name,
+                            None,
+                            None,
+                        )
+                    )
+
+            total = len(jobs)
+            self.progress.emit(f"Running {total} training job(s) with up to {self.n_jobs} parallel worker(s)…\nSee console for further details")
+
+            # ----- dispatch parallel jobs via joblib (process-based) -----
+            results = Parallel(
+                n_jobs=self.n_jobs,
+                backend="loky",
+            )(
+                delayed(_parallel_train_job)(
+                    df_filt,
+                    sname,
+                    csname,
+                    csconfig,
+                    self.output_dir,
+                )
+                for df_filt, sname, csname, csconfig in jobs
             )
 
-            # Generate prediction overviews and capture long and pivot tables
-            # Create separate results for each classifier_set // subset combination
-            long_tables = {}
-            pivot_tables = {}
-
-            # Iterate through all keys in trained_classifiers (format: "classifier_set_name / subset_name")
-            for combined_key in trained_classifiers.keys():
-                df_working_copy = self.df_subset.copy()
-
-                # Extract classifier_set_name and subset_name from the key
-                parts = combined_key.split(" / ")
-                if len(parts) >= 2:
-                    classifier_set_name = parts[0]
-                    subset_name = parts[1]
-                    # Create combined key with " // " separator for GUI display (capitalized)
-                    display_key = f"{classifier_set_name} // {subset_name}"
-                else:
-                    # Fallback for backward compatibility
-                    subset_name = combined_key
-                    display_key = subset_name
-
-                # Extract min_prediction_threshold from the trained_classifiers tuple (index 2)
-                subset_fn = trained_classifiers[combined_key][0]
-                classifiers_list = trained_classifiers[combined_key][1]
-                min_threshold = trained_classifiers[combined_key][2] if len(trained_classifiers[combined_key]) > 2 else 120
-
-                df_subset_infe = predict(df_working_copy, classifiers_list, subset_name, subset_fn)
-                long_table, pivot_table = generate_prediction_overview(
-                    df_working_copy, df_subset_infe, self.output_dir, file_prefix=display_key.replace(" // ", "_"), min_prediction_threshold=min_threshold
-                )
-                long_tables[display_key] = long_table
-                pivot_tables[display_key] = pivot_table
-
-            self.finished.emit(df_train, df_validation, df_inference, df_metrics, trained_classifiers, (long_tables, pivot_tables))
+            self.finished.emit(results)
         except Exception as e:
             error_msg = f"Error training classifiers: {str(e)}\n{traceback.format_exc()}"
             print(error_msg)
@@ -961,6 +1086,18 @@ classifiers_to_compare = {
         config_buttons_layout.addWidget(load_config_btn)
         layout.addLayout(config_buttons_layout)
 
+        # Parallel workers control
+        parallel_layout = QHBoxLayout()
+        parallel_layout.addWidget(QLabel("Parallel Workers:"))
+        self.n_jobs_spinbox = QSpinBox()
+        self.n_jobs_spinbox.setMinimum(1)
+        self.n_jobs_spinbox.setMaximum(multiprocessing.cpu_count() * 2)
+        self.n_jobs_spinbox.setValue(multiprocessing.cpu_count())
+        self.n_jobs_spinbox.setToolTip("Number of parallel processes for training.\nEach (subset × classifier-set) combination runs as a separate process.\nDefaults to the number of CPU cores.")
+        parallel_layout.addWidget(self.n_jobs_spinbox)
+        parallel_layout.addStretch()
+        layout.addLayout(parallel_layout)
+
         # Train button
         self.train_btn = QPushButton("Train and Classify")
         self.train_btn.clicked.connect(self.train_classifiers_clicked)
@@ -971,9 +1108,25 @@ classifiers_to_compare = {
         self.training_status = QLabel("Status: Not started")
         layout.addWidget(self.training_status)
 
-        layout.addStretch()
+        # Vertical splitter between the upper config area and the log tabs
+        # Wrap everything above in a top widget, log tabs in the bottom widget
+        upper_widget = QWidget()
+        upper_widget.setLayout(layout)
 
-        controls.setLayout(layout)
+        self.training_log_tabs = QTabWidget()
+        self.training_log_tabs.setTabPosition(QTabWidget.North)
+        self.training_log_tabs.setVisible(False)  # hidden until first run
+
+        self.section4_splitter = QSplitter(Qt.Vertical)
+        self.section4_splitter.addWidget(upper_widget)
+        self.section4_splitter.addWidget(self.training_log_tabs)
+        self.section4_splitter.setStretchFactor(0, 3)
+        self.section4_splitter.setStretchFactor(1, 2)
+
+        controls_layout = QVBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.addWidget(self.section4_splitter)
+        controls.setLayout(controls_layout)
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
@@ -2593,8 +2746,15 @@ classifiers_to_compare = {
         # Set busy cursor during training
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
-        # Start worker thread with all subsets
-        self.training_worker = TrainingWorker(self.df_embeddings, subsets_dict, output_dir, classifiers_to_compare=self.classifiers_config)
+        # Start worker thread with all subsets (parallel via joblib inside)
+        n_jobs = self.n_jobs_spinbox.value()
+        self.training_worker = TrainingWorker(
+            self.df_embeddings,
+            subsets_dict,
+            output_dir,
+            classifiers_to_compare=self.classifiers_config,
+            n_jobs=n_jobs,
+        )
         self.training_worker.progress.connect(self.on_training_progress)
         self.training_worker.finished.connect(self.on_training_finished)
         self.training_worker.error.connect(self.on_training_error)
@@ -2606,44 +2766,63 @@ classifiers_to_compare = {
         """Update progress dialog with message."""
         self.progress_dialog.setLabelText(message)
 
-    def on_training_finished(self, df_train, df_validation, df_inference, df_metrics, trained_classifiers, tables):
-        """Handle training completion."""
+    def on_training_finished(self, results):
+        """Handle training completion from parallel jobs."""
         QApplication.restoreOverrideCursor()
-        long_tables, pivot_tables = tables
         output_dir = self.output_dir_input.text()
 
-        # Store results for each combination (classifier_set // subset)
-        # The long_tables and pivot_tables keys are in format "classifier_set // subset"
-        for combined_key in long_tables.keys():
-            # Extract subset_name from combined_key to get the filter function
-            parts = combined_key.split(" // ")
-            if len(parts) >= 2:
-                subset_name = parts[1]
-            else:
-                subset_name = combined_key
+        # --- populate per-job log tabs and write log files ----------------
+        self.training_log_tabs.clear()
+        self.training_log_tabs.setVisible(True)
 
+        for result in results:
+            display_key = result["display_key"]
+            subset_name = result["subset_name"]
+            log_text = result.get("log", "")
+
+            # -- GUI tab --
+            log_widget = QTextEdit()
+            log_widget.setReadOnly(True)
+            log_widget.setLineWrapMode(QTextEdit.NoWrap)
+            font = log_widget.font()
+            font.setFamily("Courier New")
+            log_widget.setFont(font)
+            log_widget.setPlainText(log_text)
+            self.training_log_tabs.addTab(log_widget, display_key)
+
+            # -- log file --
+            combo_output_dir = os.path.join(
+                output_dir,
+                display_key.replace(" // ", "_").replace(" ", "_"),
+            )
+            os.makedirs(combo_output_dir, exist_ok=True)
+            log_file_path = os.path.join(combo_output_dir, "training.log")
+            try:
+                with open(log_file_path, "w", encoding="utf-8") as lf:
+                    lf.write(log_text)
+            except Exception as e:
+                print(f"Warning: could not write log file {log_file_path}: {e}")
+
+            # -- store results --
             filter_fn = self.subset_filter_functions.get(subset_name)
 
-            self.subset_results[combined_key] = {
-                "df_train": df_train,
-                "df_validation": df_validation,
-                "df_inference": df_inference,
-                "df_metrics": df_metrics,
-                "trained_classifiers": trained_classifiers,
-                "long_table": long_tables.get(combined_key),
-                "pivot_table": pivot_tables.get(combined_key),
+            self.subset_results[display_key] = {
+                "df_train": result["df_train"],
+                "df_validation": result["df_validation"],
+                "df_inference": result["df_inference"],
+                "df_metrics": result["df_metrics"],
+                "trained_classifiers": result["trained_classifiers"],
+                "long_table": result["long_table"],
+                "pivot_table": result["pivot_table"],
                 "filter_fn": filter_fn,
             }
 
             # Export filtered MGF files for this combination
-            combo_output_dir = os.path.join(output_dir, combined_key.replace(" // ", "_").replace(" ", "_"))
-            os.makedirs(combo_output_dir, exist_ok=True)
-            self.export_filtered_mgf_files(combined_key, combo_output_dir)
+            self.export_filtered_mgf_files(display_key, combo_output_dir)
 
         self.progress_dialog.close()
 
-        # Calculate total combinations
-        num_combinations = len(long_tables)
+        num_combinations = len(results)
         self.training_status.setText(f"Status: Training completed for {num_combinations} combination(s), output written to {output_dir}.")
         self.train_btn.setEnabled(True)
         self.populate_subset_results_list()
@@ -2652,7 +2831,11 @@ classifiers_to_compare = {
         # Generate master Excel file consolidating all validation results
         self.generate_master_excel(output_dir)
 
-        QMessageBox.information(self, "Success", f"Classifiers trained for {num_combinations} combination(s)\nOutput written to {output_dir}.\nMaster summary file generated.")
+        QMessageBox.information(
+            self,
+            "Success",
+            f"Classifiers trained for {num_combinations} combination(s)\nOutput written to {output_dir}.\nMaster summary file generated.",
+        )
 
     def on_training_error(self, error_msg):
         """Handle training error."""
@@ -3140,16 +3323,37 @@ classifiers_to_compare = {
             return
 
         # ---- Size the figure for vertical scrollability ------------------- #
-        SUBPLOT_HEIGHT_IN = 1.5  # height per subplot (was 2.6)
+        BAR_HEIGHT_IN = 0.35  # height per individual bar
+        MIN_SUBPLOT_HEIGHT_IN = 1.0  # minimum height even for a single bar
+        TITLE_PAD_IN = 0.4  # extra space for subplot title + x-label
         SUBPLOT_WIDTH_IN = 8.0  # slightly wider for long y-labels
         dpi = self.results_figure.dpi
-        fig_h = max(2.0, n_total * SUBPLOT_HEIGHT_IN)
+
+        # Pre-compute number of bars per subplot so heights can vary
+        bar_counts = []
+        # Group 1: per combination
+        for combo in combos:
+            n = len(combined_summary[combined_summary["combination"] == combo])
+            bar_counts.append(n)
+        # Group 2: per source file
+        for fname in files:
+            n = len(combined_summary[combined_summary["source"] == fname])
+            bar_counts.append(n)
+        # Group 3: per type
+        for type_name in ordered_types:
+            n = len(combined_summary[combined_summary["type"] == type_name])
+            bar_counts.append(n)
+
+        subplot_heights = [max(MIN_SUBPLOT_HEIGHT_IN, n * BAR_HEIGHT_IN + TITLE_PAD_IN) for n in bar_counts]
+        fig_h = max(2.0, sum(subplot_heights))
         self.results_figure.set_size_inches(SUBPLOT_WIDTH_IN, fig_h)
 
         # ---- Create one subplot per row using gridspec -------------------- #
-        # Do NOT set hspace here: explicit hspace on a GridSpec prevents
-        # tight_layout from adjusting vertical spacing between subplots.
-        gs = self.results_figure.add_gridspec(n_total, 1)
+        gs = self.results_figure.add_gridspec(
+            n_total,
+            1,
+            height_ratios=subplot_heights,
+        )
         axes = [self.results_figure.add_subplot(gs[i]) for i in range(n_total)]
 
         # ---- Helper: draw 100% stacked bars for a DataFrame slice --------- #
