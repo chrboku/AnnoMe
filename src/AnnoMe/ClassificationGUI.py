@@ -212,6 +212,9 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
             "long_table": long_table,
             "pivot_table": pivot_table,
             "log": log_capture.getvalue(),
+            "job_start_time": start_time,
+            "job_end_time": end_time,
+            "job_duration_seconds": duration.total_seconds(),
         }
     finally:
         sys.stdout = old_stdout
@@ -564,6 +567,7 @@ class ClassificationGUI(QMainWindow):
 
         load_config_action = QAction("Load Configuration", self)
         load_config_action.triggered.connect(self.load_full_configuration)
+        load_config_action.triggered.connect(lambda: self.load_full_configuration())
         file_menu.addAction(load_config_action)
 
         save_config_action = QAction("Save Configuration", self)
@@ -2781,6 +2785,13 @@ classifiers_to_compare = {
         self.training_worker.progress.connect(self.on_training_progress)
         self.training_worker.finished.connect(self.on_training_finished)
         self.training_worker.error.connect(self.on_training_error)
+
+        import datetime as _dt
+
+        self.training_start_time = _dt.datetime.now()
+        self._n_training_subsets = len(subsets_dict)
+        self._n_training_classifier_sets = len(self.classifiers_config) if self.classifiers_config else 1
+
         self.training_worker.start()
 
         self.train_btn.setEnabled(False)
@@ -2854,11 +2865,52 @@ classifiers_to_compare = {
         # Generate master Excel file consolidating all validation results
         self.generate_master_excel(output_dir)
 
-        QMessageBox.information(
-            self,
-            "Success",
-            f"Classifiers trained for {num_combinations} combination(s)\nOutput written to {output_dir}.\nMaster summary file generated.",
+        # --- compute timing statistics ------------------------------------
+        import datetime as _dt
+
+        training_end_time = _dt.datetime.now()
+        total_wall_seconds = (training_end_time - self.training_start_time).total_seconds()
+
+        job_durations = [r["job_duration_seconds"] for r in results if "job_duration_seconds" in r]
+        avg_dur = sum(job_durations) / len(job_durations) if job_durations else 0.0
+        min_dur = min(job_durations) if job_durations else 0.0
+        max_dur = max(job_durations) if job_durations else 0.0
+
+        def _fmt(s):
+            s = int(s)
+            h, rem = divmod(s, 3600)
+            m, sec = divmod(rem, 60)
+            if h:
+                return f"{h}h {m:02d}m {sec:02d}s"
+            elif m:
+                return f"{m}m {sec:02d}s"
+            else:
+                return f"{sec}s"
+
+        n_subsets = getattr(self, "_n_training_subsets", len(self.subsets))
+        n_cls_sets = getattr(self, "_n_training_classifier_sets", 1)
+
+        _tc_msg = QMessageBox(self)
+        _tc_msg.setWindowTitle("Training Complete")
+        _tc_msg.setIcon(QMessageBox.Information)
+        _tc_msg.setTextFormat(Qt.RichText)
+        _tc_msg.setText(
+            f"All classifiers trained successfully!<br>"
+            f"<pre style='font-family: Consolas, \"Courier New\", monospace; margin: 0;'>"
+            f"Subsets:                   {n_subsets}\n"
+            f"Classifier sets:           {n_cls_sets}\n"
+            f"Combinations:              {num_combinations}\n"
+            f"\n"
+            f"Total time (wall-clock):   {_fmt(total_wall_seconds)}\n"
+            f"Avg time / combination:    {_fmt(avg_dur)}\n"
+            f"Min time / combination:    {_fmt(min_dur)}\n"
+            f"Max time / combination:    {_fmt(max_dur)}"
+            f"</pre><br>"
+            f"Output written to:<br>"
+            f"<span style='font-family: Consolas, \"Courier New\", monospace;'>{output_dir}</span><br><br>"
+            f"Master summary file generated."
         )
+        _tc_msg.exec_()
 
     def on_training_error(self, error_msg):
         """Handle training error."""
@@ -3383,21 +3435,19 @@ classifiers_to_compare = {
         # ---- Match / mismatch / inference colours (mirror the table) ------- #
         C_MATCH = "#90EE90"  # light green  – correct prediction
         C_MISMATCH = "#FFB6C1"  # light pink   – wrong prediction
-        C_INFERENCE = "#7BAED0"  # steel blue   – inference (no ground truth)
-        C_MATCH_TXT = "#2d6e2d"  # dark green for annotation text on green
-        C_MISMATCH_TXT = "#8b0000"  # dark red   for annotation text on pink
-        C_INFERENCE_TXT = "#1a3a50"  # dark blue  for annotation text on blue
+        C_INFERENCE_OTHER = "#BAE7BA"
+        C_INFERENCE_RELEVANT = "#FCD2D8"
 
         def _bar_colours(file_type):
             """Return (colour_other, colour_relevant, text_other, text_relevant)."""
             if "inference" in file_type:
-                return C_INFERENCE, C_INFERENCE, C_INFERENCE_TXT, C_INFERENCE_TXT
+                return C_INFERENCE_OTHER, C_INFERENCE_RELEVANT, "#000000", "#000000"
             elif "relevant" in file_type:
                 # correct = relevant bar; wrong = other bar
-                return C_MISMATCH, C_MATCH, C_MISMATCH_TXT, C_MATCH_TXT
+                return C_MISMATCH, C_MATCH, "#000000", "#000000"
             else:
                 # correct = other bar; wrong = relevant bar
-                return C_MATCH, C_MISMATCH, C_MATCH_TXT, C_MISMATCH_TXT
+                return C_MATCH, C_MISMATCH, "#000000", "#000000"
 
         def _draw_stacked(ax, sub, x_labels, title, group_bg=None):
             for yi, (_, row) in enumerate(sub.iterrows()):
