@@ -22,7 +22,7 @@ uv run annome_downloadresources
 uv run annome_filtergui
 ```
 
-5. Click the "Load MGF File(s)" button in the first step of the GUI. Then select and load the following 19 files (all from MSnLib and one from BOKU) from the folder `resources/libraries`:
+5. Click the 'Load MGF File(s)' button in the first step of the GUI. Then select and load the following 19 files (all from MSnLib and one from BOKU) from the folder `resources/libraries`:
 Note: Loading the files might take a couple of minutes (approximately 10 minutes on a standard laptop).
 - 20241003_enamdisc_neg_ms2.mgf
 - 20241003_enamdisc_pos_ms2.mgf
@@ -44,11 +44,11 @@ Note: Loading the files might take a couple of minutes (approximately 10 minutes
 - 20250228_targetmolnphts_pos_ms2.mgf
 - BOKU_iBAM.mgf
 
-6. After the files have been loaded successfully, activate the second step by clicking the tab on the left side of the window. Click the button "Apply Canonicalization". It might take a while to calculate all canonical SMILES strings for the 24 loaded files.
+6. After the files have been loaded successfully, activate the second step by clicking the tab on the left side of the window. Click the button 'Apply Canonicalization'. It might take a while to calculate all canonical SMILES strings for the 24 loaded files.
 
-7. Next, activate the third step by clicking the respective tab on the left side of the window. This will allow filtering all loaded MS/MS spectra by substructure matches using SMARTS strings. The necessary filters can be loaded with the button "Load Filters from JSON". Select the file "demo/GUI_PrenylatedCompounds_SMARTSFilterStrings.json" from the AnnoMe main folder. Loading and applying all filters will take some time (approximately 1 hour on a standard laptop). After the filters have been loaded successfully, the table will show the number of matches and mismatches for each filter. 
+7. Next, activate the third step by clicking the respective tab on the left side of the window. This will allow filtering all loaded MS/MS spectra by substructure matches using SMARTS strings. The necessary filters can be loaded with the button 'Load Filters from JSON'. Select the file 'demo/GUI_PrenylatedCompounds_SMARTSFilterStrings.json' from the AnnoMe main folder. Loading and applying all filters will take some time (approximately 1 hour on a standard laptop). After the filters have been loaded successfully, the table will show the number of matches and mismatches for each filter. 
 
-9. Then, activate the fourth and final step to export the matching and mismatching spectra to new MGF files. Click the button "Browse" and specify the new file-name "filtered" in the folder "resources/libraries_filtered_gui". Close the new file dialog and click the button "Export Filtered MGF Files to start the process. After a couple of minutes several files will have been generated. If there are MSMS spectra for a particular filter, it will be exported and named "filtered_<filter-name>_matched.mgf". Furthermore, a summary mgf file with all MSMS spectra matching at least one filter will also be generated, as well as a file with all MSMS spectra matching none of the provided filters. 
+9. Then, activate the fourth and final step to export the matching and mismatching spectra to new MGF files. Click the button 'Browse' and specify the new file-name 'filtered' in the folder 'resources/libraries_filtered_gui'. Close the new file dialog and click the button 'Export Filtered MGF Files to start the process. After a couple of minutes several files will have been generated. If there are MSMS spectra for a particular filter, it will be exported and named 'filtered_<filter-name>_matched.mgf'. Furthermore, a summary mgf file with all MSMS spectra matching at least one filter will also be generated, as well as a file with all MSMS spectra matching none of the provided filters. 
 
 10. Close the filtering GUI. 
 
@@ -59,13 +59,15 @@ Note: Loading the files might take a couple of minutes (approximately 10 minutes
 uv run annome_classificationgui
 ```
 
-12. Next, load the mgf files. Click the button "" and select the file "demo/gui_PrenylatedCompounds_classificationFiles.json". 
+12. Next, load the mgf files. Click the button '' and select the file 'demo/gui_PrenylatedCompounds_ClassificationFiles.json'. 
 
-13. After loading has finished, goto the second step of the classification via a click on the tab "2. Generate Embeddings". Then click the button "Generate Embeddings" to load the mgf files and calculate the MS2DeepScore embeddings. Note: this step can take a significant amount of time, but results are cached after the first run. 
+13. After loading has finished, goto the second step of the classification via a click on the tab '2. Generate Embeddings'. Then click the button 'Generate Embeddings' to load the mgf files and calculate the MS2DeepScore embeddings. Note: this step can take a significant amount of time, but results are cached after the first run. 
 
-14. The next step is to define different subsets. 
+14. The next step is to define different subsets. To do this, click the third tab, and then the button 'Refresh Metadata Overview'. This will populate the table undearneath showing the available meta-data keys for defining the subset filters. 
 
-15. Click on the tab of the fourth tab. This allows to define different classification models to be used. Each meta-data subset from the previous step will be used for each model in this step, makeing a total of n x m (n.. number of subsets, m.. number of classifiers to train) training and predicting instances. Alternatively, use the button 'Load Configuration' to load a predefined set of classifiers. Then click the button 'Train and Classify' to start the training and prediction process. 
+15. In the section 'Define Custom Subset', set a filter name, and define a python lambda function that filters spectra based on its meta-data information. Clicking an entry in the table will show the unique keys in the particular file for the selected meta-data field as well as the number of spectra having the respective value. To load pre-existing filters for the demo, click the button 'Import Subsets' and select the file 'demo/GUI_PrenylatedCompounds_ClassificationSubsets.json'. This will load and apply a total of 8 filters, for the positive and negative modes, for the fragmentation method (currently always hcd), and the fragmentation energy (20; 40; 70; and stepped collision energy). Once loaded, the table will show the number of MS/MS spectra matching the filter for the different categories. Note: loading and filtering can take some minutes. 
+
+15. Click on the fourth tab. This allows to define different classification models to be used. Each meta-data subset from the previous step will be used for each model in this step, making a total of n x m (n.. number of subsets, m.. number of classifiers to train) training and predicting instances. A default set of classifiers and their code for initialization can be loaded via the button 'Load Default'. Alternatively, use the button 'Load Configuration' to load a predefined set of classifiers from the file 'demo/GUI_PrenylatedCompounds_ClassificationModels.json'. Then click the button 'Train and Classify' to start the training and prediction process. 
 
 16. Next, the true/false positive/negative rates can be inspected. For this click the tab of the fifth step on the left side of the classification window. A table will show these results, aggregated by meta-data subset, classification configuration, input-file, and type class. Furthermore, results of individual metabolic features can be inspected in the sixth tab. 
 

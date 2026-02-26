@@ -1,0 +1,168 @@
+{
+    "mgf_files": [
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_BOKU_iBAM_matched.mgf",
+            "type": "validation - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_BOKU_iBAM_noMatch.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/HCD_neg__sirius.mgf",
+            "type": "validation - relevant"
+        },
+        {
+            "path": "./resources/libraries_other/HCD_pos__sirius.mgf",
+            "type": "validation - relevant"
+        },
+        {
+            "path": "./resources/libraries_other/n_wheat_neg__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/n_wheat_pos__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/Wheat_neg__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_other/Wheat_pos__sirius.mgf",
+            "type": "validation - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enamdisc_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enamdisc_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enammol_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_enammol_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcebio_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcedrug_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_mcescaf_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_nihnp_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_otavapep_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20241003_otavapep_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_mcediv_50k_sub_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_mcediv_50k_sub_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_np_neg_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_np_neg_ms2_noMatch.mgf",
+            "type": "train - other"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_pos_ms2_matched.mgf",
+            "type": "train - relevant"
+        },
+        {
+            "path": "./resources/libraries_filtered_gui/filtered_20250228_targetmolnphts_pos_ms2_noMatch.mgf",
+            "type": "train - other"
+        }
+    ],
+    "output_directory": "./output/classification_results_ComparisonClassifiers/",
+    "subsets": [
+        {
+            "name": "hcd_pos_stepped",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'positive' and meta.get('CE') in ['45.0', 'stepped20,45,70ev(absolute)']",
+            "counts": {
+                "validation - relevant": 115,
+                "validation - other": 3928,
+                "train - other": 20509,
+                "train - relevant": 28
+            }
+        },
+        {
+            "name": "hcd_neg_stepped",
+            "expression": "meta.get('fragmentation_method') == 'hcd' and meta.get('ionMode') == 'negative' and meta.get('CE') in ['45.0', 'stepped20,45,70ev(absolute)']",
+            "counts": {
+                "validation - relevant": 115,
+                "validation - other": 1518,
+                "train - other": 10095,
+                "train - relevant": 71
+            }
+        }
+    ],
+    "classifier_configuration": "from sklearn.neighbors import KNeighborsClassifier\nfrom sklearn.svm import SVC\nfrom sklearn.gaussian_process import GaussianProcessClassifier\nfrom sklearn.tree import DecisionTreeClassifier\nfrom sklearn.ensemble import RandomForestClassifier\nfrom sklearn.neural_network import MLPClassifier\nfrom sklearn.ensemble import AdaBoostClassifier\nfrom sklearn.naive_bayes import GaussianNB, CategoricalNB\nfrom sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis\nfrom sklearn.discriminant_analysis import LinearDiscriminantAnalysis\nfrom sklearn.ensemble import ExtraTreesClassifier\nfrom sklearn.ensemble import GradientBoostingClassifier\nfrom sklearn.ensemble import BaggingClassifier\nfrom sklearn.linear_model import LogisticRegression\nfrom sklearn.linear_model import RidgeClassifier\nfrom sklearn.ensemble import VotingClassifier\nfrom sklearn.model_selection import StratifiedKFold\n\nclassifiers_to_compare = {}\n\nfor cross_val_n_split in [10, 5, 3]:\n    for min_prediction_threshold_minus in [0, 1, 2, 3]:\n        \n        set_name = \"__%dStratKFold__%dminPredThreshold\"%(cross_val_n_split, cross_val_n_split - min_prediction_threshold_minus)\n        \n        #############################################################################\n        ## KNN \n        for knn in [3, 5, 10, 50, 100]:\n            classifiers_to_compare[\"KNN%d\"%(knn) + set_name] = {\n                \"description\": \"KNN with %d neighbors\"%(knn),\n                \"classifiers\": {\n                    \"Nearest Neighbors n=%d\"%(knn): KNeighborsClassifier(knn),\n                },\n                \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n                \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n            }\n        \n        #############################################################################\n        ## SVM\n        classifiers_to_compare[\"SVC_linear\" + set_name] = {\n            \"description\": \"Linear SVM\",\n            \"classifiers\": {\n                \"Linear SVM\": SVC(kernel=\"linear\", C=0.025, random_state=42),\n            },\n            \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n            \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n        \n        classifiers_to_compare[\"SVC_poly2\" + set_name] = {\n            \"description\": \"Polynomial(2) SVM\",\n            \"classifiers\": {\n                \"Linear SVM\": SVC(kernel=\"poly\", degree=2, C=0.025, random_state=42),\n            },\n            \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n            \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n        \n        classifiers_to_compare[\"SVC_poly3\" + set_name] = {\n            \"description\": \"Polynomial(3) SVM\",\n            \"classifiers\": {\n                \"Linear SVM\": SVC(kernel=\"poly\", degree=3, C=0.025, random_state=42),\n            },\n            \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n            \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n        \n        #############################################################################\n        ## Neural Net\n        for network_size in [(100,), (100, 50,), (100, 50, 10,)]:\n            classifiers_to_compare[\"NeuralNet%s\"%(str(network_size)) + set_name] = {\n                \"description\": \"NeuralNet%s classifier\"%(str(network_size)),\n                \"classifiers\": {\n                    \"Neural Net\": MLPClassifier(hidden_layer_sizes=network_size, alpha=0.0001, max_iter=1000, random_state=42),\n                },\n                \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n                \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n            }\n        \n        #############################################################################\n        ## Naive Bayes\n        classifiers_to_compare[\"Gaussian Naive Bayes\" + set_name] = {\n            \"description\": \"Gaussian Naive Bayes\",\n            \"classifiers\": {\n                \"Naive Bayes\": GaussianNB(),\n            },\n            \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n            \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n        \n        #############################################################################\n        ## LDA and QDA    \n        classifiers_to_compare[\"QDA\" + set_name] = {\n            \"description\": \"QDA\",\n            \"classifiers\": {\n                \"QDA\": QuadraticDiscriminantAnalysis(),\n            },\n             \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n             \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n        \n        classifiers_to_compare[\"LDA\" + set_name] = {\n            \"description\": \"LDA\",\n            \"classifiers\": {\n                \"LDA\": LinearDiscriminantAnalysis(solver=\"svd\", store_covariance=True, n_components=1),\n            },\n             \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n             \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n        \n        #############################################################################\n        ## Logistic Regression\n        classifiers_to_compare[\"LogRegClass\" + set_name] = {\n            \"description\": \"Logistic Regression classifier\",\n            \"classifiers\": {\n                \"Logistic Regression\": LogisticRegression(random_state=42, max_iter=1000),\n            },\n             \"cross_validation\": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),\n             \"min_prediction_threshold\": cross_val_n_split - min_prediction_threshold_minus,\n        }\n"
+}

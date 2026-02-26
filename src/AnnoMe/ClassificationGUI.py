@@ -872,12 +872,21 @@ class ClassificationGUI(QMainWindow):
 
         # Controls on the right (75%)
         controls = QWidget()
-        layout = QVBoxLayout()
+        controls_layout = QVBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Vertical splitter: upper = metadata overview, lower = subset definition
+        v_splitter = QSplitter(Qt.Vertical)
+
+        # ── Upper pane: refresh button + horizontal meta/value splitter ──
+        upper_widget = QWidget()
+        upper_layout = QVBoxLayout()
+        upper_layout.setContentsMargins(0, 0, 0, 0)
 
         # Refresh button
         refresh_btn = QPushButton("Refresh Metadata Overview")
         refresh_btn.clicked.connect(self.refresh_metadata_overview)
-        layout.addWidget(refresh_btn)
+        upper_layout.addWidget(refresh_btn)
 
         # Splitter for meta overview and value list
         splitter = QSplitter(Qt.Horizontal)
@@ -907,7 +916,15 @@ class ClassificationGUI(QMainWindow):
 
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 1)
-        layout.addWidget(splitter, 1)  # Stretch to fill available space
+        upper_layout.addWidget(splitter, 1)  # Stretch to fill available space
+
+        upper_widget.setLayout(upper_layout)
+        v_splitter.addWidget(upper_widget)
+
+        # ── Lower pane: subset definition + active subsets table ──
+        lower_widget = QWidget()
+        lower_layout = QVBoxLayout()
+        lower_layout.setContentsMargins(0, 0, 0, 0)
 
         # Subset definition
         subset_group = QGroupBox("Define Custom Subset")
@@ -941,10 +958,10 @@ class ClassificationGUI(QMainWindow):
 
         subset_layout.addLayout(subset_input_layout)
         subset_group.setLayout(subset_layout)
-        layout.addWidget(subset_group)
+        lower_layout.addWidget(subset_group)
 
         # Subset list table
-        layout.addWidget(QLabel("Active Subsets:"))
+        lower_layout.addWidget(QLabel("Active Subsets:"))
         self.subset_table = QTableWidget()
         self.subset_table.setColumnCount(7)
         self.subset_table.setHorizontalHeaderLabels(["Name", "Subset Expression", "validation-relevant", "validation-other", "inference", "train-relevant", "train-other"])
@@ -953,7 +970,7 @@ class ClassificationGUI(QMainWindow):
         header.setSectionResizeMode(1, QHeaderView.Interactive)
         for i in range(2, 7):
             header.setSectionResizeMode(i, QHeaderView.Interactive)
-        layout.addWidget(self.subset_table)
+        lower_layout.addWidget(self.subset_table, 1)
 
         # Subset management buttons
         subset_mgmt_layout = QHBoxLayout()
@@ -975,20 +992,24 @@ class ClassificationGUI(QMainWindow):
         import_subsets_btn.clicked.connect(self.import_subsets)
         subset_mgmt_layout.addWidget(import_subsets_btn)
 
-        layout.addLayout(subset_mgmt_layout)
+        lower_layout.addLayout(subset_mgmt_layout)
 
-        controls.setLayout(layout)
+        lower_widget.setLayout(lower_layout)
+        v_splitter.addWidget(lower_widget)
+
+        # Default 50/50 vertical split
+        v_splitter.setStretchFactor(0, 1)
+        v_splitter.setStretchFactor(1, 1)
+        v_splitter.setSizes([500, 500])
+
+        controls_layout.addWidget(v_splitter, 1)
+        controls.setLayout(controls_layout)
         main_layout.addWidget(controls, 3)  # 75% width
 
         content.setLayout(main_layout)
 
-        # Set up scroll area for this section
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(content)
-
         section_layout = QVBoxLayout()
-        section_layout.addWidget(scroll)
+        section_layout.addWidget(content)
         self.section3.setLayout(section_layout)
 
     def init_section4(self):
