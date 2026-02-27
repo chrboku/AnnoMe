@@ -56,6 +56,8 @@ from pprint import pprint
 import pickle
 import inspect
 from matchms import Spectrum
+import datetime
+import pathlib
 
 # Import classification functions
 from .Classification import (
@@ -125,19 +127,17 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
     stdout and stderr are captured and returned in the result dict so the
     GUI can display them in per-job log tabs.
     """
-    import sys
-    import datetime
-
-    # Redirect stdout and stderr to capture all output
-    log_capture = io.StringIO()
-    old_stdout, old_stderr = sys.stdout, sys.stderr
-    sys.stdout = log_capture
-    sys.stderr = log_capture
-
-    start_time = datetime.datetime.now()
-    print(f"=== Job started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
 
     try:
+        # Redirect stdout and stderr to capture all output
+        log_capture = io.StringIO()
+        old_stdout, old_stderr = sys.stdout, sys.stderr
+        sys.stdout = log_capture
+        sys.stderr = log_capture
+
+        start_time = datetime.datetime.now()
+        print(f"=== Job started at {start_time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+
         # Each worker process needs its own random seed
         set_random_seeds(42)
 
@@ -157,7 +157,7 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
         # Give each job its own sub-directory for train_and_classify artefacts
         job_output_dir = os.path.join(
             output_dir,
-            display_key.replace(" // ", "_").replace(" ", "_"),
+            display_key.replace(" // ", "_-_-_").replace(" ", "_"),
         )
         os.makedirs(job_output_dir, exist_ok=True)
 
@@ -188,7 +188,7 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
                 df_working_copy,
                 df_subset_infe,
                 output_dir,
-                file_prefix=display_key.replace(" // ", "_"),
+                file_prefix=display_key.replace(" // ", "_-_-_"),
                 min_prediction_threshold=min_threshold,
             )
             break  # only one key expected per job
@@ -216,6 +216,12 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
             "job_end_time": end_time,
             "job_duration_seconds": duration.total_seconds(),
         }
+    except Exception as e:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        error_msg = f"Error in training job for subset '{subset_name}' and classifier set '{classifier_set_name}': {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        raise e
     finally:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
@@ -259,7 +265,10 @@ class EmbeddingWorker(QThread):
                     with open(mgf_pickle_file, "rb") as f:
                         cached_hash, df = pickle.load(f)
                         if cached_hash == mgf_hash:
-                            print(f"Loaded embeddings from cache for {filename}")
+                            print(f"Loaded embeddings from cache for '{filename}', setting type to '{ds['type']}' and skipping regeneration.")
+                            # set type of embeddings explicitly
+                            df["type"] = ds["type"]
+                            # Add embeddings
                             dfs.append(df)
                         else:
                             print(f"Hash mismatch for {filename}, regenerating embeddings")
@@ -337,8 +346,6 @@ class TrainingWorker(QThread):
         self.n_jobs = n_jobs
 
     def run(self):
-        import sys
-
         try:
             # ----- pre-filter the DataFrame once per subset ---------------
             self.progress.emit("Pre-filtering data for each subset…\nSee console for further details")
@@ -2190,92 +2197,15 @@ classifiers_to_compare = {
 
     def load_default_classifiers_config(self):
         """Load the default classifiers configuration into the text box."""
-        default_config = """from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC
-from sklearn.gaussian_process import GaussianProcessClassifier
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.neural_network import MLPClassifier
-from sklearn.ensemble import AdaBoostClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
-from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.ensemble import ExtraTreesClassifier
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.ensemble import BaggingClassifier
-from sklearn.linear_model import LogisticRegression
-from sklearn.linear_model import RidgeClassifier
-from sklearn.ensemble import VotingClassifier
-from sklearn.model_selection import StratifiedKFold
+        # read this default config from the file base-directory of project, default_classifier_config.py.txt
 
-classifiers_to_compare = {
-    "default_set": {
-        "description": "Default set of diverse classifiers for comparison",
-        "classifiers": {
-            "Nearest Neighbors n=3": KNeighborsClassifier(3),
-            "Nearest Neighbors n=10": KNeighborsClassifier(10),
-            "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
-            #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
-            # "Gaussian Process": GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
-            "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
-            "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
-            "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
-            "AdaBoost": AdaBoostClassifier(random_state=42),
-            "Naive Bayes": GaussianNB(),
-            "QDA": QuadraticDiscriminantAnalysis(),
-            "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
-            "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
-            # "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-            "Bagging Classifier": BaggingClassifier(random_state=42),
-            "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-            "Ridge Classifier": RidgeClassifier(random_state=42),
-            "Voting Classifier (soft)": VotingClassifier(
-                estimators=[
-                    ("lr", LogisticRegression(random_state=42, max_iter=1000)),
-                    ("rf", RandomForestClassifier(random_state=42)),
-                    ("gnb", GaussianNB()),
-                ],
-                voting="soft",
-            ),
-        },
-        "cross_validation": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),  # Optional: if not specified, uses StratifiedKFold with 10 splits
-        "min_prediction_threshold": 100,
-    }
-}
-
-# Example with multiple classifier sets for comparison:
-# classifiers_to_compare = {
-#     "knn_variants": {
-#         "description": "KNNs with different k values are used", 
-#         "classifiers": {
-#             "KNN n=3": KNeighborsClassifier(3),
-#             "KNN n=5": KNeighborsClassifier(5),
-#             "KNN n=10": KNeighborsClassifier(10),
-#         },
-#         "cross_validation": StratifiedKFold(n_splits=5, random_state=42, shuffle=True),  # 5-fold CV
-#         "min_prediction_threshold": 12,
-#     },
-#     "tree_based": {
-#         "description": "Tree-based methods are used", 
-#         "classifiers": {
-#             "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
-#             "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, random_state=42),
-#             "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
-#         },
-#         # "cross_validation": None,  # Optional: if omitted or None, uses default StratifiedKFold with 10 splits
-#         "min_prediction_threshold": 25,
-#     },
-#     "linear_models": {
-#         "description": "Linear models are used", 
-#         "classifiers": {
-#             "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
-#             "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
-#             "Ridge Classifier": RidgeClassifier(random_state=42),
-#         },
-#         "cross_validation": StratifiedKFold(n_splits=3, random_state=42, shuffle=True),  # 3-fold CV
-#         "min_prediction_threshold": 7,
-#     }
-# }"""
+        default_config = ""
+        project_directory = pathlib.Path(__file__).parent.parent.parent.resolve()
+        default_config_file = os.path.join(project_directory, "resources", "default_classifier_config.py.txt")
+        if os.path.exists(default_config_file):
+            print(f"Loading default classifier configuration from: {default_config_file}")
+            with open(default_config_file, "r") as f:
+                default_config = f.read()
         self.classifiers_config_text.setPlainText(default_config)
 
     def save_classifier_configuration(self):
@@ -2848,7 +2778,7 @@ classifiers_to_compare = {
             # -- log file --
             combo_output_dir = os.path.join(
                 output_dir,
-                display_key.replace(" // ", "_").replace(" ", "_"),
+                display_key.replace(" // ", "_-_-_").replace(" ", "_"),
             )
             os.makedirs(combo_output_dir, exist_ok=True)
             log_file_path = os.path.join(combo_output_dir, "training.log")
@@ -2944,8 +2874,6 @@ classifiers_to_compare = {
     def generate_master_excel(self, output_dir):
         """Generate master Excel file consolidating results from all subsets."""
         try:
-            import polars as pl
-
             print(f"\nGenerating master overview of all datasets")
 
             # Initialize an empty list to store DataFrames
@@ -2974,9 +2902,6 @@ classifiers_to_compare = {
 
             # Concatenate all DataFrames into a single DataFrame
             all_results = pl.concat(all_results, how="vertical")
-
-            # Process the data according to the user's requirements
-            all_results = all_results.with_columns(pl.when(pl.col("annotated_as_times:relevant") != 0).then(pl.lit("relevant")).otherwise(pl.lit("other")).alias("annotated_as"))
 
             all_results = all_results.rename({"row_count": "n_features"})
 

@@ -1,0 +1,177 @@
+#############################################################################
+## Imports for classifier models
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.gaussian_process import GaussianProcessClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+from sklearn.ensemble import AdaBoostClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.ensemble import ExtraTreesClassifier
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import BaggingClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.linear_model import RidgeClassifier
+from sklearn.ensemble import VotingClassifier
+from sklearn.model_selection import StratifiedKFold
+
+#############################################################################
+# Example with a single classifier 
+classifiers_to_compare = {
+    "NaiveBayesClassifier": {
+        "description": "Default set of diverse classifiers for comparison",
+        "classifiers": {
+            "Naive Bayes": GaussianNB()
+        },
+        "cross_validation": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),
+        "min_prediction_threshold": 10,
+    }
+}
+
+#############################################################################
+# Example with a classifier majority vote from different classifiers
+if False:
+    classifiers_to_compare = {
+        "MajorityVoteClassifierSet": {
+            "description": "Default set of diverse classifiers for comparison",
+            "classifiers": {
+                "Nearest Neighbors n=3": KNeighborsClassifier(3),
+                "Nearest Neighbors n=10": KNeighborsClassifier(10),
+                "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
+                #"RBF SVM": SVC(gamma=2, C=1, random_state=42),
+                # "Gaussian Process": GaussianProcessClassifier(1.0 * RBF(1.0), random_state=42),
+                "Decision Tree": DecisionTreeClassifier(max_depth=5, random_state=42),
+                "Random Forest": RandomForestClassifier(max_depth=5, n_estimators=10, max_features=1, random_state=42),
+                "Neural Net": MLPClassifier(alpha=1, max_iter=1000, random_state=42),
+                "AdaBoost": AdaBoostClassifier(random_state=42),
+                "Naive Bayes": GaussianNB(),
+                "QDA": QuadraticDiscriminantAnalysis(),
+                "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
+                "Extra Trees": ExtraTreesClassifier(n_estimators=100, random_state=42),
+                # "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+                "Bagging Classifier": BaggingClassifier(random_state=42),
+                "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+                "Ridge Classifier": RidgeClassifier(random_state=42),
+                "Voting Classifier (soft)": VotingClassifier(
+                    estimators=[
+                        ("lr", LogisticRegression(random_state=42, max_iter=1000)),
+                        ("rf", RandomForestClassifier(random_state=42)),
+                        ("gnb", GaussianNB()),
+                    ],
+                    voting="soft",
+                ),
+            },
+            "cross_validation": StratifiedKFold(n_splits=10, random_state=42, shuffle=True),
+            "min_prediction_threshold": 100,
+        }
+    }
+
+
+#############################################################################
+# Example with multiple classifier sets and parameters for comparison
+if False:
+    classifiers_to_compare = {}
+    
+    for cross_val_n_split in [10, 5, 3]:
+        for min_prediction_threshold_minus in [0, 1, 2, 3]:
+            
+            set_name = "__%dStratKFold__%dminPredThreshold"%(cross_val_n_split, cross_val_n_split - min_prediction_threshold_minus)
+            
+            #############################################################################
+            ## KNN 
+            for knn in [3, 5, 10, 50, 100]:
+                classifiers_to_compare["KNN%d"%(knn) + set_name] = {
+                    "description": "KNN with %d neighbors"%(knn),
+                    "classifiers": {
+                        "Nearest Neighbors n=%d"%(knn): KNeighborsClassifier(knn),
+                    },
+                    "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                    "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+                }
+            
+            #############################################################################
+            ## SVM
+            classifiers_to_compare["SVC_linear" + set_name] = {
+                "description": "Linear SVM",
+                "classifiers": {
+                    "Linear SVM": SVC(kernel="linear", C=0.025, random_state=42),
+                },
+                "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+            
+            classifiers_to_compare["SVC_poly2" + set_name] = {
+                "description": "Polynomial(2) SVM",
+                "classifiers": {
+                    "Linear SVM": SVC(kernel="poly", degree=2, C=0.025, random_state=42),
+                },
+                "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+            
+            classifiers_to_compare["SVC_poly3" + set_name] = {
+                "description": "Polynomial(3) SVM",
+                "classifiers": {
+                    "Linear SVM": SVC(kernel="poly", degree=3, C=0.025, random_state=42),
+                },
+                "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+            
+            #############################################################################
+            ## Neural Net
+            for network_size in [(100,), (100, 50,), (100, 50, 10,)]:
+                classifiers_to_compare["NeuralNet%s"%(str(network_size)) + set_name] = {
+                    "description": "NeuralNet%s classifier"%(str(network_size)),
+                    "classifiers": {
+                        "Neural Net": MLPClassifier(hidden_layer_sizes=network_size, alpha=0.0001, max_iter=1000, random_state=42),
+                    },
+                    "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                    "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+                }
+            
+            #############################################################################
+            ## Naive Bayes
+            classifiers_to_compare["Gaussian Naive Bayes" + set_name] = {
+                "description": "Gaussian Naive Bayes",
+                "classifiers": {
+                    "Naive Bayes": GaussianNB(),
+                },
+                "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+            
+            #############################################################################
+            ## LDA and QDA    
+            classifiers_to_compare["QDA" + set_name] = {
+                "description": "QDA",
+                "classifiers": {
+                    "QDA": QuadraticDiscriminantAnalysis(),
+                },
+                 "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                 "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+            
+            classifiers_to_compare["LDA" + set_name] = {
+                "description": "LDA",
+                "classifiers": {
+                    "LDA": LinearDiscriminantAnalysis(solver="svd", store_covariance=True, n_components=1),
+                },
+                 "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                 "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+            
+            #############################################################################
+            ## Logistic Regression
+            classifiers_to_compare["LogRegClass" + set_name] = {
+                "description": "Logistic Regression classifier",
+                "classifiers": {
+                    "Logistic Regression": LogisticRegression(random_state=42, max_iter=1000),
+                },
+                 "cross_validation": StratifiedKFold(n_splits=cross_val_n_split, random_state=42, shuffle=True),
+                 "min_prediction_threshold": cross_val_n_split - min_prediction_threshold_minus,
+            }
+    

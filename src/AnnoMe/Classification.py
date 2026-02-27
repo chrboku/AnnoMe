@@ -2006,8 +2006,7 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers_to_comp
 
     if subsets is None:
         subsets = {
-            "positive"     : lambda x: x["ionMode"] == "positive",
-            "negative"     : lambda x: x["ionMode"] == "negative",
+            "all": lambda x: x,
         }
     if callable(subsets):
         subsets = {"provided_function": subsets}
@@ -2037,28 +2036,6 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers_to_comp
     infe_df["prediction_results"] = [[] for _ in range(len(infe_df))]
     infe_df["used"] = [False for _ in range(len(infe_df))]
     print(f"Size of inference dataset: {Fore.YELLOW}{infe_X.shape[0]}{Style.RESET_ALL}")
-
-    # Generate an overview of train_df and save to file
-    cols = ["CE", "ionMode", "fragmentation_method", "source"]
-    out_file = os.path.join(output_dir, "dataset_overview.xlsx")
-    writer = pd.ExcelWriter(out_file, engine='xlsxwriter')  
-    for c_df_name, c_df in {"input": df, "train": train_df, "validation": vali_df, "inference": infe_df}.items():
-        if not c_df.empty:
-            # Show combined overview table
-            # Select relevant columns
-            df_subset = c_df[cols].copy()
-
-            # Combine CE, ionMode, fragmentation_method into a single column for grouping
-            df_subset["combo"] = df_subset[["ionMode", "fragmentation_method", "CE"]].astype(str).agg("_".join, axis=1)
-
-            # Group by the combo and source, then count occurrences
-            grouped = df_subset.groupby(["combo", "source"]).size().reset_index(name="count")
-
-            # Pivot the table: rows are combo, columns are source, values are count
-            pivot = grouped.pivot(index="combo", columns="source", values="count").fillna(0).astype(int)
-        
-            pivot.to_excel(writer, sheet_name=c_df_name)
-    writer.close()
 
     labels = ["relevant", "other"]
     trained_classifiers_per_subset = {}
@@ -2387,7 +2364,10 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     x.columns = ['_'.join(filter(None, col)).strip() for col in x.columns.values]
     x.columns = [re.sub(r"_Unnamed: \d+_level_\d+", "", col) for col in x.columns]
     x.columns = [re.sub(r"Unnamed: \d+_level_\d+_", "", col) for col in x.columns]
-    overall = x.groupby(['type', 'source', 'annotated_as_times:relevant']).size().reset_index(name='row_count')
+    # Transform "annotated_as_times:relevant" to "annotated_as"
+    x["annotated_as"] = np.where(x["annotated_as_times:relevant"] == 0, "other", "relevant")
+    x = x.drop(columns=["annotated_as_times:relevant"])
+    overall = x.groupby(['type', 'source', 'annotated_as']).size().reset_index(name='row_count')
 
     # Save the DataFrames to an Excel file
     out_file = os.path.join(output_dir, f"{file_prefix}_data.xlsx")

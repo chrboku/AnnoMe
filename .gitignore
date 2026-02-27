@@ -16,6 +16,7 @@ demo/versions
 
 # resources
 resources/*
+!resources/default_classifier_config.py.txt
 
 # for publication
 forPublication/
