@@ -1298,8 +1298,8 @@ def standardize_blocks(blocks, standards):
     """
 
     for block in blocks:
-        for key in standards.keys():
-            if key in block.keys():
+        for key in standards:
+            if key in block:
                 value = block[key]
 
                 if isinstance(standards[key], list):
@@ -1370,8 +1370,26 @@ def show_overview_of_blocks(blocks):
     """
 
     fields = set()
+    instrument_counts = {}
+    ionmodes = {}
+    fragmentation_method_counts = {}
+    collision_energy_counts = {}
+
+    # Single pass over all blocks to collect all counts
     for block in blocks:
         fields.update(block.keys())
+
+        instrument = block.get("instrument", "Unknown")
+        instrument_counts[instrument] = instrument_counts.get(instrument, 0) + 1
+
+        ionmode = block.get("ionmode", "Unknown")
+        ionmodes[ionmode] = ionmodes.get(ionmode, 0) + 1
+
+        method = block.get("fragmentation_method", "Unknown")
+        fragmentation_method_counts[method] = fragmentation_method_counts.get(method, 0) + 1
+
+        energy = block.get("collision_energy", "Unknown")
+        collision_energy_counts[energy] = collision_energy_counts.get(energy, 0) + 1
 
     print(f"   - {len(fields)} unique keys found in blocks: ", end="")
     for i, field in enumerate(natsort.natsorted(fields, key=lambda x: x.lower())):
@@ -1380,14 +1398,6 @@ def show_overview_of_blocks(blocks):
             end="",
         )
     print("")
-
-    instrument_counts = {}
-    for block in blocks:
-        if "instrument" in block:
-            instrument = block["instrument"]
-        else:
-            instrument = "Unknown"
-        instrument_counts[instrument] = instrument_counts.get(instrument, 0) + 1
 
     if instrument_counts:
         print("   - Instrument usage counts: ", end="")
@@ -1401,14 +1411,6 @@ def show_overview_of_blocks(blocks):
     else:
         print("   - No instrument information found in blocks.")
 
-    ionmodes = {}
-    for block in blocks:
-        if "ionmode" in block:
-            ionmode = block["ionmode"]
-        else:
-            ionmode = "Unknown"
-        ionmodes[ionmode] = ionmodes.get(ionmode, 0) + 1
-
     if ionmodes:
         print("   - Ion mode usage counts: ", end="")
         sorted_ionmodes = sorted(ionmodes.items(), key=lambda item: item[1], reverse=True)
@@ -1421,14 +1423,6 @@ def show_overview_of_blocks(blocks):
     else:
         print("   - No ion mode information found in blocks.")
 
-    fragmentation_method_counts = {}
-    for block in blocks:
-        if "fragmentation_method" in block:
-            method = block["fragmentation_method"]
-        else:
-            method = "Unknown"
-        fragmentation_method_counts[method] = fragmentation_method_counts.get(method, 0) + 1
-
     if fragmentation_method_counts:
         print("   - Fragmentation method usage counts: ", end="")
         sorted_methods = sorted(fragmentation_method_counts.items(), key=lambda item: item[1], reverse=True)
@@ -1440,14 +1434,6 @@ def show_overview_of_blocks(blocks):
         print()
     else:
         print("   - No fragmentation method information found in blocks.")
-
-    collision_energy_counts = {}
-    for block in blocks:
-        if "collision_energy" in block:
-            energy = block["collision_energy"]
-        else:
-            energy = "Unknown"
-        collision_energy_counts[energy] = collision_energy_counts.get(energy, 0) + 1
 
     if collision_energy_counts:
         print("   - Collision energy usage counts: ", end="")
@@ -1661,14 +1647,20 @@ def draw_names(compounds, blocks, name_field, smiles_field, max_draw=10, molsPer
         max_draw (int): Maximum number of compounds to draw.
         molsPerRow (int): Number of molecules per row in the grid.
     """
+    # Pre-build lookup dict: name → first SMILES (avoids O(n*m) nested loops)
+    name_to_smiles = {}
+    for block in blocks:
+        name = block.get(name_field)
+        smi = block.get(smiles_field)
+        if name and smi and name not in name_to_smiles:
+            name_to_smiles[name] = smi
+
     smiles = []
     legends = []
     for name in compounds:
-        for block in blocks:
-            if name_field in block.keys() and block[name_field] == name and smiles_field in block.keys() and block[smiles_field]:
-                smiles.append(block[smiles_field])
-                legends.append(name)
-                break
+        if name in name_to_smiles:
+            smiles.append(name_to_smiles[name])
+            legends.append(name)
 
     sorted_indices = sorted(range(len(legends)), key=lambda i: legends[i].lower())
     smiles = [smiles[i] for i in sorted_indices]
@@ -1816,7 +1808,7 @@ def process_database(
     show_overview_of_blocks(spectra)
 
     # filter for spectra that have smiles code
-    spectra = [block for block in spectra if smiles_field in block.keys() and block[smiles_field] is not None and block[smiles_field].strip().lower() not in ["", "n/a", "na", "none", "null"]]
+    spectra = [block for block in spectra if smiles_field in block and block[smiles_field] is not None and block[smiles_field].strip().lower() not in ["", "n/a", "na", "none", "null"]]
     # apply custom filter if provided
     if filter_fn is not None:
         spectra = filter_fn(spectra)
@@ -1839,7 +1831,7 @@ def process_database(
     table_data = OrderedDict()
 
     # get unique names and smiles from the spectra
-    names = set([block[name_field] for block in spectra if name_field in block.keys() and block[name_field]])
+    names = set([block[name_field] for block in spectra if name_field in block and block[name_field]])
     print(f"\n   4. Found {Fore.YELLOW}{len(names)}{Style.RESET_ALL} unique compound names in the MGF file")
 
     temp_dir = tempfile.TemporaryDirectory()
@@ -1858,12 +1850,12 @@ def process_database(
     formulas = defaultdict(list)
     cas = defaultdict(list)
     for block in spectra:
-        if name_field in block.keys():
-            if smiles_field in block.keys() and block[smiles_field]:
+        if name_field in block:
+            if smiles_field in block and block[smiles_field]:
                 smiles[block[name_field]].append(block[smiles_field])
-            if sf_field in block.keys() and block[sf_field]:
+            if sf_field in block and block[sf_field]:
                 formulas[block[name_field]].append(block[sf_field])
-            if "cas" in block.keys() and block["cas"]:
+            if "cas" in block and block["cas"]:
                 cas[block[name_field]].append(block["cas"])
     for i, name in tqdm(
         enumerate(list(natsort.natsorted(names, key=lambda x: x.lower()))),
@@ -1899,10 +1891,10 @@ def process_database(
                 print(f"ERROR: could not draw structure for {name}: {e}")
                 table_data[name]["A_structure"] = "ERROR: could not draw structure"
 
-    n_spectra_with_smiles = sum(1 for block in spectra if smiles_field in block.keys() and block[smiles_field])
+    n_spectra_with_smiles = sum(1 for block in spectra if smiles_field in block and block[smiles_field])
     print(f"\n   5. Found {Fore.YELLOW}{n_spectra_with_smiles}{Style.RESET_ALL} spectra with valid SMILES")
 
-    unique_smiles_strings = sorted(list(set([block[smiles_field] for block in spectra if smiles_field in block.keys() and smiles_field != ""])))
+    unique_smiles_strings = sorted(list(set([block[smiles_field] for block in spectra if smiles_field in block and smiles_field != ""])))
     print(f"\n   6. Found {Fore.YELLOW}{len(unique_smiles_strings)}{Style.RESET_ALL} unique smiles strings")
 
     # process each check, and export matching compounds and spectra
@@ -1918,10 +1910,11 @@ def process_database(
         found_results[check_name]["matching_smiles"] = matching_smiles
 
         if len(matching_smiles) > 0:
+            matching_smiles_set = set(matching_smiles)  # O(1) lookup instead of O(n) list scan
             matching_compounds = set()
             matching_blocks = []
             for spectrum in spectra:
-                if smiles_field in spectrum.keys() and spectrum[smiles_field] in matching_smiles:
+                if smiles_field in spectrum and spectrum[smiles_field] in matching_smiles_set:
                     matching_compounds.add(spectrum[name_field])
                     matching_blocks.append(spectrum)
 
@@ -1963,7 +1956,7 @@ def process_database(
         matching_compounds = set()
         matching_blocks = []
         for spectrum in spectra:
-            if smiles_field in spectrum.keys() and spectrum[smiles_field] in all_non_matching_smiles:
+            if smiles_field in spectrum and spectrum[smiles_field] in all_non_matching_smiles:
                 matching_compounds.add(spectrum[name_field])
                 matching_blocks.append(spectrum)
 

@@ -13,8 +13,8 @@ from contextlib import contextmanager
 import itertools
 import tempfile
 import re
-import warnings
 from collections import Counter
+from functools import reduce
 import inspect
 
 # Data science packages
@@ -388,6 +388,20 @@ class formulaTools:
 
         else:
             self.elemDetails = elemDetails
+
+        # Pre-compute isotope lookup tables for performance
+        self._iso_set = set()           # set of element keys that are isotopes
+        self._iso_to_element = {}       # isotope key → (base_element, isotope_number_str)
+        for key in self.elemDetails:
+            if not key[0].isalpha():  # isotope keys start with a digit
+                self._iso_set.add(key)
+                # Parse isotope key into (base_element, isotope_number_str)
+                pos = 0
+                while pos < len(key) and key[pos].isdigit():
+                    pos += 1
+                num = key[:pos]
+                curElem = key[pos:]
+                self._iso_to_element[key] = (curElem, num)
     # fmt: on
 
     # INTERNAL METHOD used for parsing
@@ -414,13 +428,13 @@ class formulaTools:
             pos = pos + 1
             while formula[pos] != ")":
                 pos, elem = self._parseStruct(formula, pos)
-                for kE in elem.keys():
-                    if kE in elemDict.keys():
+                for kE in elem:
+                    if kE in elemDict:
                         elemDict[kE] = elemDict[kE] + elem[kE]
                     else:
                         elemDict[kE] = elem[kE]
             pos, numb = self._parseNumber(formula, pos + 1)
-            for kE in elemDict.keys():
+            for kE in elemDict:
                 elemDict[kE] = elemDict[kE] * numb
             return pos, elemDict
         elif formula[pos] == "[":
@@ -470,57 +484,43 @@ class formulaTools:
     # method determines if a given element represent an isotope other the the main isotope of a given element
     # e.g. isIso("13C"): True; isIso("12C"): False
     def isIso(self, iso):
-        return not (iso[0].isalpha())
+        return iso in self._iso_set
 
     # returns the element for a given isotope
     def getElementFor(self, elem):
-        if not (self.isIso(elem)):
+        if elem not in self._iso_set:
             raise Exception("Element was provided. Isotope is required")
-        else:
-            num = ""
-            pos = 0
-            while elem[pos].isdigit() and pos < len(elem):
-                num = num + elem[pos]
-                pos = pos + 1
-            if pos == "":
-                raise Exception("Isotope description wrong")
-            curElem = elem[pos]
-
-            if (pos + 1) < len(elem) and elem[pos + 1].isalpha() and elem[pos + 1].islower():
-                curElem = elem[pos : (pos + 2)]
-            if curElem != "":
-                pos = pos + len(curElem)
-            else:
-                raise Exception("Unrecognized element")
-
-            return curElem, num
+        return self._iso_to_element[elem]
 
     # helper method: n over k
     def noverk(self, n, k):
-        return reduce(lambda a, b: a * (n - b) / (b + 1), xrange(k), 1)
+        return reduce(lambda a, b: a * (n - b) / (b + 1), range(k), 1)
 
     # helper method: calculates the isotopic ratio
     def getIsotopologueRatio(self, c, s, p):
         return pow(p, s) * self.noverk(c, s)
 
-    def getMassOffset(self, elems):
+    # helper method: separates elements and isotopes from an element dictionary
+    def _separateElemsAndIsos(self, elems):
         fElems = {}
         fIso = {}
-        ret = 0
-        for elem in elems:
-            if not (self.isIso(elem)):
-                fElems[elem] = elems[elem]
         for elem in elems:
             if self.isIso(elem):
                 curElem, iso = self.getElementFor(elem)
-
-                if not (fIso.has_key(curElem)):
+                if curElem not in fIso:
                     fIso[curElem] = []
                 fIso[curElem].append((iso, elems[elem]))
+            else:
+                fElems[elem] = elems[elem]
+        return fElems, fIso
+
+    def getMassOffset(self, elems):
+        fElems, fIso = self._separateElemsAndIsos(elems)
+        ret = 0
 
         for elem in fElems:
             rem = 0
-            if fIso.has_key(elem):
+            if elem in fIso:
                 for x in fIso[elem]:
                     rem = rem + x[1]
             p = self.elemDetails[elem][4]
@@ -532,22 +532,12 @@ class formulaTools:
         return ret
 
     def getAbundance(self, elems):
-        fElems = {}
-        fIso = {}
+        fElems, fIso = self._separateElemsAndIsos(elems)
         ret = 1.0
-        for elem in elems:
-            if not (self.isIso(elem)):
-                fElems[elem] = elems[elem]
-        for elem in elems:
-            if self.isIso(elem):
-                curElem, iso = self.getElementFor(elem)
 
-                if not (fIso.has_key(curElem)):
-                    fIso[curElem] = []
-                fIso[curElem].append((iso, elems[elem]))
         for elem in fElems:
             rem = 0
-            if fIso.has_key(elem):
+            if elem in fIso:
                 for x in fIso[elem]:
                     rem = rem + x[1]
             p = self.elemDetails[elem][4]
@@ -569,8 +559,8 @@ class formulaTools:
     # calculates the molecular weight of a given elemental collection (e.g. result of parseFormula)
     def calcMolWeight(self, elems):
         mw = 0.0
-        for elem in elems.keys():
-            if not (self.isIso(elem)):
+        for elem in elems:
+            if not self.isIso(elem):
                 mw = mw + self.elemDetails[elem][3] * elems[elem]
             else:
                 curElem, iso = self.getElementFor(elem)
@@ -597,7 +587,7 @@ class formulaTools:
 
                         d = {}
                         for y in x:
-                            if not (d.has_key(y)):
+                            if y not in d:
                                 d[y] = 0
                             d[y] = d[y] + 1
                         ret.append(d)
@@ -647,7 +637,7 @@ class formulaTools:
             if self.isIso(elem):
                 curElem, iso = self.getElementFor(elem)
 
-                if fElems.has_key(curElem):
+                if curElem in fElems:
                     fElems[curElem] = fElems[curElem] - elems[elem]
                     fElems["[" + iso + curElem + "]"] = elems[elem]
                 else:
@@ -685,9 +675,13 @@ class formulaTools:
         return self.calcDifferenceBetweenElemDicts(self.parseFormula(sfFragment), self.parseFormula(sfParent))
 
 
+# Module-level singleton to avoid re-creating formulaTools on every call
+_default_formulaTools = formulaTools()
+
+
 # helper method that returns the mass of a given isotope. Used in the main interface of MetExtract II
 def getIsotopeMass(isotope):
-    fT = formulaTools()
+    fT = _default_formulaTools
     mass = -1
     element = ""
     for i in fT.elemDetails:
@@ -704,7 +698,7 @@ def getIsotopeMass(isotope):
 
 
 def getElementOfIsotope(isotope):
-    fT = formulaTools()
+    fT = _default_formulaTools
     return fT.elemDetails[isotope][1]
 
 
@@ -926,7 +920,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
                     # randomly sample from the input file spectra if requested by the user
                     fi = ds["file"]
                     fi_rm = False
-                    if "randomly_sample" in ds.keys():
+                    if "randomly_sample" in ds:
                         print(f"   - Randomly sampling {Fore.YELLOW}{ds["randomly_sample"]}{Style.RESET_ALL} spectra from input file")
                         fi, fi_rm = select_randomly_n_spectra(fi, ds["randomly_sample"])
 
@@ -983,7 +977,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
     # add extra columns from each spectra (extract common keys from the MS/MS spectra)
     if data_to_add is None:
         data_to_add = {}
-    if "MSLEVEL" not in data_to_add.keys():
+    if "MSLEVEL" not in data_to_add:
         data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
 
     # extract metadata from the spectra
@@ -1041,7 +1035,7 @@ def add_mzmine_metainfos(datasets, df):
     """
     allMZmine = []
     for ds in datasets:
-        if "mzmine_meta_table" in ds.keys() and ds["mzmine_meta_table"] is not None and ds["mzmine_meta_table"] != "":
+        if "mzmine_meta_table" in ds and ds["mzmine_meta_table"] is not None and ds["mzmine_meta_table"] != "":
             print(f"Processing and adding MZmine meta-information from {Fore.YELLOW}{ds['mzmine_meta_table']}{Style.RESET_ALL}")
             # Read the quantification file as a TSV
             mzmine_df = pd.read_csv(ds["mzmine_meta_table"], sep=",", low_memory=False)
@@ -1156,7 +1150,7 @@ def add_sirius_fingerprints(datasets, df):
     """
     all_fingerprints = []
     for ds in datasets:
-        if "fingerprintFile" in ds.keys() and ds["fingerprintFile"] is not None and ds["fingerprintFile"] != "":
+        if "fingerprintFile" in ds and ds["fingerprintFile"] is not None and ds["fingerprintFile"] != "":
             if ds["fingerprintFile"] == "::RDKIT":
                 pass
                 ## TODO predict fingerprint of Standards and SMILE codes using RDKIt
@@ -1214,7 +1208,7 @@ def add_sirius_canopus(datasets, df):
     """
     allCanopus = []
     for ds in datasets:
-        if "canopus_file" in ds.keys() and ds["canopus_file"] is not None and ds["canopus_file"] != "" and ds["canopus_file"] != "::SIRIUS":
+        if "canopus_file" in ds and ds["canopus_file"] is not None and ds["canopus_file"] != "" and ds["canopus_file"] != "::SIRIUS":
             print(f"reading Canopus annotations from {Fore.YELLOW}{ds['canopus_file']}{Style.RESET_ALL}")
             # Read the Canopus file as a TSV
             canopus_df = pd.read_csv(ds["canopus_file"], sep="\t")
@@ -1294,7 +1288,7 @@ def add_sirius_predictions(datasets, df):
     """
     allSIRIUS = []
     for ds in datasets:
-        if "sirius_file" in ds.keys() and ds["sirius_file"] is not None and ds["sirius_file"] != "":
+        if "sirius_file" in ds and ds["sirius_file"] is not None and ds["sirius_file"] != "":
             print(f"reading SIRIUS annotations from {Fore.YELLOW}{ds['sirius_file']}{Style.RESET_ALL}")
             # Read the Canopus file as a TSV
             sirius_df = pd.read_csv(ds["sirius_file"], sep="\t")
@@ -1374,7 +1368,7 @@ def add_mzmine_quant(datasets, df):
     """
     allQuant = []
     for ds in datasets:
-        if "quant_file" in ds.keys() and ds["quant_file"] is not None and ds["quant_file"] != "":
+        if "quant_file" in ds and ds["quant_file"] is not None and ds["quant_file"] != "":
             print(f"reading quantification information from {Fore.YELLOW}{ds['quant_file']}{Style.RESET_ALL}")
             # Read the quantification file as a TSV
             quant_df = pd.read_csv(ds["quant_file"], sep=",", low_memory=False)
@@ -1603,6 +1597,9 @@ def generate_embedding_plots(df, output_dir, colors=None):
         print("\n\nGenerating embeddings")
         print("#######################################################")
 
+        # Pre-compute embeddings array once for both UMAP and PaCMAP
+        embeddings_array = np.array(df["embeddings"].tolist())
+
         # UMAP
         print("Generating UMAP embeddings")
         umap_reducer = umap.UMAP(
@@ -1610,12 +1607,12 @@ def generate_embedding_plots(df, output_dir, colors=None):
             n_neighbors=50,  # key parameters How global or local the distribution 30, 50
             min_dist=0.2,  # can the dots overlap if you use 5 they move out a bit. 0.1, 0.2
         )
-        umap_embeddings = umap_reducer.fit(np.array(df["embeddings"].tolist()))
+        umap_embeddings = umap_reducer.fit(embeddings_array)
 
         # PacMAP
         print("Generating PaCMAP embeddings")
         pacmap_reducer = pacmap.PaCMAP(n_components=2, n_neighbors=10, MN_ratio=0.5, FP_ratio=2.0)
-        pacmap_embedding = pacmap_reducer.fit_transform(np.array(df["embeddings"].tolist()), init="pca")
+        pacmap_embedding = pacmap_reducer.fit_transform(embeddings_array, init="pca")
 
         df["umap_1"] = umap_embeddings.embedding_[:, 0]
         df["umap_2"] = umap_embeddings.embedding_[:, 1]
@@ -1842,10 +1839,11 @@ def _train_classifier_subset(
                         fold_conf_matrices.append(conf_matrix_percent)
 
                         # Store the results in the inference_results dictionary
-                        for idx in range(trainSubset_train_X.shape[0]):
-                            if trainSubset_train_y_pred[idx] == "relevant":
-                                idx = trainSubset_train_useInds[idx]
-                                train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                        pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
+                        for i in range(trainSubset_train_X.shape[0]):
+                            if trainSubset_train_y_pred[i] == "relevant":
+                                row_idx = trainSubset_train_useInds[i]
+                                train_df.at[row_idx, "prediction_results"].append(pred_label)
 
                     # Apply predictions on the validation set
                     if True:
@@ -1866,10 +1864,11 @@ def _train_classifier_subset(
                         fold_conf_matrices.append(conf_matrix_percent)
 
                         # Store the results in the inference_results dictionary
-                        for idx in range(trainSubset_vali_X.shape[0]):
-                            if trainSubset_test_y_pred[idx] == "relevant":
-                                idx = trainSubset_vali_useInds[idx]
-                                train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                        pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
+                        for i in range(trainSubset_vali_X.shape[0]):
+                            if trainSubset_test_y_pred[i] == "relevant":
+                                row_idx = trainSubset_vali_useInds[i]
+                                train_df.at[row_idx, "prediction_results"].append(pred_label)
 
                     # process test dataset
                     # Note: Usually the test dataset is processed last, but due to the architecture here it needs to run now
@@ -1889,10 +1888,11 @@ def _train_classifier_subset(
                         metrics_entries.append(df_metric)
 
                         # Store the results in the inference_results dictionary
-                        for idx in range(testSubset_X.shape[0]):
-                            if valiSubset_y_pred[idx] == "relevant":
-                                idx = testSubset_useInds[idx]
-                                vali_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                        pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
+                        for i in range(testSubset_X.shape[0]):
+                            if valiSubset_y_pred[i] == "relevant":
+                                row_idx = testSubset_useInds[i]
+                                vali_df.at[row_idx, "prediction_results"].append(pred_label)
 
                     # process inference dataset
                     if len(infeSubset_useInds) > 0:
@@ -1907,10 +1907,11 @@ def _train_classifier_subset(
                         print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
 
                         # Store the results in the inference_results dictionary
-                        for idx in range(infeSubset_X.shape[0]):
-                            if infeSubset_y_pred[idx] == "relevant":
-                                idx = infeSubset_useInds[idx]
-                                infe_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                        pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
+                        for i in range(infeSubset_X.shape[0]):
+                            if infeSubset_y_pred[i] == "relevant":
+                                row_idx = infeSubset_useInds[i]
+                                infe_df.at[row_idx, "prediction_results"].append(pred_label)
 
             # Calculate average results
             avg_score, std_score, min_score, max_score = (
@@ -2146,8 +2147,8 @@ def predict(df, classifiers, subset_name = None, subset_fn = None, print_classif
             # Store the results in the inference_results dictionary
             for idx in range(infeSubset_X.shape[0]):
                 if infeSubset_y_pred[idx] == "relevant":
-                    idx = infeSubset_useInds[idx]
-                    infe_df.iloc[idx]["prediction_results"].append(f"{clf_name}")
+                    row_idx = infeSubset_useInds[idx]
+                    infe_df.at[row_idx, "prediction_results"].append(f"{clf_name}")
                     
     return infe_df
 
@@ -2214,15 +2215,11 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     # Add a new column 'prediction' to df with default value 'NA'
     df["classification:relevant"] = ""
 
-    # Update the 'prediction' column for rows present in aggregated_df
-    for _, row in aggregated_df.iterrows():
-        # Create a mask to identify matching rows in df
-        mask = (df["AnnoMe_internal_ID"] == row["AnnoMe_internal_ID"])
-        if row["prediction_count"] >= 1:
-            # Set the prediction value to "relevant" for matching rows
-            df.loc[mask, "classification:relevant"] = "relevant"
-        else:
-            df.loc[mask, "classification:relevant"] = "other"
+    # Update the 'prediction' column for rows present in aggregated_df using vectorized merge
+    pred_map = aggregated_df[["AnnoMe_internal_ID", "prediction_count"]].drop_duplicates(subset="AnnoMe_internal_ID")
+    df = df.merge(pred_map, on="AnnoMe_internal_ID", how="left", suffixes=("", "_agg"))
+    df["classification:relevant"] = np.where(df["prediction_count"].fillna(0) >= 1, "relevant", "other")
+    df.drop(columns=["prediction_count"], inplace=True)
 
     
 
@@ -2344,7 +2341,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         # Select all columns under the 'CE' level in the MultiIndex
         ce_columns = [col for col in pivot_table.columns if col[0] == sumCols]
         # Count the number of '1' values in the selected CE columns
-        count_ones = pivot_table[ce_columns].applymap(lambda x: int(x) if x != "" else 0).sum(axis=1)
+        count_ones = pivot_table[ce_columns].map(lambda x: int(x) if x != "" else 0).sum(axis=1)
         pivot_table[newCol] = count_ones.values.reshape(-1, 1)
 
     # Extract column names starting with 'datafile:'
