@@ -4,6 +4,7 @@ from AnnoMe.Filters import parse_mgf_file, download_MS2DeepScore_model, optimize
 import ast
 import json
 import logging
+import math
 import os
 import pathlib
 import random
@@ -388,6 +389,24 @@ class formulaTools:
 
         else:
             self.elemDetails = elemDetails
+
+        # Pre-calculate isotope element info lookup table.
+        # Maps isotope key (e.g. "13C") -> (baseElem, isoNum, massDiff, prob)
+        # where isoNum is the numeric prefix string (e.g. "13") and
+        # massDiff = isoMass - baseMass.
+        self._isoElemInfo = {}
+        for elem_key in self.elemDetails:
+            if self.isIso(elem_key):
+                baseElem, isoNum = self.getElementFor(elem_key)
+                massDiff = self.elemDetails[elem_key][3] - self.elemDetails[baseElem][3]
+                prob = self.elemDetails[elem_key][4]
+                self._isoElemInfo[elem_key] = (baseElem, isoNum, massDiff, prob)
+
+        # Pre-calculated list of (isoName, massDiff) tuples for getPutativeIsotopes
+        self._isotopeDiffs = [(k, v[2]) for k, v in self._isoElemInfo.items()]
+
+        # Cache for getIsotopes results keyed by minInt threshold
+        self._cachedIsotopes = {}
     # fmt: on
 
     # INTERNAL METHOD used for parsing
@@ -497,30 +516,36 @@ class formulaTools:
 
     # helper method: n over k
     def noverk(self, n, k):
-        return reduce(lambda a, b: a * (n - b) / (b + 1), xrange(k), 1)
+        return math.comb(n, k)
 
     # helper method: calculates the isotopic ratio
     def getIsotopologueRatio(self, c, s, p):
         return pow(p, s) * self.noverk(c, s)
 
-    def getMassOffset(self, elems):
+    def _separateIsoElems(self, elems):
+        """Split an element dict into regular elements and isotopes.
+
+        Returns (fElems, fIso) where fIso maps baseElem -> list of (isoNum, count).
+        Uses the pre-calculated _isoElemInfo lookup table for fast access.
+        """
         fElems = {}
         fIso = {}
+        for elem_key, count in elems.items():
+            if elem_key in self._isoElemInfo:
+                baseElem, isoNum = self._isoElemInfo[elem_key][:2]
+                if baseElem not in fIso:
+                    fIso[baseElem] = []
+                fIso[baseElem].append((isoNum, count))
+            else:
+                fElems[elem_key] = count
+        return fElems, fIso
+
+    def getMassOffset(self, elems):
+        fElems, fIso = self._separateIsoElems(elems)
         ret = 0
-        for elem in elems:
-            if not (self.isIso(elem)):
-                fElems[elem] = elems[elem]
-        for elem in elems:
-            if self.isIso(elem):
-                curElem, iso = self.getElementFor(elem)
-
-                if not (fIso.has_key(curElem)):
-                    fIso[curElem] = []
-                fIso[curElem].append((iso, elems[elem]))
-
         for elem in fElems:
             rem = 0
-            if fIso.has_key(elem):
+            if elem in fIso:
                 for x in fIso[elem]:
                     rem = rem + x[1]
             p = self.elemDetails[elem][4]
@@ -528,26 +553,17 @@ class formulaTools:
             ret = ret * pow(p, c)
         for iso in fIso:
             for cIso in fIso[iso]:
-                ret = ret + (self.elemDetails[str(cIso[0] + iso)][3] - self.elemDetails[iso][3]) * cIso[1]
+                # cIso[0] is the isotope number string (e.g. "13"), iso is the base element (e.g. "C")
+                # so cIso[0] + iso forms the isotope key (e.g. "13C")
+                ret = ret + self._isoElemInfo[cIso[0] + iso][2] * cIso[1]
         return ret
 
     def getAbundance(self, elems):
-        fElems = {}
-        fIso = {}
+        fElems, fIso = self._separateIsoElems(elems)
         ret = 1.0
-        for elem in elems:
-            if not (self.isIso(elem)):
-                fElems[elem] = elems[elem]
-        for elem in elems:
-            if self.isIso(elem):
-                curElem, iso = self.getElementFor(elem)
-
-                if not (fIso.has_key(curElem)):
-                    fIso[curElem] = []
-                fIso[curElem].append((iso, elems[elem]))
         for elem in fElems:
             rem = 0
-            if fIso.has_key(elem):
+            if elem in fIso:
                 for x in fIso[elem]:
                     rem = rem + x[1]
             p = self.elemDetails[elem][4]
@@ -555,7 +571,9 @@ class formulaTools:
             ret = ret * pow(p, c)
         for iso in fIso:
             for cIso in fIso[iso]:
-                ret = ret * self.getIsotopologueRatio(fElems[iso], cIso[1], self.elemDetails[str(cIso[0]) + iso][4])
+                # cIso[0] is the isotope number string (e.g. "13"), iso is the base element (e.g. "C")
+                # so cIso[0] + iso forms the isotope key (e.g. "13C") used to look up its probability
+                ret = ret * self.getIsotopologueRatio(fElems[iso], cIso[1], self._isoElemInfo[cIso[0] + iso][3])
         return ret
 
     def getAbundanceToMonoisotopic(self, elems):
@@ -569,13 +587,11 @@ class formulaTools:
     # calculates the molecular weight of a given elemental collection (e.g. result of parseFormula)
     def calcMolWeight(self, elems):
         mw = 0.0
-        for elem in elems.keys():
-            if not (self.isIso(elem)):
-                mw = mw + self.elemDetails[elem][3] * elems[elem]
+        for elem, count in elems.items():
+            if elem in self._isoElemInfo:
+                mw = mw + self._isoElemInfo[elem][2] * count
             else:
-                curElem, iso = self.getElementFor(elem)
-                mw = mw + self.elemDetails[iso + curElem][3] * elems[elem] - self.elemDetails[curElem][3] * elems[elem]
-
+                mw = mw + self.elemDetails[elem][3] * count
         return mw
 
     # returns putaive isotopes for a given mz difference
@@ -584,47 +600,40 @@ class formulaTools:
         maxIsoCombinations = maxIsoCombinations - 1
 
         ret = []
+        ppm_tol = atMZ * ppm / 1000000.0
 
-        for elem in self.elemDetails:
-            if self.isIso(elem):
-                curElem, iso = self.getElementFor(elem)
-                diff = self.elemDetails[iso + curElem][3] - self.elemDetails[curElem][3]
+        for isoName, diff in self._isotopeDiffs:
+            if maxIsoCombinations == 0:
+                if abs(mzdiff - diff) < ppm_tol:
+                    x = list(used)
+                    x.append(isoName)
 
-                if maxIsoCombinations == 0:
-                    if abs(mzdiff - diff) < (atMZ * ppm / 1000000.0):
-                        x = [y for y in used]
-                        x.append(iso + curElem)
+                    d = {}
+                    for y in x:
+                        d[y] = d.get(y, 0) + 1
+                    ret.append(d)
 
-                        d = {}
-                        for y in x:
-                            if not (d.has_key(y)):
-                                d[y] = 0
-                            d[y] = d[y] + 1
-                        ret.append(d)
-
-                else:
-                    # print "next level with", mzdiff-diff, "after", iso+elem, self.elemDetails[iso+elem][3],self.elemDetails[elem][3]
-                    x = [y for y in used]
-                    x.append(iso + curElem)
-                    x = self.getPutativeIsotopes(
-                        mzdiff - diff,
-                        atMZ=atMZ,
-                        z=1,
-                        ppm=ppm,
-                        maxIsoCombinations=maxIsoCombinations,
-                        used=x,
-                    )
-                    ret.extend(x)
+            else:
+                x = list(used)
+                x.append(isoName)
+                x = self.getPutativeIsotopes(
+                    mzdiff - diff,
+                    atMZ=atMZ,
+                    z=1,
+                    ppm=ppm,
+                    maxIsoCombinations=maxIsoCombinations,
+                    used=x,
+                )
+                ret.extend(x)
 
         if maxIsoCombinations > 0:
-            x = [y for y in used]
             x = self.getPutativeIsotopes(
                 mzdiff,
                 atMZ=atMZ,
                 z=1,
                 ppm=ppm,
                 maxIsoCombinations=maxIsoCombinations,
-                used=x,
+                used=list(used),
             )
             ret.extend(x)
 
@@ -640,33 +649,28 @@ class formulaTools:
             subEnd = ""
 
         fElems = {}
-        for elem in elems:
-            if not (self.isIso(elem)):
-                fElems[elem] = elems[elem]
-        for elem in elems:
-            if self.isIso(elem):
-                curElem, iso = self.getElementFor(elem)
-
-                if fElems.has_key(curElem):
-                    fElems[curElem] = fElems[curElem] - elems[elem]
-                    fElems["[" + iso + curElem + "]"] = elems[elem]
-                else:
-                    fElems["[" + iso + curElem + "]"] = elems[elem]
+        for elem, count in elems.items():
+            if elem not in self._isoElemInfo:
+                fElems[elem] = count
+        for elem, count in elems.items():
+            if elem in self._isoElemInfo:
+                curElem, iso = self._isoElemInfo[elem][:2]
+                if curElem in fElems:
+                    fElems[curElem] = fElems[curElem] - count
+                fElems["[" + iso + curElem + "]"] = count
 
         return "".join([("%s%s%d%s" % (e, subStart, fElems[e], subEnd) if fElems[e] > 1 else "%s" % e) for e in sorted(fElems.keys())])
 
     def getIsotopes(self, minInt=0.02):
+        if minInt in self._cachedIsotopes:
+            return self._cachedIsotopes[minInt]
         ret = {}
-        for elem in self.elemDetails:
-            if self.isIso(elem):
-                el = self.getElementFor(elem)
-                prob = self.elemDetails[elem][4] / self.elemDetails[el[0]][4]
-                if prob >= minInt:
-                    ret[elem] = (
-                        self.elemDetails[elem][3] - self.elemDetails[el[0]][3],
-                        prob,
-                    )
-
+        for elem_key, (baseElem, isoNum, massDiff, prob) in self._isoElemInfo.items():
+            baseProb = self.elemDetails[baseElem][4]
+            relProb = prob / baseProb
+            if relProb >= minInt:
+                ret[elem_key] = (massDiff, relProb)
+        self._cachedIsotopes[minInt] = ret
         return ret
 
     def calcDifferenceBetweenElemDicts(self, elemsFragment, elemsParent):
@@ -685,9 +689,20 @@ class formulaTools:
         return self.calcDifferenceBetweenElemDicts(self.parseFormula(sfFragment), self.parseFormula(sfParent))
 
 
+# Module-level shared formulaTools instance to avoid re-creating it on every call
+_sharedFormulaTools = None
+
+
+def _getSharedFormulaTools():
+    global _sharedFormulaTools
+    if _sharedFormulaTools is None:
+        _sharedFormulaTools = formulaTools()
+    return _sharedFormulaTools
+
+
 # helper method that returns the mass of a given isotope. Used in the main interface of MetExtract II
 def getIsotopeMass(isotope):
-    fT = formulaTools()
+    fT = _getSharedFormulaTools()
     mass = -1
     element = ""
     for i in fT.elemDetails:
@@ -704,7 +719,7 @@ def getIsotopeMass(isotope):
 
 
 def getElementOfIsotope(isotope):
-    fT = formulaTools()
+    fT = _getSharedFormulaTools()
     return fT.elemDetails[isotope][1]
 
 
