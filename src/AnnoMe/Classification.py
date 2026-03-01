@@ -494,7 +494,7 @@ class formulaTools:
 
     # helper method: n over k
     def noverk(self, n, k):
-        return reduce(lambda a, b: a * (n - b) / (b + 1), range(k), 1)
+        return reduce(lambda a, b: a * (n - b) // (b + 1), range(k), 1)
 
     # helper method: calculates the isotopic ratio
     def getIsotopologueRatio(self, c, s, p):
@@ -1840,10 +1840,9 @@ def _train_classifier_subset(
 
                         # Store the results in the inference_results dictionary
                         pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
-                        for i in range(trainSubset_train_X.shape[0]):
-                            if trainSubset_train_y_pred[i] == "relevant":
-                                row_idx = trainSubset_train_useInds[i]
-                                train_df.at[row_idx, "prediction_results"].append(pred_label)
+                        relevant_indices = np.where(trainSubset_train_y_pred == "relevant")[0]
+                        for i in relevant_indices:
+                            train_df.at[trainSubset_train_useInds[i], "prediction_results"].append(pred_label)
 
                     # Apply predictions on the validation set
                     if True:
@@ -1865,10 +1864,9 @@ def _train_classifier_subset(
 
                         # Store the results in the inference_results dictionary
                         pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
-                        for i in range(trainSubset_vali_X.shape[0]):
-                            if trainSubset_test_y_pred[i] == "relevant":
-                                row_idx = trainSubset_vali_useInds[i]
-                                train_df.at[row_idx, "prediction_results"].append(pred_label)
+                        relevant_indices = np.where(trainSubset_test_y_pred == "relevant")[0]
+                        for i in relevant_indices:
+                            train_df.at[trainSubset_vali_useInds[i], "prediction_results"].append(pred_label)
 
                     # process test dataset
                     # Note: Usually the test dataset is processed last, but due to the architecture here it needs to run now
@@ -1889,10 +1887,9 @@ def _train_classifier_subset(
 
                         # Store the results in the inference_results dictionary
                         pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
-                        for i in range(testSubset_X.shape[0]):
-                            if valiSubset_y_pred[i] == "relevant":
-                                row_idx = testSubset_useInds[i]
-                                vali_df.at[row_idx, "prediction_results"].append(pred_label)
+                        relevant_indices = np.where(valiSubset_y_pred == "relevant")[0]
+                        for i in relevant_indices:
+                            vali_df.at[testSubset_useInds[i], "prediction_results"].append(pred_label)
 
                     # process inference dataset
                     if len(infeSubset_useInds) > 0:
@@ -1908,10 +1905,9 @@ def _train_classifier_subset(
 
                         # Store the results in the inference_results dictionary
                         pred_label = f"{classifier_set_name} / {subset} / {cname} / {fold}"
-                        for i in range(infeSubset_X.shape[0]):
-                            if infeSubset_y_pred[i] == "relevant":
-                                row_idx = infeSubset_useInds[i]
-                                infe_df.at[row_idx, "prediction_results"].append(pred_label)
+                        relevant_indices = np.where(infeSubset_y_pred == "relevant")[0]
+                        for i in relevant_indices:
+                            infe_df.at[infeSubset_useInds[i], "prediction_results"].append(pred_label)
 
             # Calculate average results
             avg_score, std_score, min_score, max_score = (
@@ -2145,10 +2141,9 @@ def predict(df, classifiers, subset_name = None, subset_fn = None, print_classif
                 print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
 
             # Store the results in the inference_results dictionary
-            for idx in range(infeSubset_X.shape[0]):
-                if infeSubset_y_pred[idx] == "relevant":
-                    row_idx = infeSubset_useInds[idx]
-                    infe_df.at[row_idx, "prediction_results"].append(f"{clf_name}")
+            relevant_indices = np.where(infeSubset_y_pred == "relevant")[0]
+            for i in relevant_indices:
+                infe_df.at[infeSubset_useInds[i], "prediction_results"].append(f"{clf_name}")
                     
     return infe_df
 
