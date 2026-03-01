@@ -13,7 +13,6 @@ from contextlib import contextmanager
 import itertools
 import tempfile
 import re
-import warnings
 from collections import Counter
 import inspect
 
@@ -415,7 +414,7 @@ class formulaTools:
             while formula[pos] != ")":
                 pos, elem = self._parseStruct(formula, pos)
                 for kE in elem.keys():
-                    if kE in elemDict.keys():
+                    if kE in elemDict:
                         elemDict[kE] = elemDict[kE] + elem[kE]
                     else:
                         elemDict[kE] = elem[kE]
@@ -592,7 +591,7 @@ class formulaTools:
 
                 if maxIsoCombinations == 0:
                     if abs(mzdiff - diff) < (atMZ * ppm / 1000000.0):
-                        x = [y for y in used]
+                        x = list(used)
                         x.append(iso + curElem)
 
                         d = {}
@@ -604,7 +603,7 @@ class formulaTools:
 
                 else:
                     # print "next level with", mzdiff-diff, "after", iso+elem, self.elemDetails[iso+elem][3],self.elemDetails[elem][3]
-                    x = [y for y in used]
+                    x = list(used)
                     x.append(iso + curElem)
                     x = self.getPutativeIsotopes(
                         mzdiff - diff,
@@ -617,7 +616,7 @@ class formulaTools:
                     ret.extend(x)
 
         if maxIsoCombinations > 0:
-            x = [y for y in used]
+            x = list(used)
             x = self.getPutativeIsotopes(
                 mzdiff,
                 atMZ=atMZ,
@@ -685,9 +684,20 @@ class formulaTools:
         return self.calcDifferenceBetweenElemDicts(self.parseFormula(sfFragment), self.parseFormula(sfParent))
 
 
+# module-level singleton so formulaTools() is only initialised once
+_formulaTools_instance = None
+
+
+def _get_formulaTools():
+    global _formulaTools_instance
+    if _formulaTools_instance is None:
+        _formulaTools_instance = formulaTools()
+    return _formulaTools_instance
+
+
 # helper method that returns the mass of a given isotope. Used in the main interface of MetExtract II
 def getIsotopeMass(isotope):
-    fT = formulaTools()
+    fT = _get_formulaTools()
     mass = -1
     element = ""
     for i in fT.elemDetails:
@@ -704,7 +714,7 @@ def getIsotopeMass(isotope):
 
 
 def getElementOfIsotope(isotope):
-    fT = formulaTools()
+    fT = _get_formulaTools()
     return fT.elemDetails[isotope][1]
 
 
@@ -983,7 +993,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
     # add extra columns from each spectra (extract common keys from the MS/MS spectra)
     if data_to_add is None:
         data_to_add = {}
-    if "MSLEVEL" not in data_to_add.keys():
+    if "MSLEVEL" not in data_to_add:
         data_to_add["MSLEVEL"] = ["mslevel", "ms_level"]
 
     # extract metadata from the spectra
@@ -991,12 +1001,13 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         fields = data_to_add[meta_info_to_add]
         meta_values = []
         for rowi, spectrum in enumerate(df["cleaned_spectra"]):
+            meta_dict = spectrum.metadata_dict()
             if isinstance(fields, list):
                 value = None
                 for key in fields:
                     for key in [key, key.lower(), key.upper()]:
-                        if key in spectrum.metadata_dict():
-                            value = spectrum.metadata_dict().get(key)
+                        if key in meta_dict:
+                            value = meta_dict.get(key)
                             try:
                                 value = value.lower()
                             except:
@@ -1009,7 +1020,7 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
                 meta_values.append(value)
 
             else:
-                meta_values.append(spectrum.metadata_dict().get(fields))
+                meta_values.append(meta_dict.get(fields))
             
         df[meta_info_to_add] = meta_values
 
@@ -2167,7 +2178,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     print(f"Number of rows used for inference: {used_for_inference_n}")
     print(df["used_for_inference"].value_counts())
     mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"]) & df["used_for_inference"]
-    df = df.copy()[mask]
+    df = df[mask].copy()
 
     # Generate the prediction results
     # Aggregate the df_predicted results and extract the number of times it was predicted to be a compound of interest
@@ -2252,9 +2263,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         p_umap.save(out_file, width=16, height=12)
         print(f"Umap plot saved as {out_file}")
 
-    # Filter rows annotated as 'relevant' in the prediction column
-    subset_df = df[df["classification:relevant"] == "relevant"].copy()
-    subset_df = df.copy().sort_values(by=["source", "type", "fragmentation_method", "CE", "ionMode", "formula", "name", "CE"]).reset_index(drop=True)
+    subset_df = df.copy().sort_values(by=["source", "type", "fragmentation_method", "CE", "ionMode", "formula", "name"]).reset_index(drop=True)
 
     try:
         # Plot the feature map using plotnine
