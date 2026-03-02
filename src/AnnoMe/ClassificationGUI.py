@@ -1,5 +1,6 @@
 import sys
 import os
+import shutil
 import argparse
 from collections import defaultdict, OrderedDict
 import io
@@ -216,15 +217,27 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
             "job_end_time": end_time,
             "job_duration_seconds": duration.total_seconds(),
         }
+
     except Exception as e:
         sys.stdout = old_stdout
         sys.stderr = old_stderr
         error_msg = f"Error in training job for subset '{subset_name}' and classifier set '{classifier_set_name}': {str(e)}\n{traceback.format_exc()}"
         print(error_msg)
-        raise e
+
     finally:
+        # write log
+        log_file_path = os.path.join(job_output_dir, "training.log")
+        try:
+            with open(log_file_path, "w", encoding="utf-8") as lf:
+                lf.write(log_capture.getvalue())
+        except Exception as e:
+            print(f"Warning: could not write log file {log_file_path}: {e}")
+
+        # reset output
         sys.stdout = old_stdout
         sys.stderr = old_stderr
+
+    return None
 
 
 class EmbeddingWorker(QThread):
@@ -234,93 +247,30 @@ class EmbeddingWorker(QThread):
     error = pyqtSignal(str)
     progress = pyqtSignal(str)
 
-    def __init__(self, datasets, data_to_add, mgf_files):
+    def __init__(self, datasets, data_to_add, mgf_files, n_jobs=1):
         super().__init__()
         self.datasets = datasets
         self.data_to_add = data_to_add
         self.mgf_files = mgf_files
+        self.n_jobs = n_jobs
 
     def run(self):
         import sys
 
         try:
             self.progress.emit("Generating embeddings...")
-
-            # copy input file to avoid any problems between matching MS2Spectra imported data and parse_mgf_file imported data
-            original_file_paths = {}
             dfs = []
 
-            for ds in self.datasets:
-                original_file_paths[ds["name"]] = ds["file"]
+            try:
+                df = generate_embeddings(self.datasets, self.data_to_add, n_jobs=self.n_jobs)
+                df = add_all_metadata(self.datasets, df)
 
-                cur_id = 0
-                filename = os.path.basename(ds["file"])
-                # path to save embeddings cache
-                mgf_pickle_file = ds["file"] + "_embeddings.pickle"
-                # get has of input mgf file
-                mgf_hash = calculate_file_hash(ds["file"], algorithm="sha256")
+            except Exception as e:
+                error_msg = f"Error generating embeddings for batch: {str(e)}\n{traceback.format_exc()}"
+                print(error_msg)
+                self.error.emit(error_msg)
+                return
 
-                # if pickle file exists and the hash matches the calculated has, load the embeddings from there
-                if os.path.exists(mgf_pickle_file):
-                    with open(mgf_pickle_file, "rb") as f:
-                        cached_hash, df = pickle.load(f)
-                        if cached_hash == mgf_hash:
-                            print(f"Loaded embeddings from cache for '{filename}', setting type to '{ds['type']}' and skipping regeneration.")
-                            # set type of embeddings explicitly
-                            df["type"] = ds["type"]
-                            # Add embeddings
-                            dfs.append(df)
-                        else:
-                            print(f"Hash mismatch for {filename}, regenerating embeddings")
-                else:
-                    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
-                    with open(ds["file"], "r") as fin:
-                        lines = []
-                        for line in fin:
-                            if line.lower().startswith("begin ions"):
-                                if len(lines) > 0:
-                                    lines.insert(0, f"AnnoMe_internal_ID={filename}___{cur_id}\n")
-                                    cur_id += 1
-                                    temp_file.write(line)
-                                    for l in lines:
-                                        temp_file.write(l)
-                                    lines = []
-                            else:
-                                if not line.lower().startswith("annome_internal_id"):
-                                    lines.append(line)
-
-                        if len(lines) > 0:
-                            lines.insert(0, f"AnnoMe_internal_ID={filename}___{cur_id}\n")
-                            cur_id += 1
-                            temp_file.write("BEGIN IONS\n")
-                            for l in lines:
-                                temp_file.write(l)
-
-                    temp_file.close()
-                    ds["file"] = temp_file.name
-
-                    try:
-                        df = generate_embeddings([ds], self.data_to_add)
-                        df = add_all_metadata([ds], df)
-                        dfs.append(df)
-                    except Exception as e:
-                        error_msg = f"Error generating embeddings for {filename}: {str(e)}\n{traceback.format_exc()}"
-                        print(error_msg)
-                        self.error.emit(error_msg)
-                        return
-                    finally:
-                        # Clean up temporary files and restore original paths
-                        try:
-                            os.remove(ds["file"])
-                        except OSError:
-                            pass
-                        ds["file"] = original_file_paths[ds["name"]]
-
-                    # write tuple of hash and df to pickle file
-                    with open(mgf_pickle_file, "wb") as f:
-                        pickle.dump((mgf_hash, df), f)
-
-            df = pd.concat(dfs, axis=0, ignore_index=True)
             self.finished.emit(df)
 
         except Exception as e:
@@ -400,6 +350,147 @@ class TrainingWorker(QThread):
             self.finished.emit(results)
         except Exception as e:
             error_msg = f"Error training classifiers: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            self.error.emit(error_msg)
+
+
+class PredictionWorker(QThread):
+    """Worker thread that runs prediction using pre-saved classifier pickle files.
+
+    This worker is used by the "Classify with Trained Models" button.  It
+    accepts a list of classifier job dicts (loaded from *classifiers.pkl*
+    files) and the current embeddings DataFrame, filters the data per subset,
+    then calls :func:`predict` and :func:`generate_prediction_overview` for
+    each job without any re-training.
+    """
+
+    finished = pyqtSignal(object)  # list of result dicts
+    error = pyqtSignal(str)
+    progress = pyqtSignal(str)
+
+    def __init__(self, classifier_jobs, df_embeddings, output_dir):
+        """
+        Parameters
+        ----------
+        classifier_jobs : list[dict]
+            Each dict must contain at least:
+            ``display_key``, ``subset_name``, ``subset_expression``, ``trained_classifiers``.
+        df_embeddings : pd.DataFrame
+            Full embeddings DataFrame (all split types).
+        output_dir : str
+            Directory where prediction outputs (xlsx, pdf …) will be written.
+        """
+        super().__init__()
+        self.classifier_jobs = classifier_jobs
+        self.df_embeddings = df_embeddings
+        self.output_dir = output_dir
+
+    def run(self):
+        try:
+            results = []
+
+            for job_idx, job in enumerate(self.classifier_jobs):
+                display_key = job.get("display_key", f"job_{job_idx}")
+                subset_name = job.get("subset_name", f"subset_{job_idx}")
+                expr = job.get("subset_expression", "True")
+                trained_classifiers = job.get("trained_classifiers", {})
+
+                self.progress.emit(f"Classifying subset {job_idx + 1}/{len(self.classifier_jobs)}: {display_key}…\nSee console for further details")
+
+                log_capture = io.StringIO()
+                old_stdout, old_stderr = sys.stdout, sys.stderr
+                sys.stdout = log_capture
+                sys.stderr = log_capture
+
+                df_inference = None
+                long_table = None
+                pivot_table = None
+                filter_fn = None
+
+                try:
+                    # Reconstruct subset filter function from the stored expression
+                    compiled_expr = compile(expr, "<string>", "eval")
+                    eval_globals = {"abs": abs, "float": float, "int": int, "str": str}
+
+                    def _make_filter(c, eg):
+                        def _fn(row):
+                            meta = {k: v for k, v in row.items() if k not in ["peaks", "embeddings"]}
+                            try:
+                                return eval(c, {**eg, "meta": meta})
+                            except Exception:
+                                return False
+
+                        return _fn
+
+                    filter_fn = _make_filter(compiled_expr, eval_globals)
+
+                    # Pre-filter embeddings to this subset
+                    mask = self.df_embeddings.apply(filter_fn, axis=1)
+                    df_filtered = self.df_embeddings[mask].reset_index(drop=True)
+                    print(f"Subset '{subset_name}': {len(df_filtered)} spectra selected for prediction.")
+
+                    # Per classifier-set key: run predict + generate_prediction_overview
+                    for combined_key in trained_classifiers.keys():
+                        classifiers_list = trained_classifiers[combined_key][1]
+                        min_threshold = trained_classifiers[combined_key][2] if len(trained_classifiers[combined_key]) > 2 else 120
+
+                        df_working_copy = df_filtered.copy()
+                        # subset_fn is _always_true_filter because data is already pre-filtered
+                        df_inference = predict(
+                            df_working_copy,
+                            classifiers_list,
+                            subset_name,
+                            _always_true_filter,
+                        )
+                        combo_output_dir = os.path.join(
+                            self.output_dir,
+                            display_key.replace(" // ", "_-_-_").replace(" ", "_"),
+                        )
+                        os.makedirs(combo_output_dir, exist_ok=True)
+                        long_table, pivot_table = generate_prediction_overview(
+                            df_working_copy,
+                            df_inference,
+                            self.output_dir,
+                            file_prefix=display_key.replace(" // ", "_-_-_"),
+                            min_prediction_threshold=min_threshold,
+                        )
+                        break  # only one key expected per pkl
+
+                    results.append(
+                        {
+                            "display_key": display_key,
+                            "subset_name": subset_name,
+                            "df_train": None,
+                            "df_validation": None,
+                            "df_inference": df_inference,
+                            "df_metrics": None,
+                            "trained_classifiers": trained_classifiers,
+                            "long_table": long_table,
+                            "pivot_table": pivot_table,
+                            "log": log_capture.getvalue(),
+                            "filter_fn": filter_fn,
+                        }
+                    )
+
+                except Exception as e:
+                    error_detail = f"Error in prediction job '{display_key}': {str(e)}\n{traceback.format_exc()}"
+                    print(error_detail)
+                    results.append(
+                        {
+                            "display_key": display_key,
+                            "subset_name": subset_name,
+                            "error": str(e),
+                            "log": log_capture.getvalue() + f"\n{error_detail}",
+                        }
+                    )
+                finally:
+                    sys.stdout = old_stdout
+                    sys.stderr = old_stderr
+
+            self.finished.emit(results)
+
+        except Exception as e:
+            error_msg = f"Error in PredictionWorker: {str(e)}\n{traceback.format_exc()}"
             print(error_msg)
             self.error.emit(error_msg)
 
@@ -532,8 +623,6 @@ class ClassificationGUI(QMainWindow):
         self.classifiers_config = None  # ML classifiers configuration
         self.pending_config_data = None  # For load_full_configuration workflow
         self._editing_subset_index = None  # Track which subset is being edited
-        self.expected_embeddings_hash = None  # Expected hash from loaded configuration file
-        self.expected_embeddings_path = None  # Expected path from loaded configuration file
         self._auto_start_training = auto_start_training  # Automatically start training after config load
         self._results_combined_summary = None  # Full combined_summary for the results histogram
 
@@ -791,11 +880,9 @@ class ClassificationGUI(QMainWindow):
                 <li>Loads all MGF files and their spectra</li>
                 <li>Uses MS2DeepScore model to generate embeddings</li>
                 <li>Attaches all metadata from MGF files to each embedding</li>
-                <li>Saves results to pickle file for reuse</li>
             </ol>
             <h4>Performance:</h4>
             <p>Generation may take several minutes for large datasets. Progress will be displayed.</p>
-            <p><b>Note:</b> Once generated, embeddings are saved and can be reused without regeneration.</p>
             <br>
             <h4>References:</h4>
             <p>[1] MS2DeepScore - a novel deep learning similarity measure to compare tandem mass spectra<br> Florian Huber, Sven van der Burg, Justin J.J. van der Hooft, Lars Ridder, 13, Article number: 84 (2021), Journal of Cheminformatics, doi: <a href = \"https://doi.org/10.1186/s13321-021-00558-4\">https://doi.org/10.1186/s13321-021-00558-4</a></p>
@@ -806,20 +893,27 @@ class ClassificationGUI(QMainWindow):
         controls = QWidget()
         layout = QVBoxLayout()
 
-        # Output directory selection
-        output_layout = QHBoxLayout()
-        output_layout.addWidget(QLabel("Output Directory:"))
-        self.output_dir_input = QLineEdit("./output/classification_results/")
-        output_layout.addWidget(self.output_dir_input)
-        browse_btn = QPushButton("Browse...")
-        browse_btn.clicked.connect(self.browse_output_dir)
-        output_layout.addWidget(browse_btn)
-        layout.addLayout(output_layout)
-
-        # Generate embeddings button
+        # Generate embeddings controls
+        embed_controls_layout = QHBoxLayout()
         self.generate_embeddings_btn = QPushButton("Generate Embeddings")
         self.generate_embeddings_btn.clicked.connect(self.generate_embeddings_clicked)
-        layout.addWidget(self.generate_embeddings_btn)
+        embed_controls_layout.addWidget(self.generate_embeddings_btn)
+
+        embed_controls_layout.addWidget(QLabel("Parallel Workers:"))
+        self.embedding_n_jobs_spinbox = QSpinBox()
+        self.embedding_n_jobs_spinbox.setMinimum(1)
+        self.embedding_n_jobs_spinbox.setMaximum(multiprocessing.cpu_count() * 2)
+        self.embedding_n_jobs_spinbox.setValue(1)
+        self.embedding_n_jobs_spinbox.setFixedWidth(55)
+        self.embedding_n_jobs_spinbox.setToolTip(
+            "Number of parallel processes for embedding generation.\n"
+            "Each dataset file is processed in its own worker when > 1.\n"
+            "Defaults to 1 (sequential). Only speeds things up when\n"
+            "multiple datasets need (re-)generating."
+        )
+        embed_controls_layout.addWidget(self.embedding_n_jobs_spinbox)
+        embed_controls_layout.addStretch()
+        layout.addLayout(embed_controls_layout)
 
         # Status label
         self.embedding_status = QLabel("Status: Not started")
@@ -1153,11 +1247,33 @@ classifiers_to_compare = {
         parallel_layout.addStretch()
         layout.addLayout(parallel_layout)
 
-        # Train button
+        # Output directory selection
+        output_layout = QHBoxLayout()
+        output_layout.addWidget(QLabel("Output Directory:"))
+        self.output_dir_input = QLineEdit("./output/classification_results/")
+        output_layout.addWidget(self.output_dir_input)
+        browse_btn = QPushButton("Browse...")
+        browse_btn.clicked.connect(self.browse_output_dir)
+        output_layout.addWidget(browse_btn)
+        layout.addLayout(output_layout)
+
+        # Training / prediction buttons (side by side)
+        train_btns_layout = QHBoxLayout()
         self.train_btn = QPushButton("Train and Classify")
         self.train_btn.clicked.connect(self.train_classifiers_clicked)
         self.train_btn.setEnabled(False)
-        layout.addWidget(self.train_btn)
+        train_btns_layout.addWidget(self.train_btn)
+
+        self.classify_trained_btn = QPushButton("Classify with Trained Models")
+        self.classify_trained_btn.clicked.connect(self.classify_with_trained_models_clicked)
+        self.classify_trained_btn.setEnabled(False)
+        self.classify_trained_btn.setToolTip(
+            "Load pre-trained classifier pickle files from the output directory\n"
+            "and run prediction on the loaded spectra without re-training.\n"
+            "Results are written to a new directory suffixed with the current date."
+        )
+        train_btns_layout.addWidget(self.classify_trained_btn)
+        layout.addLayout(train_btns_layout)
 
         # Training status
         self.training_status = QLabel("Status: Not started")
@@ -1206,9 +1322,6 @@ classifiers_to_compare = {
         export_results_btn.clicked.connect(self.export_results)
         button_layout.addWidget(export_results_btn)
 
-        export_classifiers_btn = QPushButton("Export Classifiers")
-        export_classifiers_btn.clicked.connect(self.export_classifiers)
-        button_layout.addWidget(export_classifiers_btn)
         button_layout.addStretch()
         main_layout.addLayout(button_layout)
 
@@ -1699,6 +1812,12 @@ classifiers_to_compare = {
         # Auto-resize columns to contents
         self.meta_table.resizeColumnsToContents()
 
+        # Refresh subset counts now that embeddings may have changed
+        if self.subsets:
+            for subset_data in self.subsets:
+                subset_data["counts"] = self._count_subset_matches(subset_data["expression"])
+            self.update_subset_table()
+
     def on_meta_cell_selected(self):
         """Handle meta cell selection to show unique values."""
         selected = self.meta_table.selectedItems()
@@ -2099,7 +2218,8 @@ classifiers_to_compare = {
         QApplication.setOverrideCursor(Qt.WaitCursor)
 
         # Start worker thread
-        self.embedding_worker = EmbeddingWorker(datasets, data_to_add, self.mgf_files)
+        n_embedding_jobs = self.embedding_n_jobs_spinbox.value()
+        self.embedding_worker = EmbeddingWorker(datasets, data_to_add, self.mgf_files, n_jobs=n_embedding_jobs)
         self.embedding_worker.progress.connect(self.on_embedding_progress)
         self.embedding_worker.finished.connect(self.on_embeddings_generated)
         self.embedding_worker.error.connect(self.on_embedding_error)
@@ -2161,17 +2281,12 @@ classifiers_to_compare = {
         self.df_embeddings = df
         self.embedding_status.setText(f"Status: Embeddings generated ({len(df)} entries) - Data integrity verified ✓")
         self.train_btn.setEnabled(True)
+        self.classify_trained_btn.setEnabled(True)
         self.generate_embeddings_btn.setEnabled(True)
 
         # Enable classifier configuration inputs
         self.classifiers_config_text.setEnabled(True)
         self.load_default_classifiers_btn.setEnabled(True)
-
-        # Save embeddings
-        output_dir = self.output_dir_input.text()
-        os.makedirs(output_dir, exist_ok=True)
-        pickle_file = os.path.join(output_dir, "df_embeddings.pkl")
-        df.to_pickle(pickle_file)
 
         # If we're in the middle of loading a full configuration, continue the workflow
         if self.pending_config_data is not None:
@@ -2182,9 +2297,9 @@ classifiers_to_compare = {
             QMessageBox.information(
                 self,
                 "Success",
-                f"Embeddings generated and saved to:\n{pickle_file}\n\n"
+                f"Embeddings generated ({len(df)} entries).\n\n"
                 f"💡 Tip: Save your project configuration via the menu bar (File → Save Project)\n"
-                f"to easily skip the embedding generation step next time you load this project.",
+                f"to easily reload MGF files and skip re-generating embeddings next time.",
             )
 
     def on_embedding_error(self, error_msg):
@@ -2267,17 +2382,6 @@ classifiers_to_compare = {
             # Save MGF file paths and types
             for filename, data in self.mgf_files.items():
                 config_data["mgf_files"].append({"path": data["path"], "type": data["type"]})
-
-            # Calculate and save embeddings pickle file hash if it exists
-            output_dir = self.output_dir_input.text()
-            if output_dir:
-                pickle_file = os.path.join(output_dir, "df_embeddings.pkl")
-                if os.path.exists(pickle_file):
-                    file_hash = calculate_file_hash(pickle_file)
-                    if file_hash:
-                        config_data["embeddings_pickle_path"] = pickle_file
-                        config_data["embeddings_pickle_hash"] = file_hash
-                        print(f"Saved embeddings hash: {file_hash}")
 
             with open(file_path, "w") as f:
                 json.dump(config_data, f, indent=4)
@@ -2362,75 +2466,15 @@ classifiers_to_compare = {
             if "output_directory" in config_data:
                 self.output_dir_input.setText(config_data["output_directory"])
 
-            # Step 2.5: Store expected embeddings hash and path from configuration
-            if "embeddings_pickle_hash" in config_data and "embeddings_pickle_path" in config_data:
-                self.expected_embeddings_hash = config_data["embeddings_pickle_hash"]
-                self.expected_embeddings_path = config_data["embeddings_pickle_path"]
-                print(f"Stored expected embeddings hash from configuration: {self.expected_embeddings_hash[:16]}...")
-
-            # Step 3: Try to load embeddings from pickle if hash matches, otherwise generate
-            embeddings_loaded = False
+            # Step 3: Generate embeddings
             if self.mgf_files:
-                # Check if configuration includes embeddings pickle hash
-                if "embeddings_pickle_hash" in config_data and "embeddings_pickle_path" in config_data:
-                    pickle_path = config_data["embeddings_pickle_path"]
-                    expected_hash = config_data["embeddings_pickle_hash"]
-
-                    # Verify the pickle file exists and hash matches
-                    if os.path.exists(pickle_path):
-                        actual_hash = calculate_file_hash(pickle_path)
-
-                        if actual_hash == expected_hash:
-                            try:
-                                # Load embeddings from pickle
-                                print(f"Loading embeddings from cached pickle file: {pickle_path}")
-                                df = pd.read_pickle(pickle_path)
-
-                                # Verify data integrity
-                                total_mgf_entries = sum(data["num_entries"] for data in self.mgf_files.values())
-
-                                if len(df) == total_mgf_entries:
-                                    # Successfully loaded embeddings
-                                    self.df_embeddings = df
-                                    self.embedding_status.setText(f"Status: Embeddings loaded from cache ({len(df)} entries) ✓")
-                                    self.train_btn.setEnabled(True)
-                                    self.generate_embeddings_btn.setEnabled(True)
-                                    self.classifiers_config_text.setEnabled(True)
-                                    self.load_default_classifiers_btn.setEnabled(True)
-                                    embeddings_loaded = True
-
-                                    # Clear expected hash after successful load
-                                    self.expected_embeddings_hash = None
-                                    self.expected_embeddings_path = None
-
-                                    # Navigate to embeddings section
-                                    self.go_to_section(self.section2)
-
-                                    QMessageBox.information(self, "Embeddings Loaded", f"Embeddings loaded from cache:\n{pickle_path}\n\nHash verified successfully. Skipping embedding generation.")
-
-                                    # Continue with workflow
-                                    self.continue_loading_configuration()
-                                else:
-                                    print(f"Warning: Embeddings count mismatch. Expected {total_mgf_entries}, got {len(df)}. Regenerating embeddings.")
-                            except Exception as e:
-                                print(f"Error loading embeddings from pickle: {e}. Will regenerate embeddings.")
-                        else:
-                            print(f"Embeddings pickle hash mismatch. Expected: {expected_hash}, Got: {actual_hash}. Will regenerate embeddings.")
-                    else:
-                        print(f"Embeddings pickle file not found at: {pickle_path}. Will regenerate embeddings.")
-
-                # If embeddings weren't loaded, generate them
-                if not embeddings_loaded:
-                    # Navigate to embeddings section
-                    self.go_to_section(self.section2)
-                    self.generate_embeddings_clicked()
+                self.go_to_section(self.section2)
+                self.generate_embeddings_clicked()
             else:
                 self.pending_config_data = None
 
         except Exception as e:
             self.pending_config_data = None
-            self.expected_embeddings_hash = None
-            self.expected_embeddings_path = None
             QMessageBox.critical(self, "Error", f"Failed to load full configuration:\n{str(e)}")
 
     def continue_loading_configuration(self):
@@ -2746,6 +2790,7 @@ classifiers_to_compare = {
         self.training_worker.start()
 
         self.train_btn.setEnabled(False)
+        self.classify_trained_btn.setEnabled(False)
 
     def on_training_progress(self, message):
         """Update progress dialog with message."""
@@ -2761,55 +2806,72 @@ classifiers_to_compare = {
         self.training_log_tabs.setVisible(True)
 
         for result in results:
-            display_key = result["display_key"]
-            subset_name = result["subset_name"]
-            log_text = result.get("log", "")
+            if result is not None:
+                display_key = result["display_key"]
+                subset_name = result["subset_name"]
+                log_text = result.get("log", "")
 
-            # -- GUI tab --
-            log_widget = QTextEdit()
-            log_widget.setReadOnly(True)
-            log_widget.setLineWrapMode(QTextEdit.NoWrap)
-            font = log_widget.font()
-            font.setFamily("Courier New")
-            log_widget.setFont(font)
-            log_widget.setPlainText(log_text)
-            self.training_log_tabs.addTab(log_widget, display_key)
+                # -- GUI tab --
+                log_widget = QTextEdit()
+                log_widget.setReadOnly(True)
+                log_widget.setLineWrapMode(QTextEdit.NoWrap)
+                font = log_widget.font()
+                font.setFamily("Courier New")
+                log_widget.setFont(font)
+                log_widget.setPlainText(log_text)
+                self.training_log_tabs.addTab(log_widget, display_key)
 
-            # -- log file --
-            combo_output_dir = os.path.join(
-                output_dir,
-                display_key.replace(" // ", "_-_-_").replace(" ", "_"),
-            )
-            os.makedirs(combo_output_dir, exist_ok=True)
-            log_file_path = os.path.join(combo_output_dir, "training.log")
-            try:
-                with open(log_file_path, "w", encoding="utf-8") as lf:
-                    lf.write(log_text)
-            except Exception as e:
-                print(f"Warning: could not write log file {log_file_path}: {e}")
+                # -- store results --
+                filter_fn = self.subset_filter_functions.get(subset_name)
 
-            # -- store results --
-            filter_fn = self.subset_filter_functions.get(subset_name)
+                self.subset_results[display_key] = {
+                    "df_train": result["df_train"],
+                    "df_validation": result["df_validation"],
+                    "df_inference": result["df_inference"],
+                    "df_metrics": result["df_metrics"],
+                    "trained_classifiers": result["trained_classifiers"],
+                    "long_table": result["long_table"],
+                    "pivot_table": result["pivot_table"],
+                    "filter_fn": filter_fn,
+                }
 
-            self.subset_results[display_key] = {
-                "df_train": result["df_train"],
-                "df_validation": result["df_validation"],
-                "df_inference": result["df_inference"],
-                "df_metrics": result["df_metrics"],
-                "trained_classifiers": result["trained_classifiers"],
-                "long_table": result["long_table"],
-                "pivot_table": result["pivot_table"],
-                "filter_fn": filter_fn,
-            }
+                # Export filtered MGF files for this combination
+                combo_output_dir = os.path.join(
+                    output_dir,
+                    display_key.replace(" // ", "_-_-_").replace(" ", "_"),
+                )
+                self.export_filtered_mgf_files(display_key, combo_output_dir)
 
-            # Export filtered MGF files for this combination
-            self.export_filtered_mgf_files(display_key, combo_output_dir)
+                # Auto-save trained classifiers to a pickle file in the job sub-directory
+                os.makedirs(combo_output_dir, exist_ok=True)
+                classifiers_pkl_path = os.path.join(combo_output_dir, "classifiers.pkl")
+                try:
+                    # Resolve the subset expression so the filter can be reconstructed
+                    # when "Classify with Trained Models" is used later.
+                    subset_expr = next(
+                        (s["expression"] for s in self.subsets if s["name"] == subset_name),
+                        "True",
+                    )
+                    with open(classifiers_pkl_path, "wb") as _clf_f:
+                        pickle.dump(
+                            {
+                                "display_key": display_key,
+                                "subset_name": subset_name,
+                                "subset_expression": subset_expr,
+                                "trained_classifiers": result["trained_classifiers"],
+                            },
+                            _clf_f,
+                        )
+                    print(f"Saved trained classifiers to {classifiers_pkl_path}")
+                except Exception as _pkl_err:
+                    print(f"Warning: could not save classifiers pickle to {classifiers_pkl_path}: {_pkl_err}")
 
         self.progress_dialog.close()
 
         num_combinations = len(results)
         self.training_status.setText(f"Status: Training completed for {num_combinations} combination(s), output written to {output_dir}.")
         self.train_btn.setEnabled(True)
+        self.classify_trained_btn.setEnabled(True)
         self.populate_subset_results_list()
         self.populate_spectrum_file_list()
 
@@ -2869,7 +2931,198 @@ classifiers_to_compare = {
         self.progress_dialog.close()
         self.training_status.setText("Status: Error occurred")
         self.train_btn.setEnabled(True)
+        self.classify_trained_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", error_msg)
+
+    # ------------------------------------------------------------------
+    # "Classify with Trained Models" – load classifiers and run prediction
+    # ------------------------------------------------------------------
+
+    def classify_with_trained_models_clicked(self):
+        """Load pre-saved classifiers and run prediction without re-training.
+
+        Searches all sub-directories of the configured output directory for
+        ``classifiers.pkl`` files written by a previous "Train and Classify"
+        run, then runs each classifier set's prediction on the loaded spectra.
+        Results are written to a **new** directory named
+        ``<output_dir>_prediction_<YYYYMMDD>`` so the original training
+        outputs are never modified or deleted.
+        """
+        if self.df_embeddings is None:
+            QMessageBox.warning(self, "Warning", "Please generate embeddings first")
+            return
+
+        base_output_dir = self.output_dir_input.text().rstrip(os.sep).rstrip("/").rstrip("\\")
+
+        # ---- locate classifiers.pkl files --------------------------------
+        classifier_jobs = []
+        if os.path.exists(base_output_dir):
+            for entry in sorted(os.listdir(base_output_dir)):
+                subdir_path = os.path.join(base_output_dir, entry)
+                if os.path.isdir(subdir_path):
+                    clf_pkl = os.path.join(subdir_path, "classifiers.pkl")
+                    if os.path.exists(clf_pkl):
+                        try:
+                            with open(clf_pkl, "rb") as f:
+                                data = pickle.load(f)
+                            classifier_jobs.append(data)
+                            print(f"Loaded classifier pickle: {clf_pkl}")
+                        except Exception as load_err:
+                            print(f"Warning: could not load {clf_pkl}: {load_err}")
+
+        if not classifier_jobs:
+            QMessageBox.warning(
+                self,
+                "No Classifiers Found",
+                f"No trained classifier files (classifiers.pkl) were found in "
+                f"sub-directories of:\n\n{base_output_dir}\n\n"
+                f"Please run 'Train and Classify' first so that classifiers are "
+                f"automatically saved.",
+            )
+            return
+
+        # ---- determine new (prediction-only) output directory -----------
+        date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        pred_output_dir = f"{base_output_dir}_prediction_{date_str}"
+        # If a directory with this name already exists, append a counter.
+        if os.path.exists(pred_output_dir):
+            counter = 1
+            while os.path.exists(f"{pred_output_dir}_{counter}"):
+                counter += 1
+            pred_output_dir = f"{pred_output_dir}_{counter}"
+
+        # ---- inform the user and ask for confirmation -------------------
+        reply = QMessageBox.question(
+            self,
+            "Classify with Trained Models",
+            f"Found {len(classifier_jobs)} trained classifier set(s).\n\n"
+            f"The trained classifier files (classifiers.pkl) from each subset-classifier subfolder "
+            f"will be copied to a new folder:\n\n"
+            f"  {pred_output_dir}\n\n"
+            f"Prediction results will also be written there.\n\n"
+            f"Do you want to proceed?",
+            QMessageBox.Ok | QMessageBox.Cancel,
+            QMessageBox.Ok,
+        )
+        if reply == QMessageBox.Cancel:
+            return
+
+        # ---- copy only classifiers.pkl files to the new folder --------
+        os.makedirs(pred_output_dir, exist_ok=True)
+        try:
+            for entry in sorted(os.listdir(base_output_dir)):
+                subdir_path = os.path.join(base_output_dir, entry)
+                clf_pkl_src = os.path.join(subdir_path, "classifiers.pkl")
+                if os.path.isdir(subdir_path) and os.path.exists(clf_pkl_src):
+                    dest_subdir = os.path.join(pred_output_dir, entry)
+                    os.makedirs(dest_subdir, exist_ok=True)
+                    shutil.copy2(clf_pkl_src, os.path.join(dest_subdir, "classifiers.pkl"))
+                    print(f"Copied classifiers.pkl from '{entry}' → {dest_subdir}")
+        except Exception as copy_err:
+            QMessageBox.critical(self, "Error", f"Failed to copy classifier files to prediction directory:\n{str(copy_err)}")
+            return
+
+        # ---- launch the prediction worker --------------------------------
+        self.progress_dialog = QProgressDialog("Classifying with trained models…", "Cancel", 0, 0, self)
+        self.progress_dialog.setWindowModality(Qt.WindowModal)
+        self.progress_dialog.setMinimumDuration(0)
+        self.progress_dialog.setValue(0)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        self.prediction_worker = PredictionWorker(
+            classifier_jobs,
+            self.df_embeddings,
+            pred_output_dir,
+        )
+        self.prediction_worker.progress.connect(self.on_training_progress)
+        self.prediction_worker.finished.connect(lambda results: self.on_prediction_only_finished(results, pred_output_dir))
+        self.prediction_worker.error.connect(self.on_training_error)
+
+        self.training_start_time = datetime.datetime.now()
+        self.prediction_worker.start()
+
+        self.train_btn.setEnabled(False)
+        self.classify_trained_btn.setEnabled(False)
+
+    def on_prediction_only_finished(self, results, output_dir):
+        """Handle completion of prediction-only run (Classify with Trained Models).
+
+        Populates the log tabs and subset results exactly like
+        :meth:`on_training_finished` but does not export a new classifiers.pkl
+        (the loaded classifiers are already on disk).
+        """
+        QApplication.restoreOverrideCursor()
+
+        self.training_log_tabs.clear()
+        self.training_log_tabs.setVisible(True)
+
+        self.subset_results.clear()
+
+        for result in results:
+            if result is None or "error" in result:
+                display_key = result.get("display_key", "unknown") if result else "unknown"
+                log_text = result.get("log", "") if result else ""
+                error_text = result.get("error", "Unknown error") if result else "Unknown error"
+                # Show error in a log tab so the user can see what went wrong
+                log_widget = QTextEdit()
+                log_widget.setReadOnly(True)
+                log_widget.setLineWrapMode(QTextEdit.NoWrap)
+                font = log_widget.font()
+                font.setFamily("Courier New")
+                log_widget.setFont(font)
+                log_widget.setPlainText(log_text + f"\n\nERROR: {error_text}")
+                self.training_log_tabs.addTab(log_widget, f"{display_key} [ERROR]")
+                continue
+
+            display_key = result["display_key"]
+            subset_name = result["subset_name"]
+            log_text = result.get("log", "")
+
+            log_widget = QTextEdit()
+            log_widget.setReadOnly(True)
+            log_widget.setLineWrapMode(QTextEdit.NoWrap)
+            font = log_widget.font()
+            font.setFamily("Courier New")
+            log_widget.setFont(font)
+            log_widget.setPlainText(log_text)
+            self.training_log_tabs.addTab(log_widget, display_key)
+
+            self.subset_results[display_key] = {
+                "df_train": result["df_train"],
+                "df_validation": result["df_validation"],
+                "df_inference": result["df_inference"],
+                "df_metrics": result["df_metrics"],
+                "trained_classifiers": result["trained_classifiers"],
+                "long_table": result["long_table"],
+                "pivot_table": result["pivot_table"],
+                "filter_fn": result.get("filter_fn"),
+            }
+
+            # Export filtered MGF files for this combination
+            combo_output_dir = os.path.join(
+                output_dir,
+                display_key.replace(" // ", "_-_-_").replace(" ", "_"),
+            )
+            self.export_filtered_mgf_files(display_key, combo_output_dir)
+
+        self.progress_dialog.close()
+
+        num_ok = len([r for r in results if r is not None and "error" not in r])
+        num_err = len(results) - num_ok
+        self.training_status.setText(f"Status: Prediction completed for {num_ok} combination(s)" + (f" ({num_err} error(s))" if num_err else "") + f", output written to {output_dir}.")
+        self.train_btn.setEnabled(True)
+        self.classify_trained_btn.setEnabled(True)
+        self.populate_subset_results_list()
+        self.populate_spectrum_file_list()
+
+        # Generate master Excel summary
+        self.generate_master_excel(output_dir)
+
+        QMessageBox.information(
+            self,
+            "Prediction Complete",
+            f"Classification with trained models completed.\n\n  Successful: {num_ok}\n" + (f"  Errors:     {num_err}\n" if num_err else "") + f"\nOutput written to:\n{output_dir}",
+        )
 
     def generate_master_excel(self, output_dir):
         """Generate master Excel file consolidating results from all subsets."""
@@ -2955,7 +3208,7 @@ classifiers_to_compare = {
             all_results = all_results.select(final_columns)
 
             # Export to master Excel file
-            output_excel_file = os.path.join(output_dir, "training_summary.xlsx")
+            output_excel_file = os.path.join(output_dir, "summary.xlsx")
             all_results.write_excel(output_excel_file, worksheet="all_results")
 
             print(f"Exported master summary to {output_excel_file}")

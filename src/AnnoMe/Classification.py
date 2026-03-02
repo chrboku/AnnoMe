@@ -2,10 +2,12 @@ from AnnoMe.Filters import parse_mgf_file, download_MS2DeepScore_model, optimize
 
 # Standard library imports
 import ast
+import hashlib
 import json
 import logging
 import os
 import pathlib
+import pickle
 import random
 import time
 import warnings
@@ -65,6 +67,7 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.model_selection import StratifiedKFold
+from joblib import Parallel, delayed
 
 # Other utilities
 from natsort import natsorted
@@ -746,27 +749,46 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000, encoding="utf-8"):
         input_mgf_path (str): Path to the input MGF file.
         max_blocks (int): Maximum number of spectra blocks per chunk.
     """
-    def write_chunk(chunk_lines):
+    def write_chunk(blocks):
         temp = tempfile.NamedTemporaryFile(delete=False, suffix=".mgf", mode="w", encoding="utf-8")
-        temp.writelines(chunk_lines)
+        for block in blocks:
+            temp.writelines(block)
         temp.close()
         return temp.name
 
     with open(input_mgf_path, "r", encoding=encoding, errors="ignore") as infile:
-        chunk_lines = []
+        filename = os.path.basename(input_mgf_path)
+
+        blocks = []
+        current_block = []
         block_count = 0
+        all_blocks = 0
+
         for line in infile:
-            chunk_lines.append(line)
+            current_block.append(line)
             if line.strip().upper() == "END IONS":
+                contains_AnnoMe_internal_ID = False
+                for l in current_block:
+                    if l.startswith("AnnoMe_internal_ID"):
+                        contains_AnnoMe_internal_ID = True
+                        break
+                if not contains_AnnoMe_internal_ID:
+                    current_block.insert(1, f"AnnoMe_internal_ID={filename}___{all_blocks}\n")
+                        
+                blocks.append(current_block)
+                current_block = []
                 block_count += 1
+                all_blocks += 1
+
                 if block_count >= max_blocks:
-                    temp_path = write_chunk(chunk_lines)
+                    temp_path = write_chunk(blocks)
                     yield temp_path
-                    chunk_lines = []
+                    blocks = []
                     block_count = 0
+
         # Write any remaining spectra
-        if chunk_lines:
-            temp_path = write_chunk(chunk_lines)
+        if blocks:
+            temp_path = write_chunk(blocks)
             yield temp_path
 
 def select_randomly_n_spectra(input_mgf_path, n = None, encoding="utf-8"):
@@ -867,13 +889,128 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
     return conf_matrix_percent, pd.DataFrame(metric_data)
 
 
-def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
+def _generate_embeddings_for_dataset(ds, model_file_name):
+    """Process a single dataset for embedding generation.
+
+    Module-level helper so ``joblib`` can pickle it for parallel execution.
+    Each invocation loads its own model instance so multiple workers can run
+    concurrently without sharing state.
+
+    Returns
+    -------
+    tuple
+        ``(ds_name, ds_type, cleaned_spectra, embeddings_array)``
+    """
+    allowed_types = [
+        "train - relevant", "train - other",
+        "validation - relevant", "validation - other",
+        "inference",
+    ]
+    if ds["type"] not in allowed_types:
+        raise ValueError(
+            f"Dataset type '{ds['type']}' is not supported. "
+            f"Supported types are: {allowed_types}."
+        )
+
+    print(f"\n\nGenerating MS2DeepScore embeddings for {Fore.YELLOW}{ds['name']}{Style.RESET_ALL}")
+
+    # ---- per-file embedding cache (skipped when random sampling is active) ----
+    use_random_sample = "randomly_sample" in ds
+    cache_file = ds["file"] + "_embeddings.pkl"
+
+    if not use_random_sample:
+        # Compute hash of the source MGF file
+        hasher = hashlib.sha256()
+        with open(ds["file"], "rb") as _fh:
+            for _chunk in iter(lambda: _fh.read(8192), b""):
+                hasher.update(_chunk)
+        current_hash = hasher.hexdigest()
+
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, "rb") as _cf:
+                    saved_hash, cached_spectra, cached_embeddings = pickle.load(_cf)
+                if saved_hash == current_hash:
+                    print(f"   - {Fore.GREEN}Cache hit{Style.RESET_ALL}: loading embeddings from {cache_file}")
+                    print(f"   - Imported {Fore.YELLOW}{cached_embeddings.shape[0]}{Style.RESET_ALL} spectra (from cache)")
+                    return ds["name"], ds["type"], cached_spectra, cached_embeddings
+                else:
+                    print(f"   - Cache hash mismatch – recomputing and overwriting cache")
+                    os.remove(cache_file)
+            except Exception as _ce:
+                print(f"   - Could not read cache file ({_ce}) – recomputing")
+                try:
+                    os.remove(cache_file)
+                except OSError:
+                    pass
+
+    with execution_timer(title=f"Dataset {ds['name']}"):
+        # Each parallel worker needs its own model instance
+        model = load_model(model_file_name)
+        ms2ds_model = MS2DeepScore(model)
+
+        print(f"{ds['name']}: Processing spectra file {Fore.YELLOW}{ds['file']}{Style.RESET_ALL}")
+        print(f"   - Type {Fore.YELLOW}{ds['type']}{Style.RESET_ALL}")
+
+        fi = ds["file"]
+        fi_rm = False
+        if "randomly_sample" in ds:
+            print(f"   - Randomly sampling {Fore.YELLOW}{ds['randomly_sample']}{Style.RESET_ALL} spectra from input file")
+            fi, fi_rm = select_randomly_n_spectra(fi, ds["randomly_sample"])
+
+        cleaned_spectra = None
+        embeddings_arr = None
+
+        with execution_timer(title="Running pipeline"):
+            for chunki, mgf_chunk_file in enumerate(chunk_mgf_file(fi)):
+                print(f"   - processing chunk {chunki}")
+
+                with all_logging_disabled():
+                    pipeline = Pipeline(
+                        create_workflow(
+                            query_filters=DEFAULT_FILTERS,
+                            score_computations=[[MS2DeepScore, {"model": model}]],
+                        )
+                    )
+                    pipeline.run(mgf_chunk_file)
+
+                    new_spectra = pipeline.spectra_queries
+                    new_embeddings = ms2ds_model.get_embedding_array(new_spectra)
+                    if cleaned_spectra is None:
+                        cleaned_spectra = new_spectra
+                        embeddings_arr = new_embeddings
+                    else:
+                        cleaned_spectra.extend(new_spectra)
+                        embeddings_arr = np.concatenate((embeddings_arr, new_embeddings), axis=0)
+
+                os.remove(mgf_chunk_file)
+
+        if fi_rm:
+            os.remove(fi)
+
+    # Save to cache (only when random sampling was not used)
+    if not use_random_sample:
+        try:
+            with open(cache_file, "wb") as _cf:
+                pickle.dump((current_hash, cleaned_spectra, embeddings_arr), _cf)
+            print(f"   - Embeddings cached to {cache_file}")
+        except Exception as _se:
+            print(f"   - Warning: could not write cache file: {_se}")
+
+    print(f"   - Imported {Fore.YELLOW}{embeddings_arr.shape[0]}{Style.RESET_ALL} spectra")
+    return ds["name"], ds["type"], cleaned_spectra, embeddings_arr
+
+
+def generate_embeddings(datasets, data_to_add=None, model_file_name=None, n_jobs=1):
     """
     Generates embeddings for the provided datasets using the specified model file.
     Args:
         model_file_name (str): Path to the MS2DeepScore model file.
         datasets (dict): Dictionary containing dataset information, including file paths and types.
         data_to_add (dict, optional): Additional data to include in the embeddings.
+        n_jobs (int): Number of parallel processes for embedding generation.
+            Each dataset is processed in its own worker when n_jobs > 1.
+            Defaults to 1 (sequential).
     Returns:
         pd.DataFrame: DataFrame containing the generated MS2DeepScore embeddings and associated metadata.
     """
@@ -904,64 +1041,19 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None):
         print(f"\n\nRunning {Fore.YELLOW}MS2DeepScore{Style.RESET_ALL}")
         print("#######################################################")
 
-        with execution_timer(title="loading model"):
-            # load in the ms2deepscore model
-            model = load_model(model_file_name)
-            ms2ds_model = MS2DeepScore(model)
-
-        # process each dataset
+        print(f"Running embedding generation with {Fore.YELLOW}n_jobs={n_jobs}{Style.RESET_ALL} parallel workers")
+        results = Parallel(n_jobs=n_jobs, backend="loky")(
+            delayed(_generate_embeddings_for_dataset)(ds, model_file_name)
+            for ds in datasets
+        )
+        # Map results back onto the ds dicts so the dataframe-building
+        # section below works unchanged.
+        result_map = {
+            ds_name: (cleaned_spectra, embeddings)
+            for ds_name, _ds_type, cleaned_spectra, embeddings in results
+        }
         for ds in datasets:
-            print(f"\n\nGenerating MS2DeepScore embeddings for {Fore.YELLOW}{ds['name']}{Style.RESET_ALL}")
-
-            with execution_timer(title=f"Dataset {ds['name']}"):
-                with execution_timer(title="Running pipeline"):
-
-                    print(f"{ds['name']}: Processing spectra file {Fore.YELLOW}{ds['file']}{Style.RESET_ALL}")
-                    print(f"   - Type {Fore.YELLOW}{ds["type"]}{Style.RESET_ALL}")
-                    
-                    allowed_types = ["train - relevant", "train - other", "validation - relevant", "validation - other", "inference"]
-                    if ds["type"] not in allowed_types:
-                        raise ValueError(f"Dataset type {ds['type']} is not supported. Supported types are: {str(allowed_types)}.")
-                    
-                    # randomly sample from the input file spectra if requested by the user
-                    fi = ds["file"]
-                    fi_rm = False
-                    if "randomly_sample" in ds.keys():
-                        print(f"   - Randomly sampling {Fore.YELLOW}{ds["randomly_sample"]}{Style.RESET_ALL} spectra from input file")
-                        fi, fi_rm = select_randomly_n_spectra(fi, ds["randomly_sample"])
-
-                    # chunk the mgf file so intermediate objects are smaller
-                    for chunki, mgf_chunk_file in enumerate(chunk_mgf_file(fi)):
-                        print(f"   - processing chunk {chunki}")
-
-                        with all_logging_disabled():
-                            # define the pipeline
-                            pipeline = Pipeline(
-                                create_workflow(
-                                    query_filters=DEFAULT_FILTERS,
-                                    score_computations=[[MS2DeepScore, {"model": model}]],
-                                )
-                            )
-
-                            # create embeddings
-                            report = pipeline.run(mgf_chunk_file)
-                            
-                            # save results (and concatenate if chunking was necessary)
-                            if "cleaned_spectra" not in ds:
-                                ds["cleaned_spectra"] = pipeline.spectra_queries
-                                ds["embeddings"] = ms2ds_model.get_embedding_array(pipeline.spectra_queries)
-                            else:
-                                ds["cleaned_spectra"].extend(pipeline.spectra_queries)
-                                ds["embeddings"] = np.concatenate((ds["embeddings"], ms2ds_model.get_embedding_array(pipeline.spectra_queries)), axis = 0)
-
-                        # manual cleanup of temporary chunk file
-                        os.remove(mgf_chunk_file)
-
-                    # manual cleanup of temporary randomly selected file (if used)
-                    if fi_rm:
-                        os.remove(fi)
-
-            print(f"   - Imported {Fore.YELLOW}{ds["embeddings"].shape[0]}{Style.RESET_ALL} spectra")
+            ds["cleaned_spectra"], ds["embeddings"] = result_map[ds["name"]]
 
     # Generate dataframe
     df = {
@@ -2163,10 +2255,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     print("#######################################################")
 
     # Subset df to include only rows where both 'source' and 'type' match those in df_predicted
-    used_for_inference_n = df["used_for_inference"].sum()
-    print(f"Number of rows used for inference: {used_for_inference_n}")
-    print(df["used_for_inference"].value_counts())
-    mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"]) & df["used_for_inference"]
+    mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"])
     df = df.copy()[mask]
 
     # Generate the prediction results
