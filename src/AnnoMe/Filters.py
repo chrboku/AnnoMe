@@ -1130,7 +1130,7 @@ def parse_mgf_file(file_path, check_required_keys=True, return_as_polars_table=F
                 peak_lines = []
 
             elif line.lower().startswith("annome_internal_id"):
-                pass
+                current_block_secondary["AnnoMe_internal_ID"] = line.split("=", 1)[1].strip()
 
             elif line == "END IONS":
                 # Batch-parse collected peak lines into spectrum data
