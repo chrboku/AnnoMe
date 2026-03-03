@@ -59,17 +59,10 @@ import inspect
 from matchms import Spectrum
 import datetime
 import pathlib
+import time
 
 # Import classification functions
-from .Classification import (
-    generate_embeddings,
-    add_all_metadata,
-    train_and_classify,
-    predict,
-    show_dataset_overview,
-    generate_prediction_overview,
-    set_random_seeds,
-)
+from .Classification import generate_embeddings, add_all_metadata, train_and_classify, predict, show_dataset_overview, generate_prediction_overview, set_random_seeds, generate_master_excel
 
 # Import MGF parsing
 from .Filters import parse_mgf_file
@@ -188,8 +181,8 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
             long_table, pivot_table = generate_prediction_overview(
                 df_working_copy,
                 df_subset_infe,
-                output_dir,
-                file_prefix=display_key.replace(" // ", "_-_-_"),
+                os.path.join(output_dir, display_key.replace(" // ", "_-_-_")),
+                file_prefix="prediction",
                 min_prediction_threshold=min_threshold,
             )
             break  # only one key expected per job
@@ -450,8 +443,8 @@ class PredictionWorker(QThread):
                         long_table, pivot_table = generate_prediction_overview(
                             df_working_copy,
                             df_inference,
-                            self.output_dir,
-                            file_prefix=display_key.replace(" // ", "_-_-_"),
+                            os.path.join(self.output_dir, display_key.replace(" // ", "_-_-_")),
+                            file_prefix="prediction",
                             min_prediction_threshold=min_threshold,
                         )
                         break  # only one key expected per pkl
@@ -2682,6 +2675,7 @@ classifiers_to_compare = {
                             elif os.path.isdir(item_path):
                                 shutil.rmtree(item_path)
                         print(f"Cleared output directory: {output_dir}")
+                        time.sleep(2)
                     except Exception as e:
                         QMessageBox.critical(self, "Error", f"Failed to delete directory contents:\n{str(e)}")
                         return
@@ -2714,6 +2708,7 @@ classifiers_to_compare = {
                     return
 
         os.makedirs(output_dir, exist_ok=True)
+        time.sleep(2)
 
         # Clear previous results
         self.subset_results.clear()
@@ -2876,7 +2871,7 @@ classifiers_to_compare = {
         self.populate_spectrum_file_list()
 
         # Generate master Excel file consolidating all validation results
-        self.generate_master_excel(output_dir)
+        generate_master_excel(output_dir)
 
         # --- compute timing statistics ------------------------------------
         import datetime as _dt
@@ -3123,102 +3118,6 @@ classifiers_to_compare = {
             "Prediction Complete",
             f"Classification with trained models completed.\n\n  Successful: {num_ok}\n" + (f"  Errors:     {num_err}\n" if num_err else "") + f"\nOutput written to:\n{output_dir}",
         )
-
-    def generate_master_excel(self, output_dir):
-        """Generate master Excel file consolidating results from all subsets."""
-        try:
-            print(f"\nGenerating master overview of all datasets")
-
-            # Initialize an empty list to store DataFrames
-            all_results = []
-
-            # Iterate all .xlsx files
-            for xlsx_file in os.listdir(output_dir):
-                if xlsx_file.endswith("_data.xlsx"):
-                    file_path = os.path.join(output_dir, xlsx_file)
-                    try:
-                        # Try to read the 'overall' sheet
-                        df = pl.read_excel(file_path, sheet_name="overall")
-                        # Add a new column with the dataset name (derived from filename)
-                        subset_name = xlsx_file.replace("_data.xlsx", "")
-                        df = df.with_columns(pl.lit(subset_name).alias("subset"))
-                        # Append the DataFrame to the list
-                        all_results.append(df)
-                    except Exception as e:
-                        print(f"  Could not load 'overall' sheet from {xlsx_file}: {e}")
-                        # Sheet 'overall' might not exist in this file, or it might not be a valid Excel file
-                        pass
-
-            if len(all_results) == 0:
-                print("No datasets with 'overall' sheet found in the output directory.")
-                return
-
-            # Concatenate all DataFrames into a single DataFrame
-            all_results = pl.concat(all_results, how="vertical")
-
-            all_results = all_results.rename({"row_count": "n_features"})
-
-            # Calculate percent_features grouped by source, subset, and type
-            all_results = all_results.with_columns((100.0 * pl.col("n_features") / pl.col("n_features").sum().over(["source", "subset"])).round(1).alias("percent_features"))
-
-            # Clean up source column
-            all_results = all_results.with_columns(pl.col("source").str.replace(" - gt ", " - ", literal=True))
-
-            # Extract gt_type from source
-            all_results = all_results.with_columns(
-                pl.col("type").str.extract(r"(.*) - (other|relevant)", 1).alias("source_cleaned"),
-                pl.col("type").str.extract(r"(.*) - (other|relevant)", 2).alias("gt_type"),
-            )
-
-            # Add TN for other/other, FP for other/relevant, FN for relevant/other, and TP for relevant/relevant in columns gt_type/annotated_as
-            all_results = all_results.with_columns(
-                pl.when((pl.col("gt_type") == "other") & (pl.col("annotated_as") == "other"))
-                .then(pl.lit("TN"))
-                .when((pl.col("gt_type") == "other") & (pl.col("annotated_as") == "relevant"))
-                .then(pl.lit("FP"))
-                .when((pl.col("gt_type") == "relevant") & (pl.col("annotated_as") == "other"))
-                .then(pl.lit("FN"))
-                .when((pl.col("gt_type") == "relevant") & (pl.col("annotated_as") == "relevant"))
-                .then(pl.lit("TP"))
-                .otherwise(pl.lit(""))
-                .alias("pred_type"),
-            )
-
-            # Order the DataFrame
-            sort_columns = ["subset", "type", "source"]
-            if "gt_type" in all_results.columns:
-                sort_columns.append("gt_type")
-            if "pred_type" in all_results.columns:
-                sort_columns.append("pred_type")
-            if "annotated_as" in all_results.columns:
-                sort_columns.append("annotated_as")
-            all_results = all_results.sort(sort_columns)
-
-            # Reorder the columns
-            base_columns = ["subset", "type", "source"]
-            if "gt_type" in all_results.columns:
-                base_columns.append("gt_type")
-            if "pred_type" in all_results.columns:
-                base_columns.append("pred_type")
-            base_columns.extend(["annotated_as", "n_features", "percent_features"])
-
-            # Only select columns that exist
-            available_columns = all_results.columns
-            final_columns = [col for col in base_columns if col in available_columns]
-            all_results = all_results.select(final_columns)
-
-            # Export to master Excel file
-            output_excel_file = os.path.join(output_dir, "summary.xlsx")
-            all_results.write_excel(output_excel_file, worksheet="all_results")
-
-            print(f"Exported master summary to {output_excel_file}")
-
-        except Exception as e:
-            print(f"Error generating master Excel file: {e}")
-            # Don't fail the entire training process if summary generation fails
-            import traceback
-
-            traceback.print_exc()
 
     def export_filtered_mgf_files(self, combined_key, subset_output_dir):
         """Export filtered MGF files based on classification results.

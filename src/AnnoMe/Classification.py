@@ -22,6 +22,7 @@ import inspect
 # Data science packages
 import numpy as np
 import pandas as pd
+import polars as pl
 
 # Plotting packages
 import matplotlib
@@ -791,7 +792,7 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000, encoding="utf-8"):
             temp_path = write_chunk(blocks)
             yield temp_path
 
-def select_randomly_n_spectra(input_mgf_path, n = None, encoding="utf-8"):
+def select_randomly_n_spectra(input_mgf_path, n_and_seed = None, encoding="utf-8"):
     """
     Selects n random spectra from an MGF file and writes them to a new temporary file.
     If n is None or negative, returns the original file path and False.
@@ -802,6 +803,11 @@ def select_randomly_n_spectra(input_mgf_path, n = None, encoding="utf-8"):
         tuple: A tuple containing the path to the new MGF file with selected spectra and a boolean indicating if the file was created.
         If no spectra were selected, the original file path and False are returned.
     """
+    n = n_and_seed[0]
+    seed = n_and_seed[1]    
+    
+    random.seed(seed)
+    np.random.seed(seed)
     if n is None or n < 0:
         return input_mgf_path, False
 
@@ -1880,7 +1886,7 @@ def _train_classifier_subset(
         for cname in classifiers:
             o_clf = classifiers[cname]
 
-            with execution_timer(title=f"Classifier: {classifier_set_name} / {subset} / {cname}"):
+            with execution_timer(title=f"Classifier: {classifier_set_name} /// {subset} /// {cname}"):
                 print(f"\n--------------------------------------------------------------------------------")
                 print(f"Classifier: {cname}")
 
@@ -1911,7 +1917,7 @@ def _train_classifier_subset(
                     # Train the model
                     start_time = time.time()
                     clf.fit(trainSubset_train_X, trainSubset_train_y_gt)
-                    trained_classifiers.append((f"{classifier_set_name} / {subset} / {cname} / {fold}", clf))
+                    trained_classifiers.append((f"{classifier_set_name} /// {subset} /// {cname} /// {fold}", clf))
                     duration = time.time() - start_time
 
                     # Apply predictions on the train set
@@ -1937,7 +1943,7 @@ def _train_classifier_subset(
                         for idx in range(trainSubset_train_X.shape[0]):
                             if trainSubset_train_y_pred[idx] == "relevant":
                                 idx = trainSubset_train_useInds[idx]
-                                train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                                train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} /// {subset} /// {cname} /// {fold}")
 
                     # Apply predictions on the validation set
                     if True:
@@ -1961,7 +1967,7 @@ def _train_classifier_subset(
                         for idx in range(trainSubset_vali_X.shape[0]):
                             if trainSubset_test_y_pred[idx] == "relevant":
                                 idx = trainSubset_vali_useInds[idx]
-                                train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                                train_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} /// {subset} /// {cname} /// {fold}")
 
                     # process test dataset
                     # Note: Usually the test dataset is processed last, but due to the architecture here it needs to run now
@@ -1984,7 +1990,7 @@ def _train_classifier_subset(
                         for idx in range(testSubset_X.shape[0]):
                             if valiSubset_y_pred[idx] == "relevant":
                                 idx = testSubset_useInds[idx]
-                                vali_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                                vali_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} /// {subset} /// {cname} /// {fold}")
 
                     # process inference dataset
                     if len(infeSubset_useInds) > 0:
@@ -2002,7 +2008,7 @@ def _train_classifier_subset(
                         for idx in range(infeSubset_X.shape[0]):
                             if infeSubset_y_pred[idx] == "relevant":
                                 idx = infeSubset_useInds[idx]
-                                infe_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} / {subset} / {cname} / {fold}")
+                                infe_df.iloc[idx]["prediction_results"].append(f"{classifier_set_name} /// {subset} /// {cname} /// {fold}")
 
             # Calculate average results
             avg_score, std_score, min_score, max_score = (
@@ -2170,7 +2176,7 @@ def train_and_classify(df, subsets = None, output_dir = ".", classifiers_to_comp
                     labels=labels,
                 )
                 metrics_df.extend(new_metrics)
-                trained_classifiers_per_subset[f"{classifier_set_name} / {subset}"] = (subsets[subset], trained_classifiers, min_prediction_threshold)
+                trained_classifiers_per_subset[f"{classifier_set_name} /// {subset}"] = (subsets[subset], trained_classifiers, min_prediction_threshold)
     
     # collapse df_conf_matrices to a single dataframe
     metrics_df = pd.concat(metrics_df, ignore_index=True) if metrics_df else pd.DataFrame()
@@ -2251,31 +2257,20 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     Args:
         df (pd.DataFrame): DataFrame containing the original data with features and metadata.
     """
-    print("\n\nGenerating Prediction Overview")
-    print("#######################################################")
+    print(f"\n\nGenerating Prediction Overview for set {file_prefix}")
+    print("############################################################################")
 
     # Subset df to include only rows where both 'source' and 'type' match those in df_predicted
     mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"])
     df = df.copy()[mask]
 
-    # Generate the prediction results
-    # Aggregate the df_predicted results and extract the number of times it was predicted to be a compound of interest
-    # Calculate the count of predictions for each row
-
     # Summarize prediction_results by counting detections per row
-    def count_detections(pred_list, threshold):
-        if not isinstance(pred_list, list) or len(pred_list) == 0:
-            return 0
-        # Extract first part before "/" for each string
-        first_parts = [str(x).split("/", 1)[0].strip() for x in pred_list if isinstance(x, str) and "/" in x]
-        # Count occurrences of each first part
-        counts = Counter(first_parts)
-        # Count how many first parts meet or exceed the threshold
-        detections = sum(1 for v in counts.values() if v >= threshold)
-        return detections
+    def count_detections(pred_list):
+        if pred_list is not None and isinstance(pred_list, list):
+            return len(pred_list)
+        return 0
 
-    df_predicted["prediction_count"] = df_predicted["prediction_results"].apply(lambda x: count_detections(x, min_prediction_threshold))
-
+    df_predicted["prediction_count"] = df_predicted["prediction_results"].apply(lambda x: count_detections(x))
 
     # Sort the DataFrame by count in descending order
     aggregated_df = df_predicted.sort_values(by="prediction_count", ascending=False).reset_index(drop=True)
@@ -2283,106 +2278,43 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     # Create the bar chart using plotnine    
     plot = (
         p9.ggplot(aggregated_df, p9.aes(x="prediction_count"))
-        + p9.geom_bar()
         + p9.geom_vline(xintercept=min_prediction_threshold, linetype="dashed", color="Firebrick")
+        + p9.geom_bar()
+        + p9.coord_flip()
         + p9theme()
-        + p9.theme(axis_text_x=p9.element_text(angle=90, hjust=1))  # Rotate x-axis labels for readability
+        + p9.theme(axis_text_x=p9.element_text(angle=0, hjust=1), panel_grid_major_y = p9.element_blank()) 
         + p9.labs(
             title="Counts",
-            subtitle="counts are the number of times a feature\nwas predicted to be a compound of interest",
-            x="Unique Row",
-            y="Count",
+            subtitle="Counts are the number of times a feature was predicted to be a relevant compound by a single classifier.\nCounts exceeding the threshold (red, dashed line) will be annotated as relevant.",
+            x="Number of sub-classifiers reporting compound as relevant",
+            y="MSMS spectra",
         )
     )
 
     # Print the plot
     out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_classificationChart.pdf")
-    plot.save(out_file, width=16, height=12)
+    plot.save(out_file, width=8, height=6)
     print(f"plot saved as {out_file}")
 
     # Add a new column 'prediction' to df with default value 'NA'
+    df["classification:relevant:count"] = None
     df["classification:relevant"] = ""
 
     # Update the 'prediction' column for rows present in aggregated_df
     for _, row in aggregated_df.iterrows():
         # Create a mask to identify matching rows in df
         mask = (df["AnnoMe_internal_ID"] == row["AnnoMe_internal_ID"])
-        if row["prediction_count"] >= 1:
+        if row["prediction_count"] >= min_prediction_threshold:
             # Set the prediction value to "relevant" for matching rows
             df.loc[mask, "classification:relevant"] = "relevant"
         else:
             df.loc[mask, "classification:relevant"] = "other"
+        df.loc[mask, "classification:relevant:count"] = row["prediction_count"]
 
-    
-
-    if "umap_1" in df.columns:
-        p_umap = (
-            p9.ggplot(
-                df,
-                mapping=p9.aes(
-                    x="umap_1",
-                    y="umap_2",
-                    label="name",
-                    colour="classification:relevant",
-                    shape="ionMode",
-                ),
-            )
-            + p9.geom_point(alpha=0.3)
-            # + p9.geom_text(nudge_x=0.025, nudge_y=0.025, size=5, colour="slategrey")
-            + p9theme()
-            + p9.labs(
-                title="UMAP embeddings of the spectra",
-                subtitle="calculated from embeddings\n'relevant' compounds are predicted based on classifier majority vote",
-            )
-        )
-
-        # Print the plot
-        out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_umap.pdf")
-        p_umap.save(out_file, width=16, height=12)
-        print(f"Umap plot saved as {out_file}")
-
-    # Filter rows annotated as 'relevant' in the prediction column
-    subset_df = df[df["classification:relevant"] == "relevant"].copy()
     subset_df = df.copy().sort_values(by=["source", "type", "fragmentation_method", "CE", "ionMode", "formula", "name", "CE"]).reset_index(drop=True)
-
-    try:
-        # Plot the feature map using plotnine
-        temp = subset_df.copy()
-        if "area" in temp.columns:
-            temp["area_log10"] = np.log10(temp["area"] + 1e-9)
-        else:
-            temp["area_log10"] = 5
-        feature_map_plot = (
-            p9.ggplot(
-                temp,
-                p9.aes(x="RTINSECONDS", y="precursor_mz", size="area_log10", color="classification:relevant"),
-            )
-            + p9.geom_point(alpha=0.1)
-            + p9.facet_wrap("classification:relevant")
-            + p9theme()
-            + p9.labs(
-                title="Feature Map of predicted 'relevant' compounds",
-                x="Retention Time (s)",
-                y="Precursor m/z",
-            )
-        )
-
-        # Print the plot
-        out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_feature_map.pdf")
-        feature_map_plot.save(out_file, width=16, height=12)
-        print(f"Feature map plot saved as {out_file}")
-
-    except Exception as e:
-        print(f"{Fore.RED}Error while plotting feature map: {e}{Style.RESET_ALL}")
-        print("Skipping feature map plot as 'area' column is missing or not suitable for plotting.")
-
-    ## Modify the 'name' column to keep only the part after the first underscore
-    #subset_df["name"] = subset_df["name"].apply(lambda x: x.split("_", 1)[1] if "_" in x else x)
-
-    ## Save subset_df to an HDF5 file
-    #out_file_h5 = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_long.h5")
-    #subset_df.to_hdf(out_file_h5, key="df", mode="w")
-    #print(f"Saved table to {out_file_h5}")
+    for col_to_drop in ["cleaned_spectra", "embeddings", "$$UUID", "AnnoMe_internal_ID", "used_for_training", "used_for_validation", "used_for_inference"]:
+        if col_to_drop in subset_df.columns:
+            subset_df.drop(columns=[col_to_drop], axis=1, inplace=True)
 
     # Pivot the table
     aggClassification = lambda x: str(sum(d == "relevant" for d in x)) if sum(d == "relevant" for d in x) > 0 else ""
@@ -2456,7 +2388,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     # Transform "annotated_as_times:relevant" to "annotated_as"
     x["annotated_as"] = np.where(x["annotated_as_times:relevant"] == 0, "other", "relevant")
     x = x.drop(columns=["annotated_as_times:relevant"])
-    overall = x.groupby(['type', 'source', 'annotated_as']).size().reset_index(name='row_count')
+    overall = x.groupby(['type', 'source', 'annotated_as']).size().reset_index(name='row_count').reset_index(drop = True)
 
     # Save the DataFrames to an Excel file
     out_file = os.path.join(output_dir, f"{file_prefix}_data.xlsx")
@@ -2466,7 +2398,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     if not pivot_table.empty:
         pivot_table.to_excel(writer, sheet_name='pivot_table', index=True)
     if not overall.empty:
-        overall.to_excel(writer, sheet_name='overall', index=True)
+        overall.to_excel(writer, sheet_name='overall', index=False)
     writer.close()
     print(f"Saved table to {out_file}")
 
@@ -2489,8 +2421,8 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
         print(f"{Fore.RED}No machine learning metrics found. Skipping overview generation.{Style.RESET_ALL}")
         return
 
-    overview_file = os.path.join(output_dir, "ML_metrics_overview.tsv")
-    df_metrics.to_csv(overview_file, sep="\t", index=False)
+    overview_file = os.path.join(output_dir, "ML_metrics_overview.xlsx")
+    df_metrics.to_excel(overview_file, sheet_name="metrics")
     print(f"Machine learning metrics overview saved to {overview_file}")
 
     # print overview of the different metrics and sets
@@ -2579,3 +2511,126 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
     confusion_matrix_file = os.path.join(output_dir, "ML_metrics_confusion_matrix_percent_histogram.pdf")
     p_confusion_matrix.save(confusion_matrix_file, width=12, height=8)
     print(f"Confusion matrix percent histogram saved to {confusion_matrix_file}")
+
+def generate_master_excel(output_dir):
+    """Generate master Excel file consolidating results from all subsets."""
+    try:
+        print(f"\nGenerating master overview of all datasets")
+
+        # Initialize an empty list to store DataFrames
+        all_results = []
+
+        # Iterate all .xlsx files
+        for folder in os.listdir(output_dir):
+            folder_path = os.path.join(output_dir, folder)
+            if not os.path.isdir(folder_path):
+                continue
+            for xlsx_file in os.listdir(folder_path):
+                if xlsx_file.endswith("_data.xlsx"):
+                    file_path = os.path.join(folder_path, xlsx_file)
+                    try:
+                        # Try to read the 'overall' sheet
+                        df = pl.read_excel(file_path, sheet_name="overall")
+                        # Add a new column with the dataset name (derived from filename)
+
+                        df = df.with_columns(pl.lit(folder).alias("set"))
+
+                        if "_-_-_" in folder:
+                            parts = folder.split("_-_-_", 1)
+                            subset_name = parts[0]
+                            classifier_name = parts[1] if len(parts) > 1 else ""
+
+                            df = df.with_columns(
+                                [
+                                    pl.lit(subset_name).alias("subset"),
+                                    pl.lit(classifier_name).alias("classifier"),
+                                ]
+                            )
+
+                        if "__UNNAMED__0" in df.columns:
+                            df = df.drop("__UNNAMED__0")
+                        
+                        # Append the DataFrame to the list
+                        all_results.append(df)
+                    except Exception as e:
+                        print(f"  Could not load 'overall' sheet from {file_path}: {e}")
+                        # Sheet 'overall' might not exist in this file, or it might not be a valid Excel file
+                        pass
+
+        if len(all_results) == 0:
+            print("No datasets with 'overall' sheet found in the output directory.")
+            return
+
+        # Concatenate all DataFrames into a single DataFrame
+        all_results = pl.concat(all_results, how="vertical")
+
+        all_results = all_results.rename({"row_count": "n_features"})
+
+        # Calculate percent_features grouped by source, subset, and type
+        all_results = all_results.with_columns((100.0 * pl.col("n_features") / pl.col("n_features").sum().over(["source", "set"])).round(1).alias("percent_features"))
+
+        # Clean up source column
+        all_results = all_results.with_columns(pl.col("source").str.replace(" - gt ", " - ", literal=True))
+
+        # Extract gt_type from source
+        all_results = all_results.with_columns(
+            pl.col("type").str.extract(r"(.*) - (other|relevant)", 1).alias("source_cleaned"),
+            pl.col("type").str.extract(r"(.*) - (other|relevant)", 2).alias("gt_type"),
+        )
+
+        # Add TN for other/other, FP for other/relevant, FN for relevant/other, and TP for relevant/relevant in columns gt_type/annotated_as
+        all_results = all_results.with_columns(
+            pl.when((pl.col("gt_type") == "other") & (pl.col("annotated_as") == "other"))
+            .then(pl.lit("TN"))
+            .when((pl.col("gt_type") == "other") & (pl.col("annotated_as") == "relevant"))
+            .then(pl.lit("FP"))
+            .when((pl.col("gt_type") == "relevant") & (pl.col("annotated_as") == "other"))
+            .then(pl.lit("FN"))
+            .when((pl.col("gt_type") == "relevant") & (pl.col("annotated_as") == "relevant"))
+            .then(pl.lit("TP"))
+            .otherwise(pl.lit(""))
+            .alias("pred_type"),
+        )
+
+        # Order the DataFrame
+        sort_columns = ["set"]
+        if "classifier" in all_results.columns:
+            sort_columns.extend(["subset", "classifier"])
+        sort_columns.extend(["source", "type"])
+        if "gt_type" in all_results.columns:
+            sort_columns.append("gt_type")
+        if "annotated_as" in all_results.columns:
+            sort_columns.append("annotated_as")
+        if "pred_type" in all_results.columns:
+            sort_columns.append("pred_type")
+        all_results = all_results.sort(sort_columns)
+
+        # Reorder the columns
+        base_columns = ["set"]
+        if "classifier" in all_results.columns:
+            base_columns.extend(["subset", "classifier"])
+        base_columns.extend(["source", "type"])
+        if "gt_type" in all_results.columns:
+            base_columns.append("gt_type")
+        base_columns.append("annotated_as")
+        if "pred_type" in all_results.columns:
+            base_columns.append("pred_type")
+        base_columns.extend(["n_features", "percent_features"])
+
+        # Only select columns that exist
+        available_columns = all_results.columns
+        final_columns = [col for col in base_columns if col in available_columns]
+        all_results = all_results.select(final_columns)
+
+        # Export to master Excel file
+        output_excel_file = os.path.join(output_dir, "summary.xlsx")
+        all_results.write_excel(output_excel_file, worksheet="all_results")
+
+        print(f"Exported master summary to {output_excel_file}")
+
+    except Exception as e:
+        print(f"Error generating master Excel file: {e}")
+        # Don't fail the entire training process if summary generation fails
+        import traceback
+
+        traceback.print_exc()

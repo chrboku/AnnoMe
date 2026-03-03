@@ -117,7 +117,7 @@ To use AnnoMe for the classification of a new relevant chemical class, either
 -  **file** specifies where the mgf file is located.
 -  **fragmentation_metod** specifies the key which extracts the fragmentation method from the source
 -  **colour** colour of the dataset used for printing the embeddings with UMAP or PacMAP
--  **randomly_sample** specifies the maximum number of randomly picked MS/MS spectra for this file, omit to use all.
+-  **randomly_sample** tuple: specifies the maximum number of randomly picked MS/MS spectra for this file as well as the seed to use (i.e., (10000, 42)), omit to use all.
 -  **data_to_add**: this dictionary specifies fields from the MS/MS spectra that will be extracted and added as meta-information to the output. Furthermore, it allows specifying which fields in the MS/MS datasources indicate the same information. For example, the entry **("precursor_mz", ["pepmass", "precursor_mz"])** specifies that the field precursor_mz can be obtained from the fields **pepmass** or **precursor_mz**.
 -  **training_subsets**: this dictionary allows to sample from the loaded sources. While the key specifies a name, which should be alphanumeric and not contain any special characters, as it will also be used for generating a folder-name, the value should be a user-provided function that select from the loaded MS/MS spectra a subset (e.g., all MS/MS spectra of a certain polarity, all obtained with a specific fragmentation setup).
 -  **colors**: colors for each dataset, can be automatically obtained from the **datasets** variable
