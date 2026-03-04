@@ -2555,6 +2555,10 @@ classifiers_to_compare = {
         msg.setText(f"{original_text}\n\n(Auto-closing with default option in {remaining[0]}s)")
         countdown_timer.start()
         msg.exec_()
+        # Always stop the timer when the dialog closes (whether by user click or
+        # auto-close).  Without this, the timer keeps firing against a dialog
+        # that may already be destroyed → silent crash / segfault on Windows.
+        countdown_timer.stop()
 
     def show_about(self):
         """Show about dialog with GUI description and version."""
@@ -2676,7 +2680,6 @@ classifiers_to_compare = {
                             elif os.path.isdir(item_path):
                                 shutil.rmtree(item_path)
                         print(f"Cleared output directory: {output_dir}")
-                        time.sleep(2)
                     except Exception as e:
                         QMessageBox.critical(self, "Error", f"Failed to delete directory contents:\n{str(e)}")
                         return
@@ -2709,14 +2712,14 @@ classifiers_to_compare = {
                     return
 
         os.makedirs(output_dir, exist_ok=True)
-        time.sleep(2)
 
         # Clear previous results
         self.subset_results.clear()
         self.current_subset_index = 0
 
-        # Train classifiers for each subset separately
-        self.train_next_subset(output_dir)
+        # Use QTimer.singleShot to avoid blocking the main thread while
+        # giving the Windows filesystem a moment to settle after any deletions.
+        QTimer.singleShot(500, lambda: self.train_next_subset(output_dir))
 
     def train_next_subset(self, output_dir):
         """Train classifiers for all subsets and classifier sets (creates n×m combinations)."""

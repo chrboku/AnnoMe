@@ -769,12 +769,14 @@ def chunk_mgf_file(input_mgf_path, max_blocks=30000, encoding="utf-8"):
             current_block.append(line)
             if line.strip().upper() == "END IONS":
                 contains_AnnoMe_internal_ID = False
-                for l in current_block:
+                insert_after = 0
+                for li, l in enumerate(current_block):
+                    if l.startswith("BEGIN IONS"):
+                        insert_after = li + 1
                     if l.startswith("AnnoMe_internal_ID"):
                         contains_AnnoMe_internal_ID = True
-                        break
                 if not contains_AnnoMe_internal_ID:
-                    current_block.insert(1, f"AnnoMe_internal_ID={filename}___{all_blocks}\n")
+                    current_block.insert(insert_after, f"AnnoMe_internal_ID={filename}___{all_blocks}\n")
                         
                 blocks.append(current_block)
                 current_block = []
@@ -837,7 +839,7 @@ def select_randomly_n_spectra(input_mgf_path, n_and_seed = None, encoding="utf-8
 
     return temp.name, True
 
-def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW, col_score = Fore.CYAN, total = None):
+def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.GREEN, col_wrong = Fore.YELLOW, col_score = Fore.CYAN, total = None, bullet_point_character = "-"):
     """
     Generates and prints various classification metrics including confusion matrix, balanced accuracy, precision, F1 score, recall, and ROC AUC.
     Args:
@@ -873,23 +875,23 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
 
     # Print overall metrics
     val = balanced_accuracy_score(gt, pred)
-    print(f"   - [{print_pre}] {col_score}Balanced accuracy: {val:.3f}{Style.RESET_ALL}")
+    print(f"   {bullet_point_character} [{print_pre}] {col_score}Balanced accuracy: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "balanced_accuracy", "value": val})
 
     val = precision_score(gt, pred, average="weighted")
-    print(f"   - [{print_pre}] {col_score}Precision: {val:.3f}{Style.RESET_ALL}")
+    print(f"   {bullet_point_character} [{print_pre}] {col_score}Precision: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted precision", "value": val})
 
     val = f1_score(gt, pred, average='weighted')
-    print(f"   - [{print_pre}] {col_score}F1 Score: {val:.3f}{Style.RESET_ALL}")
+    print(f"   {bullet_point_character} [{print_pre}] {col_score}F1 Score: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted F1 score", "value": val})
 
     val = recall_score(gt, pred, average='weighted')
-    print(f"   - [{print_pre}] {col_score}Recall: {val:.3f}{Style.RESET_ALL}")
+    print(f"   {bullet_point_character} [{print_pre}] {col_score}Recall: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted recall value", "value": val})
 
     val = roc_auc_score(np.array([1 if x == "relevant" else 0 for x in gt]), np.array([1 if x == "relevant" else 0 for x in pred]))
-    print(f"   - [{print_pre}] {col_score}ROC AUC: {val:.3f}{Style.RESET_ALL}")
+    print(f"   {bullet_point_character} [{print_pre}] {col_score}ROC AUC: {val:.3f}{Style.RESET_ALL}")
     metric_data.append({"metric": "weighted roc auc", "value": val})
 
     return conf_matrix_percent, pd.DataFrame(metric_data)
@@ -1822,16 +1824,6 @@ def _train_classifier_subset(
         print(f"\n\n\n********************************************************************************")
         print(f"Classifier Set: {classifier_set_name} / Subset: {subset}")
         print(f"Function is {inspect.getsource(subset_fn)}")
-        print("Available columns and values:")
-        for col in df.columns:
-            try:
-                unique_values = df[col].unique()
-                if len(unique_values) <= 5:
-                    print(f"   - {col}: {unique_values}")
-                else:
-                    print(f"   - {col}: {len(unique_values)} unique values, first are {unique_values[:5]}")
-            except:
-                print(f"   - {col}: could not retrieve unique values")
 
         # subset the data
         trainSubset_useInds = train_df[train_df.apply(subset_fn, axis=1)].index.tolist()
@@ -1925,7 +1917,7 @@ def _train_classifier_subset(
                         trainSubset_train_y_pred = clf.predict(trainSubset_train_X)
                         score = np.mean(trainSubset_train_y_pred == trainSubset_train_y_gt)
                         print(f"   [Fold {fold + 1}] Score: {Fore.YELLOW}{score:.3f}{Style.RESET_ALL}, Duration: {Fore.YELLOW}{duration:.2f} seconds{Style.RESET_ALL}")
-                        conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_train_y_gt, trainSubset_train_y_pred, labels, "Train set", total=trainSubset_train_X.shape[0])
+                        conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_train_y_gt, trainSubset_train_y_pred, labels, "Train set", total=trainSubset_train_X.shape[0], bullet_point_character="-")
 
                         # save confusion matrix and other results
                         df_metric["from"] = "Train set"
@@ -1949,7 +1941,7 @@ def _train_classifier_subset(
                     if True:
                         trainSubset_test_y_pred = clf.predict(trainSubset_vali_X)
                         score = np.mean(trainSubset_test_y_pred == trainSubset_vali_y_gt)
-                        conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_vali_y_gt, trainSubset_test_y_pred, labels, "Validation set", total=trainSubset_vali_X.shape[0])
+                        conf_matrix_percent, df_metric = get_and_print_metrics(trainSubset_vali_y_gt, trainSubset_test_y_pred, labels, "Validation set", total=trainSubset_vali_X.shape[0], bullet_point_character="+")
 
                         # save confusion matrix and other results
                         df_metric["from"] = "Validation set"
@@ -1975,8 +1967,7 @@ def _train_classifier_subset(
                     if len(testSubset_useInds) > 0:
                         # Predict on the test embeddings
                         valiSubset_y_pred = clf.predict(testSubset_X)
-
-                        conf_matrix_percent, df_metric = get_and_print_metrics(valiSubset_y_gt, valiSubset_y_pred, labels, "Test set", total=testSubset_X.shape[0])
+                        conf_matrix_percent, df_metric = get_and_print_metrics(valiSubset_y_gt, valiSubset_y_pred, labels, "Test set", total=testSubset_X.shape[0], bullet_point_character=">")
 
                         # save confusion matrix and other results
                         df_metric["from"] = "Test set"
@@ -2212,9 +2203,8 @@ def predict(df, classifiers, subset_name = None, subset_fn = None, print_classif
     infe_df["used"] = [False for _ in range(len(infe_df))]
     df["used_for_inference"] = False
 
-    if print_classification_overview:
-        print(f"\n\n\n********************************************************************************")
-        print(f"Subset: {subset_name}")
+    print(f"\n\n\n********************************************************************************")
+    print(f"Subset: {subset_name}")
 
     # subset the data
     infeSubset_useInds = infe_df[infe_df.apply(subset_fn, axis=1)].index.tolist()
@@ -2237,16 +2227,15 @@ def predict(df, classifiers, subset_name = None, subset_fn = None, print_classif
             infeSubset_y_pred_relevant_count = np.sum(infeSubset_y_pred == "relevant")
             infeSubset_y_pred_other_count = len(infeSubset_y_pred) - infeSubset_y_pred_relevant_count
 
-            if print_classification_overview:
-                print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
-                print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
+            print(f"   * [Inference] Number of 'relevant': {Fore.YELLOW}{infeSubset_y_pred_relevant_count}{Style.RESET_ALL}")
+            print(f"   * [Inference] Number of 'other'   : {Fore.YELLOW}{infeSubset_y_pred_other_count}{Style.RESET_ALL}")
 
             # Store the results in the inference_results dictionary
             for idx in range(infeSubset_X.shape[0]):
                 if infeSubset_y_pred[idx] == "relevant":
                     idx = infeSubset_useInds[idx]
                     infe_df.iloc[idx]["prediction_results"].append(f"{clf_name}")
-                    
+
     return infe_df
 
 
@@ -2261,7 +2250,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     print("############################################################################")
 
     # Subset df to include only rows where both 'source' and 'type' match those in df_predicted
-    mask = df["source"].isin(df_predicted["source"]) & df["type"].isin(df_predicted["type"]) & df["$$UUID"].isin(df_predicted["$$UUID"])
+    mask = df["AnnoMe_internal_ID"].isin(df_predicted["AnnoMe_internal_ID"])
     df = df.copy()[mask]
 
     # Summarize prediction_results by counting detections per row
@@ -2281,6 +2270,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
             p9.ggplot(aggregated_df, p9.aes(x="prediction_count"))
             + p9.geom_vline(xintercept=min_prediction_threshold, linetype="dashed", color="Firebrick")
             + p9.geom_bar()
+            + p9.facet_wrap("type")
             + p9.coord_flip()
             + p9theme()
             + p9.theme(axis_text_x=p9.element_text(angle=0, hjust=1), panel_grid_major_y = p9.element_blank()) 
@@ -2315,7 +2305,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         df.loc[mask, "classification:relevant:count"] = row["prediction_count"]
 
     subset_df = df.copy().sort_values(by=["source", "type", "fragmentation_method", "CE", "ionMode", "formula", "name", "CE"]).reset_index(drop=True)
-    for col_to_drop in ["cleaned_spectra", "embeddings", "$$UUID", "AnnoMe_internal_ID", "used_for_training", "used_for_validation", "used_for_inference"]:
+    for col_to_drop in ["$$UUID", "used_for_training", "used_for_validation", "used_for_inference"]:
         if col_to_drop in subset_df.columns:
             subset_df.drop(columns=[col_to_drop], axis=1, inplace=True)
 
@@ -2334,6 +2324,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
                 "smiles",
                 "RTINSECONDS",
                 "precursor_mz",
+                "AnnoMe_internal_ID",
                 #"height",
                 #"area",
                 "classification:relevant",
@@ -2352,6 +2343,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
                 "smiles",
                 "RTINSECONDS",
                 "precursor_mz",
+                "AnnoMe_internal_ID",
                 #"height",
                 #"area",
             ],
