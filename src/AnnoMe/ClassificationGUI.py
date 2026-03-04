@@ -62,7 +62,7 @@ import pathlib
 import time
 
 # Import classification functions
-from .Classification import generate_embeddings, add_all_metadata, train_and_classify, predict, show_dataset_overview, generate_prediction_overview, set_random_seeds, generate_master_excel
+from .Classification import generate_embeddings, add_all_metadata, train_and_classify, predict, show_dataset_overview, generate_prediction_overview, set_random_seeds, generate_summary
 
 # Import MGF parsing
 from .Filters import parse_mgf_file
@@ -181,7 +181,7 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
             long_table, pivot_table = generate_prediction_overview(
                 df_working_copy,
                 df_subset_infe,
-                os.path.join(output_dir, display_key.replace(" // ", "_-_-_")),
+                job_output_dir,
                 file_prefix="prediction",
                 min_prediction_threshold=min_threshold,
             )
@@ -440,10 +440,11 @@ class PredictionWorker(QThread):
                             display_key.replace(" // ", "_-_-_").replace(" ", "_"),
                         )
                         os.makedirs(combo_output_dir, exist_ok=True)
+                        time.sleep(1)
                         long_table, pivot_table = generate_prediction_overview(
                             df_working_copy,
                             df_inference,
-                            os.path.join(self.output_dir, display_key.replace(" // ", "_-_-_")),
+                            combo_output_dir,
                             file_prefix="prediction",
                             min_prediction_threshold=min_threshold,
                         )
@@ -2778,7 +2779,7 @@ classifiers_to_compare = {
 
         import datetime as _dt
 
-        self.training_start_time = _dt.datetime.now()
+        self.training_start_time = datetime.datetime.now()
         self._n_training_subsets = len(subsets_dict)
         self._n_training_classifier_sets = len(self.classifiers_config) if self.classifiers_config else 1
 
@@ -2871,15 +2872,13 @@ classifiers_to_compare = {
         self.populate_spectrum_file_list()
 
         # Generate master Excel file consolidating all validation results
-        generate_master_excel(output_dir)
+        generate_summary(output_dir)
 
         # --- compute timing statistics ------------------------------------
-        import datetime as _dt
-
-        training_end_time = _dt.datetime.now()
+        training_end_time = datetime.datetime.now()
         total_wall_seconds = (training_end_time - self.training_start_time).total_seconds()
 
-        job_durations = [r["job_duration_seconds"] for r in results if "job_duration_seconds" in r]
+        job_durations = [r["job_duration_seconds"] for r in results if r is not None and "job_duration_seconds" in r]
         avg_dur = sum(job_durations) / len(job_durations) if job_durations else 0.0
         min_dur = min(job_durations) if job_durations else 0.0
         max_dur = max(job_durations) if job_durations else 0.0
@@ -3111,7 +3110,7 @@ classifiers_to_compare = {
         self.populate_spectrum_file_list()
 
         # Generate master Excel summary
-        self.generate_master_excel(output_dir)
+        self.generate_summary(output_dir)
 
         QMessageBox.information(
             self,

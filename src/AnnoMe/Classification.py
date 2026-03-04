@@ -2275,26 +2275,29 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
     # Sort the DataFrame by count in descending order
     aggregated_df = df_predicted.sort_values(by="prediction_count", ascending=False).reset_index(drop=True)
 
-    # Create the bar chart using plotnine    
-    plot = (
-        p9.ggplot(aggregated_df, p9.aes(x="prediction_count"))
-        + p9.geom_vline(xintercept=min_prediction_threshold, linetype="dashed", color="Firebrick")
-        + p9.geom_bar()
-        + p9.coord_flip()
-        + p9theme()
-        + p9.theme(axis_text_x=p9.element_text(angle=0, hjust=1), panel_grid_major_y = p9.element_blank()) 
-        + p9.labs(
-            title="Counts",
-            subtitle="Counts are the number of times a feature was predicted to be a relevant compound by a single classifier.\nCounts exceeding the threshold (red, dashed line) will be annotated as relevant.",
-            x="Number of sub-classifiers reporting compound as relevant",
-            y="MSMS spectra",
+    try:
+        # Create the bar chart using plotnine    
+        plot = (
+            p9.ggplot(aggregated_df, p9.aes(x="prediction_count"))
+            + p9.geom_vline(xintercept=min_prediction_threshold, linetype="dashed", color="Firebrick")
+            + p9.geom_bar()
+            + p9.coord_flip()
+            + p9theme()
+            + p9.theme(axis_text_x=p9.element_text(angle=0, hjust=1), panel_grid_major_y = p9.element_blank()) 
+            + p9.labs(
+                title="Counts",
+                subtitle="Counts are the number of times a feature was predicted to be a relevant compound by a single classifier.\nCounts exceeding the threshold (red, dashed line) will be annotated as relevant.",
+                x="Number of sub-classifiers reporting compound as relevant",
+                y="MSMS spectra",
+            )
         )
-    )
 
-    # Print the plot
-    out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_classificationChart.pdf")
-    plot.save(out_file, width=8, height=6)
-    print(f"plot saved as {out_file}")
+        # Print the plot
+        out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_classificationChart.pdf")
+        plot.save(out_file, width=8, height=6)
+        print(f"plot saved as {out_file}")
+    except Exception as e:
+        print(f"{Fore.RED}Failed to create the bar chart: {e}{Style.RESET_ALL}")
 
     # Add a new column 'prediction' to df with default value 'NA'
     df["classification:relevant:count"] = None
@@ -2512,7 +2515,7 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
     p_confusion_matrix.save(confusion_matrix_file, width=12, height=8)
     print(f"Confusion matrix percent histogram saved to {confusion_matrix_file}")
 
-def generate_master_excel(output_dir):
+def generate_summary(output_dir):
     """Generate master Excel file consolidating results from all subsets."""
     try:
         print(f"\nGenerating master overview of all datasets")
