@@ -148,15 +148,7 @@ def p9theme():
     This theme sets the base font size, removes axis ticks, and customizes
     various elements such as title, panel background, grid lines, and strip background.
     """
-    return p9.theme_minimal(base_size=6) + p9.theme(
-        axis_ticks=p9.element_blank(),
-        title=p9.element_text(color="#3C3C3C"),
-        panel_background=p9.element_rect(fill="#FFFFFF"),
-        panel_grid_major=p9.element_line(color="#D5D5D5"),
-        panel_grid_minor=p9.element_blank(),
-        plot_background=p9.element_rect(fill="#FFFFFF", color="#FFFFFF", size=1),
-        strip_background=p9.element_rect(size=0, fill="lightgrey"),
-    )
+    return p9.theme_bw(base_size=6) + p9.theme(axis_ticks=p9.element_blank(), title=p9.element_text(color="#3C3C3C"))
 
 
 # adapted from plotnine package
@@ -2284,7 +2276,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
 
         # Print the plot
         out_file = os.path.join(output_dir, f"{file_prefix}_relevant_predictions_classificationChart.pdf")
-        plot.save(out_file, width=8, height=6)
+        plot.save(out_file, width=8, height=3)
         print(f"plot saved as {out_file}")
     except Exception as e:
         print(f"{Fore.RED}Failed to create the bar chart: {e}{Style.RESET_ALL}")

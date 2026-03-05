@@ -43,9 +43,11 @@ from PyQt5.QtWidgets import (
     QTabWidget,
     QAction,
     QSizePolicy,
+    QStyledItemDelegate,
+    QStyle,
 )
-from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
-from PyQt5.QtGui import QPixmap, QImage, QColor, QBrush
+from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QRect
+from PyQt5.QtGui import QPixmap, QImage, QColor, QBrush, QPainter
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 import math
@@ -593,6 +595,45 @@ class SpectrumViewer(QDialog):
         layout.addWidget(close_btn)
 
         self.setLayout(layout)
+
+
+class PercentageBarDelegate(QStyledItemDelegate):
+    """Paints a cell with a left-filled colour bar proportional to a stored percentage.
+
+    ``Qt.UserRole``     – float percentage value (0–100)
+    ``Qt.UserRole + 1`` – QColor for the filled portion (remainder is white)
+    The display text is drawn centred on top.
+    """
+
+    def paint(self, painter, option, index):
+        pct = index.data(Qt.UserRole)
+        color = index.data(Qt.UserRole + 1)
+        text = index.data(Qt.DisplayRole) or ""
+
+        painter.save()
+        rect = option.rect
+
+        if isinstance(pct, (int, float)) and isinstance(color, QColor) and pct > 0:
+            fill_w = max(0, min(rect.width(), int(round(rect.width() * pct / 100.0))))
+            if fill_w > 0:
+                painter.fillRect(QRect(rect.left(), rect.top(), fill_w, rect.height()), color)
+            if fill_w < rect.width():
+                painter.fillRect(
+                    QRect(rect.left() + fill_w, rect.top(), rect.width() - fill_w, rect.height()),
+                    QColor(255, 255, 255),
+                )
+        else:
+            painter.fillRect(rect, QColor(255, 255, 255))
+
+        # Semi-transparent selection highlight
+        if option.state & QStyle.State_Selected:
+            hl = option.palette.highlight().color()
+            hl.setAlpha(80)
+            painter.fillRect(rect, hl)
+
+        painter.setPen(QColor(0, 0, 0))
+        painter.drawText(rect, Qt.AlignCenter, text)
+        painter.restore()
 
 
 class ClassificationGUI(QMainWindow):
@@ -1843,13 +1884,13 @@ classifiers_to_compare = {
         # Update label to show it's for a specific file
         self.value_list_label.setText(f"Unique Values for '{key}' in '{source}':")
 
-        # Add missing values
-        if missing_count > 0:
-            self.value_list.addItem(f"<missing>: {missing_count}")
+        # Add other values sorted by count descending
+        for value, count in sorted(value_counts.items(), key=lambda x: -x[1]):
+            self.value_list.addItem(f"{count}: {value}")
 
-        # Add other values (convert to string for display)
-        for value, count in sorted(value_counts.items(), key=lambda x: str(x[0])):
-            self.value_list.addItem(f"{value}: {count}")
+        # Add missing values at the end
+        if missing_count > 0:
+            self.value_list.addItem(f"{missing_count}: <missing>")
 
     def on_meta_key_clicked(self, row):
         """Handle meta-field name click to show all unique values across all samples."""
@@ -1873,13 +1914,13 @@ classifiers_to_compare = {
         value_counts = self.df_embeddings[key].value_counts().to_dict()
         missing_count = self.df_embeddings[key].isna().sum()
 
-        # Add missing values
-        if missing_count > 0:
-            self.value_list.addItem(f"<missing>: {missing_count}")
+        # Add other values sorted by count descending
+        for value, count in sorted(value_counts.items(), key=lambda x: -x[1]):
+            self.value_list.addItem(f"{count}: {value}")
 
-        # Add other values (convert to string for display)
-        for value, count in sorted(value_counts.items(), key=lambda x: str(x[0])):
-            self.value_list.addItem(f"{value}: {count}")
+        # Add missing values at the end
+        if missing_count > 0:
+            self.value_list.addItem(f"{missing_count}: <missing>")
 
     def _count_subset_matches(self, subset_expr):
         """Count matches for a subset expression across all embeddings, grouped by file type.
@@ -3338,9 +3379,7 @@ classifiers_to_compare = {
         # Set up the table with 8 columns (classifier and subset as separate columns)
         self.results_table.setRowCount(len(combined_summary))
         self.results_table.setColumnCount(9)
-        self.results_table.setHorizontalHeaderLabels(
-            ["Classifier", "Subset", "MGF File", "Type", "Total (n)", "Prediction: Other (Count)", "Prediction: Other (%)", "Prediction: Relevant (Count)", "Prediction: Relevant (%)"]
-        )
+        self.results_table.setHorizontalHeaderLabels(["Classifier", "Subset", "MGF File", "Type", "Total (n)", "Other (n)", "Relevant (n)", "% Other", "% Relevant"])
 
         # Define match/mismatch colors (once, outside loop)
         COLOR_MATCH = QColor(144, 238, 144)  # Light green
@@ -3393,7 +3432,7 @@ classifiers_to_compare = {
             # Total count (no background color)
             self.results_table.setItem(row_idx, 4, QTableWidgetItem(str(int(total))))
 
-            # Not relevant count
+            # Not relevant count — col 5
             item = QTableWidgetItem(str(int(not_relevant)))
             if is_inference:
                 item.setBackground(QBrush(COLOR_INFERENCE))
@@ -3403,17 +3442,7 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MISMATCH))
             self.results_table.setItem(row_idx, 5, item)
 
-            # Not relevant %
-            item = QTableWidgetItem(f"{not_relevant_pct:.1f}%")
-            if is_inference:
-                item.setBackground(QBrush(COLOR_INFERENCE))
-            elif expected_type == "other":
-                item.setBackground(QBrush(COLOR_MATCH))
-            else:
-                item.setBackground(QBrush(COLOR_MISMATCH))
-            self.results_table.setItem(row_idx, 6, item)
-
-            # Relevant count
+            # Relevant count — col 6
             item = QTableWidgetItem(str(int(relevant)))
             if is_inference:
                 item.setBackground(QBrush(COLOR_INFERENCE))
@@ -3421,17 +3450,34 @@ classifiers_to_compare = {
                 item.setBackground(QBrush(COLOR_MATCH))
             else:
                 item.setBackground(QBrush(COLOR_MISMATCH))
+            self.results_table.setItem(row_idx, 6, item)
+
+            # % Other bar — col 7 (painted by PercentageBarDelegate)
+            item = QTableWidgetItem(f"{not_relevant_pct:.1f}%")
+            item.setData(Qt.UserRole, not_relevant_pct)
+            if is_inference:
+                item.setData(Qt.UserRole + 1, QColor(COLOR_INFERENCE))
+            elif expected_type == "other":
+                item.setData(Qt.UserRole + 1, QColor(COLOR_MATCH))
+            else:
+                item.setData(Qt.UserRole + 1, QColor(COLOR_MISMATCH))
             self.results_table.setItem(row_idx, 7, item)
 
-            # Relevant %
+            # % Relevant bar — col 8 (painted by PercentageBarDelegate)
             item = QTableWidgetItem(f"{relevant_pct:.1f}%")
+            item.setData(Qt.UserRole, relevant_pct)
             if is_inference:
-                item.setBackground(QBrush(COLOR_INFERENCE))
+                item.setData(Qt.UserRole + 1, QColor(COLOR_INFERENCE))
             elif expected_type == "relevant":
-                item.setBackground(QBrush(COLOR_MATCH))
+                item.setData(Qt.UserRole + 1, QColor(COLOR_MATCH))
             else:
-                item.setBackground(QBrush(COLOR_MISMATCH))
+                item.setData(Qt.UserRole + 1, QColor(COLOR_MISMATCH))
             self.results_table.setItem(row_idx, 8, item)
+
+        # Attach percentage-bar delegate to the two % columns
+        pct_delegate = PercentageBarDelegate(self.results_table)
+        self.results_table.setItemDelegateForColumn(7, pct_delegate)
+        self.results_table.setItemDelegateForColumn(8, pct_delegate)
 
         # Re-enable sorting and auto-resize columns
         self.results_table.setSortingEnabled(True)
