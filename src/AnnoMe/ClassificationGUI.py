@@ -45,6 +45,8 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QStyledItemDelegate,
     QStyle,
+    QProgressBar,
+    QFrame,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QRect
 from PyQt5.QtGui import QPixmap, QImage, QColor, QBrush, QPainter
@@ -597,6 +599,391 @@ class SpectrumViewer(QDialog):
         self.setLayout(layout)
 
 
+class EmbeddingOverviewWorker(QThread):
+    """Worker thread for computing data-overview visualisations from embeddings."""
+
+    finished = pyqtSignal(object)  # emits a matplotlib Figure
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int, str)  # (0-100, status message)
+
+    # Internal keys for each visualisation type
+    VIZ_EMBEDDINGS = "embeddings_pca_umap"
+    VIZ_VENN = "venn_diagram"
+    VIZ_FP = "fingerprints"
+
+    # Colour palette – five distinct, accessible colours
+    TYPE_COLORS = {
+        "train - relevant": "#466eb4",
+        "train - other": "#d7642c",
+        "validation - relevant": "#41afaa",
+        "validation - other": "#e6a532",
+        "inference": "#af4b91",
+    }
+
+    def __init__(self, viz_type, df_embeddings, mgf_files):
+        super().__init__()
+        self.viz_type = viz_type
+        self.df_embeddings = df_embeddings
+        self.mgf_files = mgf_files
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    # ------------------------------------------------------------------
+    def run(self):
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+
+            if self.viz_type == self.VIZ_EMBEDDINGS:
+                fig = self._compute_embeddings_pca_umap(plt)
+            elif self.viz_type == self.VIZ_VENN:
+                fig = self._compute_venn_diagram(plt)
+            elif self.viz_type == self.VIZ_FP:
+                fig = self._compute_fingerprints(plt)
+            else:
+                raise ValueError(f"Unknown visualisation type: {self.viz_type!r}")
+
+            if not self._cancelled and fig is not None:
+                self.finished.emit(fig)
+
+        except Exception as exc:
+            self.error.emit(f"{str(exc)}\n{traceback.format_exc()}")
+
+    # ------------------------------------------------------------------
+    def _legend_elements(self, types, plt):
+        from matplotlib.patches import Patch
+
+        unique = sorted(set(types))
+        return [Patch(facecolor=self.TYPE_COLORS.get(str(t), "#888888"), label=str(t)) for t in unique]
+
+    def _type_colors(self, types):
+        import matplotlib.colors as mcolors
+
+        hex_list = [self.TYPE_COLORS.get(t, "#888888") for t in types]
+        return mcolors.to_rgba_array(hex_list)
+
+    # ------------------- Embeddings: PCA + UMAP -----------------------
+    def _compute_embeddings_pca_umap(self, plt):
+        from sklearn.decomposition import PCA
+        import umap as umap_module
+
+        self.progress.emit(5, "Stacking embedding vectors…")
+        emb = np.stack(self.df_embeddings["embeddings"].values)
+        types = np.array(self.df_embeddings["type"].values)
+
+        # Sort groups largest-first so smaller groups render on top
+        from collections import Counter as _Counter_emb
+        type_counts_emb = _Counter_emb(types)
+        groups_by_size_emb = sorted(type_counts_emb.keys(), key=lambda t: type_counts_emb[t], reverse=True)
+
+        self.progress.emit(20, "Running PCA on embeddings…")
+        pca = PCA(n_components=2, random_state=42)
+        pca_coords = pca.fit_transform(emb)
+
+        if self._cancelled:
+            return None
+
+        self.progress.emit(50, "Running UMAP on embeddings (may take a minute)…")
+        reducer = umap_module.UMAP(n_components=2, random_state=42, verbose=False)
+        umap_coords = reducer.fit_transform(emb)
+
+        if self._cancelled:
+            return None
+
+        self.progress.emit(90, "Rendering embedding plots…")
+        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+        fig.suptitle("Embedding Overview", fontsize=13, fontweight="bold")
+
+        ax = axes[0]
+        for t in groups_by_size_emb:
+            mask = types == t
+            ax.scatter(pca_coords[mask, 0], pca_coords[mask, 1], c=self.TYPE_COLORS.get(t, "#888888"), alpha=0.4, s=14, linewidths=0, label=t)
+        ax.set_title(f"PCA  (var. explained {pca.explained_variance_ratio_.sum() * 100:.1f}%)")
+        ax.set_xlabel("PC 1")
+        ax.set_ylabel("PC 2")
+        ax.legend(fontsize=8, loc="best")
+
+        ax = axes[1]
+        for t in groups_by_size_emb:
+            mask = types == t
+            ax.scatter(umap_coords[mask, 0], umap_coords[mask, 1], c=self.TYPE_COLORS.get(t, "#888888"), alpha=0.4, s=14, linewidths=0, label=t)
+        ax.set_title("UMAP")
+        ax.set_xlabel("UMAP-1")
+        ax.set_ylabel("UMAP-2")
+        ax.legend(fontsize=8, loc="best")
+
+        fig.tight_layout()
+        return fig
+
+    # ------------------- Venn / pairwise overlap ----------------------
+    def _compute_venn_diagram(self, plt):
+        self.progress.emit(10, "Collecting formula and SMILES sets per file type…")
+
+        # Canonical order matching the 5 type categories from Step 1
+        TYPE_ORDER = ["train - relevant", "train - other", "validation - relevant", "validation - other", "inference"]
+
+        def _collect_sets(col_name):
+            result = {}
+            for filename, mgf_data in self.mgf_files.items():
+                ftype = mgf_data.get("type", "inference")
+                for entry in mgf_data.get("entries", []):
+                    val = entry.get(col_name, "")
+                    if val and str(val) not in ("NA", "na", "N/A", ""):
+                        result.setdefault(ftype, set()).add(str(val))
+            return result
+
+        formula_sets = _collect_sets("formula")
+        smiles_sets = _collect_sets("smiles")
+
+        # Use only types present in at least one set
+        present = [t for t in TYPE_ORDER if t in formula_sets or t in smiles_sets]
+        formula_list = [formula_sets.get(t, set()) for t in present]
+        smiles_list = [smiles_sets.get(t, set()) for t in present]
+
+        self.progress.emit(50, "Drawing overlap diagrams…")
+        n = len(present)
+        fig, axes = plt.subplots(1, 2, figsize=(max(16, (n + 2) * 2), max(6, n + 2)))
+        fig.suptitle("Chemical Overlap Overview (by file type)", fontsize=13, fontweight="bold")
+
+        self._draw_overlap_panel(plt, axes[0], formula_list, present, "Formula Overlap", "# shared formulas")
+        self._draw_overlap_panel(plt, axes[1], smiles_list, present, "SMILES Overlap", "# shared SMILES")
+
+        fig.tight_layout()
+        return fig
+
+    def _draw_overlap_panel(self, plt, ax, sets, short, title, colorbar_label):
+        """Render a Venn diagram (2–3 sets) or pairwise overlap matrix into *ax*."""
+        n = len(sets)
+        if n == 2:
+            try:
+                from matplotlib_venn import venn2
+
+                venn2(sets, set_labels=short, ax=ax)
+                ax.set_title(title)
+                return
+            except ImportError:
+                pass
+        if n == 3:
+            try:
+                from matplotlib_venn import venn3
+
+                venn3(sets, set_labels=short, ax=ax)
+                ax.set_title(title)
+                return
+            except ImportError:
+                pass
+
+        # Fallback for >3 files or missing matplotlib_venn: pairwise matrix
+        mat = np.zeros((n, n), dtype=int)
+        for i in range(n):
+            for j in range(n):
+                mat[i, j] = len(sets[i] & sets[j])
+        im = ax.imshow(mat, cmap="YlGn")
+        ax.set_xticks(range(n))
+        ax.set_xticklabels(short, rotation=45, ha="right", fontsize=8)
+        ax.set_yticks(range(n))
+        ax.set_yticklabels(short, fontsize=8)
+        max_val = int(mat.max()) if mat.size > 0 and mat.max() > 0 else 1
+        for i in range(n):
+            for j in range(n):
+                ax.text(j, i, str(mat[i, j]), ha="center", va="center", fontsize=9, color="black" if mat[i, j] < max_val * 0.7 else "white")
+        plt.colorbar(im, ax=ax, label=colorbar_label)
+        ax.set_title(title)
+
+    # ------------------- Fingerprints: PCA + UMAP + Clustering --------
+    def _compute_fingerprints(self, plt):
+        from sklearn.decomposition import PCA
+        import umap as umap_module
+
+        try:
+            from rdkit import Chem
+            from rdkit.Chem import AllChem
+        except ImportError:
+            raise ImportError("RDKit is required for fingerprint visualisation.\nInstall it with:  conda install -c conda-forge rdkit")
+
+        self.progress.emit(5, "Collecting SMILES from MGF entries…")
+
+        # Collect (smiles, type) directly from the parsed MGF entries
+        all_rows = []
+        smiles_to_type: dict = {}  # first-seen type for each unique SMILES
+        for filename, mgf_data in self.mgf_files.items():
+            ftype = mgf_data.get("type", "inference")
+            for entry in mgf_data.get("entries", []):
+                smi = entry.get("smiles", "")
+                if smi and str(smi) not in ("NA", "na", "", "N/A"):
+                    smi = str(smi)
+                    all_rows.append((smi, ftype))
+                    if smi not in smiles_to_type:
+                        smiles_to_type[smi] = ftype
+
+        if not all_rows:
+            raise ValueError("No valid SMILES found in the MGF file entries.")
+
+        # ── Step 1: compute fingerprints for unique SMILES only ──────────
+        unique_smiles = list({r[0] for r in all_rows})
+        total_unique = len(unique_smiles)
+        smiles_to_fp: dict = {}
+        failed_smiles: set = set()
+
+        for i, smi in enumerate(unique_smiles):
+            if self._cancelled:
+                return None
+            mol = Chem.MolFromSmiles(smi)
+            if mol is not None:
+                fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=2, nBits=1024)
+                smiles_to_fp[smi] = np.array(fp)
+            else:
+                failed_smiles.add(smi)
+            if i % 200 == 0 and total_unique > 0:
+                pct = max(5, min(25, 5 + i * 20 // total_unique))
+                self.progress.emit(pct, f"Computing fingerprints for unique SMILES… ({i}/{total_unique})")
+
+        # ── Step 2: map back to all rows ─────────────────────────────────
+        fps, row_types = [], []
+        for smi, ftype in all_rows:
+            if smi in smiles_to_fp:
+                fps.append(smiles_to_fp[smi])
+                row_types.append(ftype)
+
+        failed = len(failed_smiles)
+        n_spectra = len(fps)
+        if n_spectra == 0:
+            raise ValueError("No valid molecules could be parsed from the SMILES column.")
+
+        # ── Step 3: PCA on unique structures only ────────────────────────
+        uniq_smiles_list = list(smiles_to_fp.keys())
+        uniq_matrix_full = np.array([smiles_to_fp[s] for s in uniq_smiles_list], dtype=np.float32)
+        uniq_types_full = [smiles_to_type.get(s, "inference") for s in uniq_smiles_list]
+
+        self.progress.emit(30, f"Fingerprints ready ({len(smiles_to_fp)} unique structures, {failed} failed to parse, {n_spectra} spectra). Running PCA…")
+        colors = self._type_colors(uniq_types_full)
+        legend_els = self._legend_elements(uniq_types_full, plt)
+
+        pca = PCA(n_components=2, random_state=42)
+        pca_coords = pca.fit_transform(uniq_matrix_full)
+
+        if self._cancelled:
+            return None
+
+        self.progress.emit(58, "Biclustering fingerprints (hierarchical clustering of structures and bits)…")
+        from scipy.cluster.hierarchy import linkage, leaves_list
+        from scipy.spatial.distance import pdist
+
+        # Reuse already-built unique arrays for the heatmap
+        uniq_types_list = list(uniq_types_full)
+
+        # Sample up to MAX_HEAT_ROWS rows per type group
+        MAX_HEAT_ROWS = 400
+        rng = np.random.default_rng(42)
+
+        from collections import defaultdict as _dd
+
+        type_idx_map: dict = _dd(list)
+        for i, t in enumerate(uniq_types_list):
+            type_idx_map[t].append(i)
+
+        sel_idx_all = []
+        for t, idxs in type_idx_map.items():
+            take = min(len(idxs), MAX_HEAT_ROWS)
+            chosen = rng.choice(len(idxs), take, replace=False)
+            sel_idx_all.extend(idxs[c] for c in chosen)
+
+        sel_idx = np.array(sel_idx_all, dtype=int)
+        sampled = len(sel_idx) < len(uniq_smiles_list)
+        uniq_matrix = uniq_matrix_full[sel_idx]
+        uniq_types_list = [uniq_types_list[i] for i in sel_idx]
+        row_note = f" (heatmap: up to {MAX_HEAT_ROWS}/type, {len(type_idx_map)} type(s), {len(sel_idx)} total)" if sampled else ""
+
+        n_rows, n_cols = uniq_matrix.shape
+
+        # Cluster rows (structures) — Jaccard on binary vectors
+        if n_rows >= 2:
+            row_dist = pdist(uniq_matrix, metric="jaccard")
+            row_dist = np.nan_to_num(row_dist, nan=1.0)
+            row_linkage = linkage(row_dist, method="average", optimal_ordering=True)
+            row_order = leaves_list(row_linkage)
+        else:
+            row_linkage = None
+            row_order = np.arange(n_rows)
+
+        # Cluster columns (fingerprint bits) — Jaccard on transposed matrix
+        if n_cols >= 2:
+            col_dist = pdist(uniq_matrix.T, metric="jaccard")
+            col_dist = np.nan_to_num(col_dist, nan=1.0)
+            col_linkage = linkage(col_dist, method="average", optimal_ordering=True)
+            col_order = leaves_list(col_linkage)
+        else:
+            col_linkage = None
+            col_order = np.arange(n_cols)
+
+        # Re-sort rows: group by type, largest type first, preserve intra-group cluster order
+        from collections import Counter as _Counter_heat
+        type_counts_heat = _Counter_heat(uniq_types_list)
+        types_by_size_heat = sorted(type_counts_heat.keys(), key=lambda t: type_counts_heat[t], reverse=True)
+        row_order_grouped = []
+        for t in types_by_size_heat:
+            row_order_grouped.extend([i for i in row_order if uniq_types_list[i] == t])
+        row_order = np.array(row_order_grouped)
+
+        ordered_matrix = uniq_matrix[np.ix_(row_order, col_order)]
+        row_types_ordered = [uniq_types_list[i] for i in row_order]
+        import matplotlib.colors as mcolors
+
+        row_rgba = mcolors.to_rgba_array([self.TYPE_COLORS.get(t, "#888888") for t in row_types_ordered])
+
+        if self._cancelled:
+            return None
+
+        self.progress.emit(92, "Rendering fingerprint plots…")
+
+        from matplotlib.patches import Patch
+
+        # Build RGBA image: bit=1 → type colour, bit=0 → white
+        heat_rgb = np.ones((n_rows, n_cols, 4), dtype=np.float32)
+        for i in range(n_rows):
+            mask = ordered_matrix[i].astype(bool)
+            heat_rgb[i, mask] = row_rgba[i]
+
+        fig, (ax_pca, ax_heat) = plt.subplots(1, 2, figsize=(20, 8), gridspec_kw={"width_ratios": [1, 1.6], "wspace": 0.35})
+        fig.suptitle(
+            f"Fingerprint Overview  ({len(smiles_to_fp)} unique structures\n{row_note}\n · {n_spectra} spectra · {failed} SMILES unparseable)",
+            fontsize=13,
+            fontweight="bold",
+        )
+
+        # ── Left panel: PCA ──────────────────────────────────────────────
+        # Plot groups largest-first so smaller groups appear on top
+        from collections import Counter as _Counter
+
+        type_counts = _Counter(uniq_types_full)
+        groups_by_size = sorted(type_counts.keys(), key=lambda t: type_counts[t], reverse=True)
+        uniq_types_arr = np.array(uniq_types_full)
+        for t in groups_by_size:
+            mask = uniq_types_arr == t
+            c = self.TYPE_COLORS.get(t, "#888888")
+            ax_pca.scatter(pca_coords[mask, 0], pca_coords[mask, 1], c=c, alpha=0.4, s=14, linewidths=0, label=t)
+        ax_pca.set_title(f"Fingerprint PCA  (var. {pca.explained_variance_ratio_.sum() * 100:.1f}%)")
+        ax_pca.set_xlabel("PC 1")
+        ax_pca.set_ylabel("PC 2")
+        ax_pca.legend(fontsize=8, loc="best")
+
+        # ── Right panel: row-coloured biclustered heatmap ────────────────
+        ax_heat.imshow(heat_rgb, aspect="auto", interpolation="nearest")
+        ax_heat.set_xlabel("Fingerprint bit index (clustered)", fontsize=9)
+        ax_heat.set_ylabel(f"Unique structures (clustered, n={n_rows})", fontsize=9)
+        ax_heat.set_title("Biclustered Morgan FP Heatmap", fontsize=10)
+        ax_heat.tick_params(left=False, labelleft=False, bottom=False, labelbottom=False)
+        type_legend = [Patch(facecolor=self.TYPE_COLORS.get(t, "#888888"), label=t) for t in sorted(set(row_types_ordered))]
+        ax_heat.legend(handles=type_legend, fontsize=7, loc="upper right", frameon=True)
+
+        fig.tight_layout()
+        return fig
+
+
 class PercentageBarDelegate(QStyledItemDelegate):
     """Paints a cell with a left-filled colour bar proportional to a stored percentage.
 
@@ -954,7 +1341,55 @@ class ClassificationGUI(QMainWindow):
         self.embedding_status = QLabel("Status: Not started")
         layout.addWidget(self.embedding_status)
 
-        layout.addStretch()
+        # ── Data Overview Visualization ───────────────────────────────────
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(sep)
+
+        viz_header_layout = QHBoxLayout()
+        viz_header_layout.addWidget(QLabel("<b>Data Overview Visualisation:</b>"))
+        viz_header_layout.addStretch()
+        layout.addLayout(viz_header_layout)
+
+        viz_controls_layout = QHBoxLayout()
+        viz_controls_layout.addWidget(QLabel("Visualise:"))
+        self.overview_viz_combo = QComboBox()
+        self.overview_viz_combo.addItem("\u2014 Select Visualisation \u2014")
+        self.overview_viz_combo.addItem("PCA + UMAP of Embeddings")
+        self.overview_viz_combo.addItem("Venn Diagram (Chemical Formulae)")
+        self.overview_viz_combo.addItem("Fingerprints: PCA + UMAP + Clustering")
+        self.overview_viz_combo.setEnabled(False)
+        self.overview_viz_combo.setToolTip(
+            "Select a visualisation to compute and display.\n"
+            "Becomes available after embeddings have been generated.\n\n"
+            "  \u2022 PCA + UMAP of Embeddings  \u2013 dimensionality-reduction of MS2DeepScore vectors\n"
+            "  \u2022 Venn Diagram               \u2013 formula overlap across MGF files\n"
+            "  \u2022 Fingerprints               \u2013 Morgan FP (RDKit) \u2192 PCA / UMAP / KMeans"
+        )
+        self.overview_viz_combo.currentIndexChanged.connect(self.on_overview_viz_requested)
+        viz_controls_layout.addWidget(self.overview_viz_combo)
+        viz_controls_layout.addStretch()
+        layout.addLayout(viz_controls_layout)
+
+        # Progress indicators (hidden until a computation starts)
+        self.overview_progress_label = QLabel("")
+        self.overview_progress_label.setVisible(False)
+        layout.addWidget(self.overview_progress_label)
+
+        self.overview_progress_bar = QProgressBar()
+        self.overview_progress_bar.setRange(0, 100)
+        self.overview_progress_bar.setValue(0)
+        self.overview_progress_bar.setVisible(False)
+        layout.addWidget(self.overview_progress_bar)
+
+        # Container for the matplotlib canvas (populated after computation)
+        self.overview_viz_container = QWidget()
+        self.overview_viz_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.overview_viz_container_layout = QVBoxLayout()
+        self.overview_viz_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.overview_viz_container.setLayout(self.overview_viz_container_layout)
+        layout.addWidget(self.overview_viz_container, 1)  # stretch=1 so it fills remaining vertical space
 
         controls.setLayout(layout)
         main_layout.addWidget(controls, 3)  # 75% width
@@ -2319,6 +2754,9 @@ classifiers_to_compare = {
         self.classify_trained_btn.setEnabled(True)
         self.generate_embeddings_btn.setEnabled(True)
 
+        # Enable the data-overview visualisation dropdown
+        self.overview_viz_combo.setEnabled(True)
+
         # Enable classifier configuration inputs
         self.classifiers_config_text.setEnabled(True)
         self.load_default_classifiers_btn.setEnabled(True)
@@ -2344,6 +2782,126 @@ classifiers_to_compare = {
         self.embedding_status.setText("Status: Error occurred")
         self.generate_embeddings_btn.setEnabled(True)
         QMessageBox.critical(self, "Error", error_msg)
+
+    # ── Data Overview Visualization ──────────────────────────────────────────
+
+    def on_overview_viz_requested(self, index):
+        """Triggered when the user selects a visualisation from the overview combo."""
+        if index == 0:
+            return  # placeholder item
+        if self.df_embeddings is None:
+            return
+
+        _VIZ_KEYS = [
+            EmbeddingOverviewWorker.VIZ_EMBEDDINGS,
+            EmbeddingOverviewWorker.VIZ_VENN,
+            EmbeddingOverviewWorker.VIZ_FP,
+        ]
+        viz_key = _VIZ_KEYS[index - 1]  # index 0 is the placeholder
+
+        _NOTES = {
+            EmbeddingOverviewWorker.VIZ_EMBEDDINGS: ("Running PCA and UMAP on the full embedding matrix.\nThis may take a minute or two for large datasets."),
+            EmbeddingOverviewWorker.VIZ_VENN: (
+                "Collecting chemical formula sets and rendering the overlap diagram.\n"
+                "This is typically fast.\n\n"
+                "Note: requires the \u2018matplotlib-venn\u2019 package for true Venn diagrams (2\u20133 files).\n"
+                "A pairwise overlap matrix is shown as a fallback."
+            ),
+            EmbeddingOverviewWorker.VIZ_FP: (
+                "Computing Morgan fingerprints (RDKit) for every molecule, then running\n"
+                "PCA, UMAP and KMeans clustering on the resulting bit-vectors.\n\n"
+                "This can take several minutes for large datasets."
+            ),
+        }
+
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Compute Visualisation?")
+        msg_box.setIcon(QMessageBox.Question)
+        msg_box.setText(_NOTES[viz_key])
+        msg_box.setInformativeText("Do you want to proceed?")
+        proceed_btn = msg_box.addButton("Proceed", QMessageBox.AcceptRole)
+        cancel_btn = msg_box.addButton("Cancel", QMessageBox.RejectRole)
+        msg_box.exec_()
+
+        if msg_box.clickedButton() is cancel_btn:
+            self.overview_viz_combo.blockSignals(True)
+            self.overview_viz_combo.setCurrentIndex(0)
+            self.overview_viz_combo.blockSignals(False)
+            return
+
+        self._start_overview_computation(viz_key)
+
+    def _start_overview_computation(self, viz_key):
+        """Stop any running overview worker and launch a new one."""
+        if hasattr(self, "_overview_worker") and self._overview_worker is not None:
+            self._overview_worker.cancel()
+            self._overview_worker.quit()
+            self._overview_worker.wait()
+
+        self.overview_viz_combo.setEnabled(False)
+        self.overview_progress_bar.setValue(0)
+        self.overview_progress_bar.setVisible(True)
+        self.overview_progress_label.setText("Starting computation\u2026")
+        self.overview_progress_label.setVisible(True)
+
+        self._overview_worker = EmbeddingOverviewWorker(viz_key, self.df_embeddings, self.mgf_files)
+        self._overview_worker.progress.connect(self._on_overview_progress)
+        self._overview_worker.finished.connect(self._on_overview_computed)
+        self._overview_worker.error.connect(self._on_overview_error)
+        self._overview_worker.start()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+    def _on_overview_progress(self, pct, msg):
+        """Update progress bar and label during overview computation."""
+        self.overview_progress_bar.setValue(pct)
+        self.overview_progress_label.setText(msg)
+
+    def _on_overview_computed(self, fig):
+        """Display the computed matplotlib Figure in the Step 2 panel."""
+        QApplication.restoreOverrideCursor()
+        self.overview_progress_bar.setVisible(False)
+        self.overview_progress_label.setVisible(False)
+        self.overview_viz_combo.setEnabled(True)
+
+        self._clear_overview_viz()
+
+        try:
+            import matplotlib
+
+            matplotlib.use("Qt5Agg")
+            from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+            from matplotlib.backends.backend_qt5agg import NavigationToolbar2QT as NavigationToolbar
+
+            canvas = FigureCanvas(fig)
+            canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # Reserve enough height so the figure fills down to the window bottom
+            canvas.setMinimumHeight(max(500, self.height() - 220))
+            toolbar = NavigationToolbar(canvas, self)
+
+            self.overview_viz_container_layout.addWidget(toolbar)
+            self.overview_viz_container_layout.addWidget(canvas)
+            canvas.draw()
+        except Exception as exc:
+            lbl = QLabel(f"Could not render figure:\n{str(exc)}")
+            self.overview_viz_container_layout.addWidget(lbl)
+
+    def _on_overview_error(self, msg):
+        """Handle errors from the overview worker."""
+        QApplication.restoreOverrideCursor()
+        self.overview_progress_bar.setVisible(False)
+        self.overview_progress_label.setVisible(False)
+        self.overview_viz_combo.setEnabled(True)
+        self.overview_viz_combo.blockSignals(True)
+        self.overview_viz_combo.setCurrentIndex(0)
+        self.overview_viz_combo.blockSignals(False)
+        QMessageBox.critical(self, "Visualisation Error", msg)
+
+    def _clear_overview_viz(self):
+        """Remove all widgets from the overview visualisation container."""
+        while self.overview_viz_container_layout.count():
+            item = self.overview_viz_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
 
     def load_default_classifiers_config(self):
         """Load the default classifiers configuration into the text box."""

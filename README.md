@@ -16,20 +16,28 @@ Using training data consisting of annotated and labeled MS/MS spectra of compoun
 
 1. Install the uv toolkit. For installation instructions please refer to [https://github.com/astral-sh/uv#installation](https://github.com/astral-sh/uv#installation).
 
-2. Install git. For installation instructions please refer to [https://github.com/git-guides/install-git](https://github.com/git-guides/install-git). 
+2. Obtain a copy of AnnMe. This can be done via `git` or a versioned release of AnnoMe. 
 
-3. Open a command prompt and navigate to a new folder of your choice where you want to setup the AnnoMe package.
-
-4. In the command prompt, clone the AnnoMe repository with the following commands:
+Git: 
+- Install `git`. For installation instructions please refer to [https://github.com/git-guides/install-git](https://github.com/git-guides/install-git). 
+- Open a command prompt and navigate to a new folder of your choice where you want to setup the AnnoMe package.
+- In the command prompt, clone the AnnoMe repository with the following commands:
 ```{bash}
 git clone https://github.com/chrboku/AnnoMe
 cd AnnoMe
 ```
 
-5. Download available public MS/MS resources using the following command (Note: All resources are approximately 11GB in size (per 2.2026), and - depending on your internet connection - the download might take some time. It can be interrupted and restarted. Also please be aware of the download size if you are on a metered internet connection):
-```{bash}
-uv run annome_downloadresources
-```
+Versioned release of AnnoMe: 
+- Download the latest release from [https://github.com/chrboku/AnnoMe/releases](https://github.com/chrboku/AnnoMe/releases).
+- Unpack the archive to a folder of your choice. 
+
+3. Download available public MS/MS resources using the command `uv run annome_downloadresources` or double-click the file `annome_downloadresources.bat` (Windows) or `annome_downloadresources.sh` (Linux, Mac).
+Note: All resources are approximately 11GB in size (per 2.2026), and - depending on your internet connection - the download might take some time. It can be interrupted and restarted. Also please be aware of the download size if you are on a metered internet connection
+
+4. Start the filtering GUI via the command `uv run annome_filtergui` or double-click the file `annome_filtergui.bat` (Windows) or `annome_filtergui.sh` (Linux, Mac). 
+
+5. Start the classification GUI via the command `uv run annome_classificationgui` or double-click the file `annome_classificationgui.bat` (Windows) or `annome_classificationgui.sh` (Linux, Mac).
+
 
 ## Graphical User Interface
 AnnoMe provides two graphical user interface programs for a) the filtering of MGF files for interesting structures, and b) performing classification and comparison tasks. The two tools can be executed with the commands:
