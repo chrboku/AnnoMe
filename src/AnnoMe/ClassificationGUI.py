@@ -677,6 +677,7 @@ class EmbeddingOverviewWorker(QThread):
 
         # Sort groups largest-first so smaller groups render on top
         from collections import Counter as _Counter_emb
+
         type_counts_emb = _Counter_emb(types)
         groups_by_size_emb = sorted(type_counts_emb.keys(), key=lambda t: type_counts_emb[t], reverse=True)
 
@@ -922,6 +923,7 @@ class EmbeddingOverviewWorker(QThread):
 
         # Re-sort rows: group by type, largest type first, preserve intra-group cluster order
         from collections import Counter as _Counter_heat
+
         type_counts_heat = _Counter_heat(uniq_types_list)
         types_by_size_heat = sorted(type_counts_heat.keys(), key=lambda t: type_counts_heat[t], reverse=True)
         row_order_grouped = []

@@ -1181,7 +1181,7 @@ class MGFFilterGUI(QMainWindow):
         # Checkbox for "Export Per Input File"
         export_perfile_layout = QHBoxLayout()
         self.export_perfile_checkbox = QCheckBox("Export Spectra Per Input File")
-        self.export_perfile_checkbox.setChecked(False)
+        self.export_perfile_checkbox.setChecked(True)
         self.export_perfile_checkbox.setToolTip(
             "Export matched and non-matched spectra on a per-MGF file basis.\n\n"
             "For each input MGF file, creates:\n"
