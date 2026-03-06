@@ -2506,6 +2506,7 @@ def generate_summary(output_dir):
 
         # Initialize an empty list to store DataFrames
         all_results = []
+        all_long_data = []  # collected for AUROC / AUPRC computation
 
         # Iterate all .xlsx files
         for folder in os.listdir(output_dir):
@@ -2515,6 +2516,12 @@ def generate_summary(output_dir):
             for xlsx_file in os.listdir(folder_path):
                 if xlsx_file.endswith("_data.xlsx"):
                     file_path = os.path.join(folder_path, xlsx_file)
+                    subset_name = ""
+                    classifier_name = ""
+                    if "_-_-_" in folder:
+                        parts = folder.split("_-_-_", 1)
+                        classifier_name = parts[0]
+                        subset_name = parts[1] if len(parts) > 1 else ""
                     try:
                         # Try to read the 'overall' sheet
                         df = pl.read_excel(file_path, sheet_name="overall")
@@ -2522,11 +2529,7 @@ def generate_summary(output_dir):
 
                         df = df.with_columns(pl.lit(folder).alias("set"))
 
-                        if "_-_-_" in folder:
-                            parts = folder.split("_-_-_", 1)
-                            subset_name = parts[0]
-                            classifier_name = parts[1] if len(parts) > 1 else ""
-
+                        if subset_name:
                             df = df.with_columns(
                                 [
                                     pl.lit(subset_name).alias("subset"),
@@ -2542,6 +2545,16 @@ def generate_summary(output_dir):
                     except Exception as e:
                         print(f"  Could not load 'overall' sheet from {file_path}: {e}")
                         # Sheet 'overall' might not exist in this file, or it might not be a valid Excel file
+                        pass
+
+                    # Also load the 'long' sheet for soft-score metrics (AUROC / AUPRC)
+                    try:
+                        long_df = pd.read_excel(file_path, sheet_name="long")
+                        long_df["_set"] = folder
+                        long_df["_subset"] = subset_name
+                        long_df["_classifier"] = classifier_name
+                        all_long_data.append(long_df)
+                    except Exception:
                         pass
 
         if len(all_results) == 0:
@@ -2609,9 +2622,182 @@ def generate_summary(output_dir):
         final_columns = [col for col in base_columns if col in available_columns]
         all_results = all_results.select(final_columns)
 
-        # Export to master Excel file
+        # ── Compute ML metrics (one row per combination × split) ────────────────
+        # All source MGF files are aggregated together, matching the GUI table.
+        # Only rows with a fully assigned pred_type (TP/FP/TN/FN) are used;
+        # inference rows are excluded.
+        metrics_rows = all_results.filter(pl.col("pred_type").is_in(["TP", "FP", "TN", "FN"]))
+
+        ml_metrics_df = None
+        if not metrics_rows.is_empty():
+            # Derive Train / Validation split from the type string
+            metrics_rows = metrics_rows.with_columns(
+                pl.when(pl.col("type").str.starts_with("train"))
+                .then(pl.lit("Train"))
+                .otherwise(pl.lit("Validation"))
+                .alias("split")
+            )
+
+            # Group-by key: set (+ classifier/subset when present) + split
+            # Source MGF files are intentionally NOT included so the table
+            # mirrors the GUI step-5 metrics table (one row per combination).
+            group_cols = ["set"]
+            if "classifier" in metrics_rows.columns:
+                group_cols += ["subset", "classifier"]
+            group_cols += ["split"]
+
+            # Sum n_features per pred_type, then pivot to wide form
+            counts = (
+                metrics_rows
+                .group_by(group_cols + ["pred_type"])
+                .agg(pl.col("n_features").sum().alias("n"))
+                .pivot(values="n", index=group_cols, on="pred_type", aggregate_function="sum")
+            )
+
+            # Ensure all four pred_type columns exist (fill absent ones with 0)
+            for _col in ("TP", "FP", "TN", "FN"):
+                if _col not in counts.columns:
+                    counts = counts.with_columns(pl.lit(0).cast(pl.Int64).alias(_col))
+
+            # Derived count columns
+            counts = counts.with_columns(
+                (pl.col("TP") + pl.col("FN")).alias("n_relevant"),
+                (pl.col("TN") + pl.col("FP")).alias("n_other"),
+                (pl.col("TP") + pl.col("FN") + pl.col("TN") + pl.col("FP")).alias("n_total"),
+            )
+
+            # Percentage columns
+            # TP% and FN% are relative to GT positives (n_relevant)
+            # TN% and FP% are relative to GT negatives (n_other)
+            counts = counts.with_columns(
+                pl.when(pl.col("n_relevant") > 0)
+                  .then((pl.col("TP") * 100.0 / pl.col("n_relevant")).round(1))
+                  .otherwise(None).alias("TP_pct_of_GT_pos"),
+                pl.when(pl.col("n_relevant") > 0)
+                  .then((pl.col("FN") * 100.0 / pl.col("n_relevant")).round(1))
+                  .otherwise(None).alias("FN_pct_of_GT_pos"),
+                pl.when(pl.col("n_other") > 0)
+                  .then((pl.col("TN") * 100.0 / pl.col("n_other")).round(1))
+                  .otherwise(None).alias("TN_pct_of_GT_neg"),
+                pl.when(pl.col("n_other") > 0)
+                  .then((pl.col("FP") * 100.0 / pl.col("n_other")).round(1))
+                  .otherwise(None).alias("FP_pct_of_GT_neg"),
+                # Accuracy = (TP + TN) / n_total
+                pl.when(pl.col("n_total") > 0)
+                  .then(((pl.col("TP") + pl.col("TN")) * 1.0 / pl.col("n_total")).round(4))
+                  .otherwise(None).alias("accuracy"),
+            )
+
+            # Balanced accuracy = (sensitivity + specificity) / 2
+            # F1 = 2·TP / (2·TP + FP + FN)
+            counts = counts.with_columns(
+                pl.when((pl.col("n_relevant") > 0) & (pl.col("n_other") > 0))
+                  .then(
+                      (
+                          pl.col("TP") * 1.0 / pl.col("n_relevant")
+                          + pl.col("TN") * 1.0 / pl.col("n_other")
+                      ) / 2.0
+                  )
+                  .otherwise(None).round(4).alias("balanced_accuracy"),
+                pl.when((2 * pl.col("TP") + pl.col("FP") + pl.col("FN")) > 0)
+                  .then(
+                      2.0 * pl.col("TP") / (2 * pl.col("TP") + pl.col("FP") + pl.col("FN"))
+                  )
+                  .otherwise(None).round(4).alias("F1"),
+            )
+
+            out_metric_cols = group_cols + [
+                "n_total", "n_relevant", "n_other",
+                "TP", "FN", "TN", "FP",
+                "TP_pct_of_GT_pos", "FN_pct_of_GT_pos",
+                "TN_pct_of_GT_neg", "FP_pct_of_GT_neg",
+                "accuracy", "balanced_accuracy", "F1",
+            ]
+            out_metric_cols = [c for c in out_metric_cols if c in counts.columns]
+            ml_metrics_df = counts.select(out_metric_cols).sort(group_cols)
+
+            # ── AUROC / AUPRC from long-sheet soft scores ──────────────────
+            if all_long_data:
+                try:
+                    from sklearn.metrics import roc_auc_score, average_precision_score
+
+                    TRAIN_TYPES = {"train - relevant", "train - other"}
+                    long_all = pd.concat(all_long_data, ignore_index=True)
+
+                    # Only keep rows with a known GT split-type
+                    long_all = long_all[long_all["type"].isin(
+                        {"train - relevant", "train - other",
+                         "validation - relevant", "validation - other"}
+                    )].copy()
+
+                    if not long_all.empty and "classification:relevant" in long_all.columns:
+                        long_all["_y_true"] = (long_all["type"].str.contains("relevant") &
+                                               ~long_all["type"].str.startswith("train - other") &
+                                               ~long_all["type"].str.startswith("validation - other")).astype(int)
+                        # Correct: relevant iff type ends with '- relevant'
+                        long_all["_y_true"] = long_all["type"].apply(
+                            lambda t: 1 if str(t).endswith("relevant") else 0
+                        )
+                        score_col = "classification:relevant:count"
+                        if score_col in long_all.columns:
+                            long_all["_y_score"] = pd.to_numeric(long_all[score_col], errors="coerce").fillna(0.0)
+                        else:
+                            long_all["_y_score"] = (long_all["classification:relevant"] == "relevant").astype(float)
+
+                        long_all["_split"] = long_all["type"].apply(
+                            lambda t: "Train" if str(t).startswith("train") else "Validation"
+                        )
+
+                        # Build group key matching group_cols (set/subset/classifier/split)
+                        auprc_rows = []
+                        for grp_vals, grp_df in long_all.groupby(
+                            ["_set", "_subset", "_classifier", "_split"]
+                        ):
+                            g_set, g_subset, g_classifier, g_split = grp_vals
+                            y_true  = grp_df["_y_true"].to_numpy(dtype=int)
+                            y_score = grp_df["_y_score"].to_numpy(dtype=float)
+                            if len(set(y_true)) < 2:
+                                auroc_val = None
+                                auprc_val = None
+                            else:
+                                try:
+                                    auroc_val = round(float(roc_auc_score(y_true, y_score)), 4)
+                                except Exception:
+                                    auroc_val = None
+                                try:
+                                    auprc_val = round(float(average_precision_score(y_true, y_score)), 4)
+                                except Exception:
+                                    auprc_val = None
+                            row_dict = {"set": g_set, "split": g_split,
+                                        "AUROC": auroc_val, "AUPRC": auprc_val}
+                            if g_subset:
+                                row_dict["subset"] = g_subset
+                                row_dict["classifier"] = g_classifier
+                            auprc_rows.append(row_dict)
+
+                        if auprc_rows:
+                            auroc_df = pl.DataFrame(auprc_rows)
+                            join_key = [c for c in group_cols if c in auroc_df.columns]
+                            ml_metrics_df = ml_metrics_df.join(auroc_df.select(join_key + ["AUROC", "AUPRC"]),
+                                                               on=join_key, how="left")
+                except Exception as _ae:
+                    print(f"  Warning: could not compute AUROC/AUPRC: {_ae}")
+
+        # ── Export to master Excel file (two sheets) ─────────────────────────
         output_excel_file = os.path.join(output_dir, "summary.xlsx")
+
+        # Write the primary results sheet via polars
         all_results.write_excel(output_excel_file, worksheet="all_results")
+
+        # Append the ml_metrics sheet using openpyxl (which supports appending)
+        if ml_metrics_df is not None and not ml_metrics_df.is_empty():
+            try:
+                import openpyxl
+                with pd.ExcelWriter(output_excel_file, engine="openpyxl", mode="a", if_sheet_exists="replace") as xl_writer:
+                    ml_metrics_df.to_pandas().to_excel(xl_writer, sheet_name="ml_metrics", index=False)
+                print(f"  ML metrics sheet ('ml_metrics') added to {output_excel_file}")
+            except Exception as _e:
+                print(f"  Warning: could not append ml_metrics sheet: {_e}")
 
         print(f"Exported master summary to {output_excel_file}")
 

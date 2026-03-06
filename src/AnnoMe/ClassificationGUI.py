@@ -1788,7 +1788,78 @@ classifiers_to_compare = {
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(6, 6, 6, 6)
 
-        # Export buttons at the top
+        # Help panel at the top
+        help_panel = CollapsibleHelpPanel("""
+            <h3>Inspect Results (Step 5)</h3>
+            <p>This section shows an overview of the classification results for all loaded MGF files,
+            separately for each combination of classifier set and metadata subset.</p>
+
+            <h4>ML Performance Metrics Table (top-left)</h4>
+            <p>For files labelled as <b>training</b> or <b>validation</b> sets, common machine-learning
+            performance metrics are computed to quantify how well the classifier separates relevant from
+            other compounds.  Metrics are computed <i>per (Classifier &times; Subset)</i> combination and
+            <b>separately</b> for the <b>Train</b> and <b>Validation</b> splits, aggregating
+            <i>all loaded MGF files</i> of the respective type at once.</p>
+
+            <h5>How the metrics are calculated</h5>
+            <ul>
+                <li><b>True label:</b> 1 for spectra from <i>*-relevant</i> files
+                    (<code>train&nbsp;-&nbsp;relevant</code> or
+                    <code>validation&nbsp;-&nbsp;relevant</code>),
+                    0 for spectra from <i>*-other</i> files
+                    (<code>train&nbsp;-&nbsp;other</code> or
+                    <code>validation&nbsp;-&nbsp;other</code>).</li>
+                <li><b>Prediction score (continuous):</b> The value of
+                    <code>classification:relevant:count</code>, i.e. the raw number of
+                    sub-classifiers (out of all trained folds &times; classifiers) that labelled a
+                    spectrum as relevant.  This continuous score is used for AUROC and AUPRC.</li>
+                <li><b>Binary prediction:</b> A spectrum is predicted as <i>relevant</i> when
+                    <code>classification:relevant</code>&nbsp;=&nbsp;&quot;relevant&quot;
+                    (i.e. the count exceeded the configured threshold).  This binary label is
+                    used for F1.</li>
+            </ul>
+
+            <h5>Metric definitions</h5>
+            <ul>
+                <li><b>F1</b> &mdash; Harmonic mean of precision and recall for the <i>relevant</i>
+                    class:<br>
+                    F1 = 2 &times; (Precision &times; Recall) / (Precision + Recall).<br>
+                    Precision = TP / (TP + FP),&nbsp;&nbsp;Recall = TP / (TP + FN).<br>
+                    Range: 0&ndash;1; higher is better.</li>
+                <li><b>AUROC</b> &mdash; Area Under the Receiver Operating Characteristic Curve.
+                    The ROC curve plots TPR (Recall) vs. FPR at all classification thresholds.
+                    AUROC = 0.5 is equivalent to random; AUROC = 1.0 means perfect separation.
+                    Range: 0&ndash;1; higher is better.</li>
+                <li><b>AUPRC</b> &mdash; Area Under the Precision-Recall Curve (also called
+                    Average Precision, AP).  Unlike AUROC, AUPRC is sensitive to class imbalance
+                    and is more informative when the <i>relevant</i> class is rare.  A perfect
+                    classifier achieves AUPRC = 1.0; a random classifier achieves
+                    AUPRC &asymp; prevalence.  Range: 0&ndash;1; higher is better.</li>
+            </ul>
+            <p><b>N/A</b> is shown when a metric cannot be computed (e.g. only one class is
+            present in the split, or no train/validation files are loaded for that
+            combination).</p>
+
+            <h4>Classification Results Table (below metrics, left panel)</h4>
+            <p>Shows per-file counts of spectra classified as <i>relevant</i> vs. <i>other</i>
+            for every (Classifier &times; Subset) combination.  Color coding:</p>
+            <ul>
+                <li><span style="background:#C5D89D">&nbsp;light green&nbsp;</span>
+                    &mdash; train-relevant files</li>
+                <li><span style="background:#D25353; color:white">&nbsp;red&nbsp;</span>
+                    &mdash; train-other files</li>
+                <li><span style="background:#9CAB84">&nbsp;muted green&nbsp;</span>
+                    &mdash; validation-relevant files</li>
+                <li><span style="background:#9E3B3B; color:white">&nbsp;dark red&nbsp;</span>
+                    &mdash; validation-other files</li>
+                <li><span style="background:#456882; color:white">&nbsp;dark blue&nbsp;</span>
+                    &mdash; inference files</li>
+            </ul>
+            <p>Select rows to restrict the histogram on the right to only those entries.</p>
+        """)
+        main_layout.addWidget(help_panel)
+
+        # Export buttons
         button_layout = QHBoxLayout()
         export_results_btn = QPushButton("Export Results to Excel")
         export_results_btn.clicked.connect(self.export_results)
@@ -1797,16 +1868,68 @@ classifiers_to_compare = {
         button_layout.addStretch()
         main_layout.addLayout(button_layout)
 
-        # Horizontal splitter: table on left, histogram on right (user-resizable)
+        # Horizontal splitter: left panel (metrics + results table) / right histogram
         self.results_splitter = QSplitter(Qt.Horizontal)
         self.results_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        # Left panel – results table
+        # Left panel: ML metrics table on top, classification results table below
+        left_panel = QWidget()
+        left_layout = QVBoxLayout()
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(4)
+
+        # ---- ML metrics table ----
+        metrics_header = QLabel("ML Performance Metrics (Train / Validation):")
+        metrics_header.setStyleSheet("font-weight: bold; padding: 2px;")
+        left_layout.addWidget(metrics_header)
+
+        self.metrics_table = QTableWidget()
+        self.metrics_table.setSortingEnabled(True)
+        self.metrics_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.metrics_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.metrics_table.setColumnCount(15)
+        self.metrics_table.setHorizontalHeaderLabels(
+            [
+                "Classifier",
+                "Subset",
+                "Split",
+                "N Total",
+                "N Relevant (GT+)",
+                "N Other (GT-)",
+                "TP% (of GT+)",
+                "FN% (of GT+)",
+                "TN% (of GT-)",
+                "FP% (of GT-)",
+                "Accuracy",
+                "Balanced Acc",
+                "F1",
+                "AUROC",
+                "AUPRC",
+            ]
+        )
+        self.metrics_table.horizontalHeader().setStretchLastSection(False)
+        self.metrics_table.setMaximumHeight(220)
+        left_layout.addWidget(self.metrics_table)
+
+        # ---- separator ----
+        sep = QFrame()
+        sep.setFrameShape(QFrame.HLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        left_layout.addWidget(sep)
+
+        # ---- Classification results table ----
+        results_header = QLabel("Classification Results (per file):")
+        results_header.setStyleSheet("font-weight: bold; padding: 2px;")
+        left_layout.addWidget(results_header)
+
         self.results_table = QTableWidget()
         self.results_table.setSortingEnabled(True)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.results_table.itemSelectionChanged.connect(self.on_results_table_selection_changed)
-        self.results_splitter.addWidget(self.results_table)
+        left_layout.addWidget(self.results_table, 1)
+
+        left_panel.setLayout(left_layout)
+        self.results_splitter.addWidget(left_panel)
 
         # Right panel – vertically scrollable histogram
         self._results_histogram_available = False
@@ -3877,12 +4000,218 @@ classifiers_to_compare = {
         self.update_results_histogram(filtered if not filtered.empty else self._results_combined_summary)
 
     # Section 5 methods
+
+    def compute_ml_metrics_per_combination(self):
+        """Compute F1, AUROC and AUPRC for training and validation splits.
+
+        Results are computed per (classifier-set // subset) combination using all
+        loaded MGF files of each type aggregated together.  Only files with a known
+        ground-truth type (train-relevant / train-other / validation-relevant /
+        validation-other) are included; inference files are excluded.
+
+        Returns
+        -------
+        list of dict
+            Each dict has keys: combination, classifier, subset, split,
+            n_total, n_relevant, n_other, f1, auroc, auprc.
+        """
+        try:
+            from sklearn.metrics import f1_score, roc_auc_score, average_precision_score
+        except ImportError:
+            return []
+
+        TRAIN_TYPES = {"train - relevant", "train - other"}
+        VAL_TYPES = {"validation - relevant", "validation - other"}
+
+        rows = []
+        for combined_key in sorted(self.subset_results.keys()):
+            results = self.subset_results[combined_key]
+            long_table = results.get("long_table")
+
+            if long_table is None or long_table.empty:
+                continue
+            if "classification:relevant" not in long_table.columns:
+                continue
+
+            parts = combined_key.split(" // ")
+            classifier = parts[0] if len(parts) >= 1 else combined_key
+            subset = parts[1] if len(parts) >= 2 else ""
+
+            for split_label, type_set in [("Train", TRAIN_TYPES), ("Validation", VAL_TYPES)]:
+                df_split = long_table[long_table["type"].isin(type_set)].copy()
+                if df_split.empty:
+                    continue
+
+                # True labels: 1 for relevant files, 0 for other files
+                df_split["_y_true"] = df_split["type"].apply(lambda t: 1 if "relevant" in t else 0)
+
+                # Continuous score: vote count from all sub-classifiers
+                score_col = "classification:relevant:count"
+                if score_col in df_split.columns:
+                    df_split["_y_score"] = pd.to_numeric(df_split[score_col], errors="coerce").fillna(0.0)
+                else:
+                    # Fall back to binary score when count not available
+                    df_split["_y_score"] = (df_split["classification:relevant"] == "relevant").astype(float)
+
+                # Binary prediction from the threshold-based label
+                df_split["_y_pred"] = (df_split["classification:relevant"] == "relevant").astype(int)
+
+                y_true = df_split["_y_true"].to_numpy(dtype=int)
+                y_pred = df_split["_y_pred"].to_numpy(dtype=int)
+                y_score = df_split["_y_score"].to_numpy(dtype=float)
+
+                n_total = len(y_true)
+                n_relevant = int(y_true.sum())
+                n_other = n_total - n_relevant
+
+                # Confusion-matrix counts
+                tp = int(((y_true == 1) & (y_pred == 1)).sum())
+                fn = int(((y_true == 1) & (y_pred == 0)).sum())
+                tn = int(((y_true == 0) & (y_pred == 0)).sum())
+                fp = int(((y_true == 0) & (y_pred == 1)).sum())
+
+                # Percentages – TP/FN relative to GT positives; TN/FP relative to GT negatives
+                tp_pct = (tp / n_relevant * 100.0) if n_relevant > 0 else 0.0
+                fn_pct = (fn / n_relevant * 100.0) if n_relevant > 0 else 0.0
+                tn_pct = (tn / n_other * 100.0) if n_other > 0 else 0.0
+                fp_pct = (fp / n_other * 100.0) if n_other > 0 else 0.0
+
+                # Accuracy
+                try:
+                    acc = (tp + tn) / n_total if n_total > 0 else float("nan")
+                    acc_str = f"{acc:.3f}"
+                except Exception:
+                    acc_str = "N/A"
+
+                # Balanced accuracy = (sensitivity + specificity) / 2
+                try:
+                    sensitivity = tp / n_relevant if n_relevant > 0 else float("nan")
+                    specificity = tn / n_other if n_other > 0 else float("nan")
+                    import math
+
+                    if math.isnan(sensitivity) or math.isnan(specificity):
+                        bal_acc_str = "N/A"
+                    else:
+                        bal_acc = (sensitivity + specificity) / 2.0
+                        bal_acc_str = f"{bal_acc:.3f}"
+                except Exception:
+                    bal_acc_str = "N/A"
+
+                # F1 (binary, positive class = 1 = relevant)
+                try:
+                    f1 = f1_score(y_true, y_pred, pos_label=1, zero_division=0)
+                    f1_str = f"{f1:.3f}"
+                except Exception:
+                    f1_str = "N/A"
+
+                # AUROC
+                try:
+                    if len(set(y_true)) < 2:
+                        auroc_str = "N/A"
+                    else:
+                        auroc = roc_auc_score(y_true, y_score)
+                        auroc_str = f"{auroc:.3f}"
+                except Exception:
+                    auroc_str = "N/A"
+
+                # AUPRC (average precision = area under precision-recall curve)
+                try:
+                    if len(set(y_true)) < 2:
+                        auprc_str = "N/A"
+                    else:
+                        auprc = average_precision_score(y_true, y_score)
+                        auprc_str = f"{auprc:.3f}"
+                except Exception:
+                    auprc_str = "N/A"
+
+                rows.append(
+                    {
+                        "combination": combined_key,
+                        "classifier": classifier,
+                        "subset": subset,
+                        "split": split_label,
+                        "n_total": n_total,
+                        "n_relevant": n_relevant,
+                        "n_other": n_other,
+                        "tp_pct": tp_pct,
+                        "fn_pct": fn_pct,
+                        "tn_pct": tn_pct,
+                        "fp_pct": fp_pct,
+                        "accuracy": acc_str,
+                        "bal_accuracy": bal_acc_str,
+                        "f1": f1_str,
+                        "auroc": auroc_str,
+                        "auprc": auprc_str,
+                    }
+                )
+
+        return rows
+
+    def refresh_metrics_table(self):
+        """Populate the ML performance metrics table in section 5."""
+        if not hasattr(self, "metrics_table"):
+            return
+
+        rows = self.compute_ml_metrics_per_combination()
+
+        # Bar colours for TP/FN/TN/FP percentage columns
+        COLOR_TP = QColor(90, 158, 74)  # green  – correct positive
+        COLOR_FN = QColor(210, 83, 83)  # red    – missed positive
+        COLOR_TN = QColor(90, 158, 74)  # green  – correct negative
+        COLOR_FP = QColor(210, 83, 83)  # red    – false alarm
+
+        self.metrics_table.setSortingEnabled(False)
+        self.metrics_table.setRowCount(len(rows))
+
+        for r_idx, row in enumerate(rows):
+
+            def _make_item(text, align=None):
+                item = QTableWidgetItem(str(text))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                if align is not None:
+                    item.setTextAlignment(align)
+                return item
+
+            def _make_bar_item(pct_value, bar_color):
+                """Create an item that the PercentageBarDelegate will render as a bar."""
+                item = QTableWidgetItem(f"{pct_value:.1f}%")
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                item.setData(Qt.UserRole, float(pct_value))
+                item.setData(Qt.UserRole + 1, bar_color)
+                return item
+
+            right = Qt.AlignRight | Qt.AlignVCenter
+            self.metrics_table.setItem(r_idx, 0, _make_item(row["classifier"]))
+            self.metrics_table.setItem(r_idx, 1, _make_item(row["subset"]))
+            self.metrics_table.setItem(r_idx, 2, _make_item(row["split"]))
+            self.metrics_table.setItem(r_idx, 3, _make_item(row["n_total"], right))
+            self.metrics_table.setItem(r_idx, 4, _make_item(row["n_relevant"], right))
+            self.metrics_table.setItem(r_idx, 5, _make_item(row["n_other"], right))
+            self.metrics_table.setItem(r_idx, 6, _make_bar_item(row["tp_pct"], COLOR_TP))
+            self.metrics_table.setItem(r_idx, 7, _make_bar_item(row["fn_pct"], COLOR_FN))
+            self.metrics_table.setItem(r_idx, 8, _make_bar_item(row["tn_pct"], COLOR_TN))
+            self.metrics_table.setItem(r_idx, 9, _make_bar_item(row["fp_pct"], COLOR_FP))
+            self.metrics_table.setItem(r_idx, 10, _make_item(row["accuracy"], right))
+            self.metrics_table.setItem(r_idx, 11, _make_item(row["bal_accuracy"], right))
+            self.metrics_table.setItem(r_idx, 12, _make_item(row["f1"], right))
+            self.metrics_table.setItem(r_idx, 13, _make_item(row["auroc"], right))
+            self.metrics_table.setItem(r_idx, 14, _make_item(row["auprc"], right))
+
+        # Attach the bar delegate to the four percentage columns
+        bar_delegate = PercentageBarDelegate(self.metrics_table)
+        for col in (6, 7, 8, 9):
+            self.metrics_table.setItemDelegateForColumn(col, bar_delegate)
+
+        self.metrics_table.setSortingEnabled(True)
+        self.metrics_table.resizeColumnsToContents()
+
     def refresh_all_results_table(self):
         """Refresh the results table to show all combinations at once."""
         if not self.subset_results:
             self.results_table.setRowCount(0)
             self._results_combined_summary = None
             self.update_results_histogram(None)
+            self.refresh_metrics_table()
             return
 
         # Get file types for display
@@ -3928,6 +4257,7 @@ classifiers_to_compare = {
             self.results_table.setRowCount(0)
             self._results_combined_summary = None
             self.update_results_histogram(None)
+            self.refresh_metrics_table()
             return
 
         # Combine all summaries
@@ -4048,6 +4378,9 @@ classifiers_to_compare = {
 
         # Redraw histogram
         self.update_results_histogram(combined_summary)
+
+        # Refresh ML performance metrics table
+        self.refresh_metrics_table()
 
     def update_results_histogram(self, combined_summary):
         """Redraw the classification results histogram.
