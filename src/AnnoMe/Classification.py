@@ -2261,8 +2261,8 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
         plot = (
             p9.ggplot(aggregated_df, p9.aes(x="prediction_count"))
             + p9.geom_vline(xintercept=min_prediction_threshold, linetype="dashed", color="Firebrick")
-            + p9.geom_bar()
-            + p9.facet_wrap("type")
+            + p9.geom_bar()            
+            + p9.facet_wrap("type", scales="free_y")
             + p9.coord_flip()
             + p9theme()
             + p9.theme(axis_text_x=p9.element_text(angle=0, hjust=1), panel_grid_major_y = p9.element_blank()) 
@@ -2658,6 +2658,9 @@ def generate_summary(output_dir):
             for _col in ("TP", "FP", "TN", "FN"):
                 if _col not in counts.columns:
                     counts = counts.with_columns(pl.lit(0).cast(pl.Int64).alias(_col))
+                else:
+                    # Fill null values with 0 for existing columns
+                    counts = counts.with_columns(pl.col(_col).fill_null(0))
 
             # Derived count columns
             counts = counts.with_columns(
