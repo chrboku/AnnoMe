@@ -13,9 +13,9 @@ download_MSMS_libraries()
 # fmt: off
 flavone_smart = ["[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3", "[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3"]
 isoflavone_smart = ["[O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3", "[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3"]
-chalcone1_smart = prep_smarts_key("[O,o]=[C,c](-[CH2]-[CH2]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2", replace = False)
-chalcone2_smart = prep_smarts_key("[O,o]=[C,c](-[CH]=[CH]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2", replace = False)
-chromone_smart = prep_smarts_key("O=C@1@C@C@O@C@2@C@C@C@C@C@12")
+chalcone1_smart = "[O,o]=[C,c](-[CH2]-[CH2]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2"
+chalcone2_smart = "[O,o]=[C,c](-[CH]=[CH]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2"
+chromone_smart = prep_smarts_key("O=C@1@C@C@O@C@2@C@C@C@C@C@12", convert_to_rdkit=False)
 
 core_structures = {"AR": "c8({R})@c@c@c@c@c@8", 
                    "indole_c1": "c8@c@c@c(@c({R})@c@n@9)@c9@c@8", 
@@ -90,11 +90,11 @@ input_data = {
 checks = {}
 for prenyl, p_struct in prenyl_residues.items():
     for core, c_struct in core_structures.items():
-        checks[f"{core}-{prenyl}"] = c_struct.format(R=p_struct)
+        checks[f"{core}-{prenyl}"] = f"'{c_struct.format(R=p_struct)}'"
     for ext, e_struct in extended_structures.items():
-        checks[f"{ext}-{prenyl}"] = [e_struct, p_struct]
+        checks[f"{ext}-{prenyl}"] = f"'{e_struct}' and '{p_struct}'"
 for name, struct in more_complicated_prenyls.items():
-    checks[name] = struct
+    checks[name] = f"'{struct}'"
 
 #table_data = OrderedDict()
 #import tempfile
@@ -111,12 +111,13 @@ for name, struct in more_complicated_prenyls.items():
 #out_file = f"./filtered_prenylated_compounds.xlsx"
 #list_to_excel_table([v for k, v in table_data.items()], out_file, column_width=300, row_height=300)
 
+scaffold_expr = " or ".join([f"'{s}'" for s in flavone_smart + isoflavone_smart + [chalcone1_smart, chalcone2_smart]])
+prenyl_expr = " or ".join([f"prep_smarts_key('{p}')" for p in ["CC=C(C)CCC=C(C)C", "C\\C=C(/C)\\CCC(O)C(=C)C", "CC(O)C(C)CCC=C(C)C", "CC=C(C)CCCC(C)(C)O", "CC(=CCCC1(C)OCCC=C1)C", "CC(=C)C(O)CCC1(C)OC=CCC1O", "C\\C=C(/C)\\CCCC(C)(O)CO", "CC(=CCCC(C)(O)C1CCCO1)C", "CC1(C)C(O)CCC2(C)OCCCC12", "CC1C(=CCC(O)C1(C)C)C", "CC1C(=C)CCC(O)C1(C)C", "COCC(C)(O)CCCC(=CC)C", "CC(=CCCC1(C)OC=CCC1O)C", "CC1(C)OCCC=C1", "CC1OC=CC1(C)C", "CC(CC=C(C)C)C(=C)C", "CCC(=C)C", "CC=C(C)C", "C-C(-C)-C=C", "CC(=C)C=C", "CC(=CCO)C", "CC(C)(O)C=C", "CCC(C)(C)O", "CC(O)C(=C)C", "CC1OC1(C)C", "C\\C=C(/C)\\CO", "CC(O)C(C)(C)O", "CC1(C)CCc2ccccc2O1", "CC1(C)CCCCO1"]])
 checks.update({
-    "prenyl_flavonoid_or_chalcone": [flavone_smart + isoflavone_smart + [chalcone1_smart, chalcone2_smart], 
-                                        [prep_smarts_key(x) for x in ["CC=C(C)CCC=C(C)C", "C\\C=C(/C)\\CCC(O)C(=C)C", "CC(O)C(C)CCC=C(C)C", "CC=C(C)CCCC(C)(C)O", "CC(=CCCC1(C)OCCC=C1)C", "CC(=C)C(O)CCC1(C)OC=CCC1O", "C\\C=C(/C)\\CCCC(C)(O)CO", "CC(=CCCC(C)(O)C1CCCO1)C", "CC1(C)C(O)CCC2(C)OCCCC12", "CC1C(=CCC(O)C1(C)C)C", "CC1C(=C)CCC(O)C1(C)C", "COCC(C)(O)CCCC(=CC)C", "CC(=CCCC1(C)OC=CCC1O)C", "CC1(C)OCCC=C1", "CC1OC=CC1(C)C", "CC(CC=C(C)C)C(=C)C", "CCC(=C)C", "CC=C(C)C", "C-C(-C)-C=C", "CC(=C)C=C", "CC(=CCO)C", "CC(C)(O)C=C", "CCC(C)(C)O", "CC(O)C(=C)C", "CC1OC1(C)C", "C\\C=C(/C)\\CO", "CC(O)C(C)(C)O", "CC1(C)CCc2ccccc2O1", "CC1(C)CCCCO1"]]],
-    "flavonoid": [flavone_smart],
-    "isoflavonoid": [isoflavone_smart],
-    "stilbene": [[prep_smarts_key("c1:c:c:[C,c](:c:c:1)[CH]=[CH][C,c]2:c:c:c:c:c:2", replace=False)]]
+    "prenyl_flavonoid_or_chalcone": f"({scaffold_expr}) and ({prenyl_expr})",
+    "flavonoid": " or ".join([f"'{s}'" for s in flavone_smart]),
+    "isoflavonoid": " or ".join([f"'{s}'" for s in isoflavone_smart]),
+    "stilbene": "'c1:c:c:[C,c](:c:c:1)[CH]=[CH][C,c]2:c:c:c:c:c:2'"
 })
 include_details = False
 

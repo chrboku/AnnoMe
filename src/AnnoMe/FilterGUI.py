@@ -35,9 +35,11 @@ from PyQt5.QtWidgets import (
     QSlider,
     QMenu,
     QTabWidget,
+    QPlainTextEdit,
+    QDialog,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer
-from PyQt5.QtGui import QPixmap, QImage
+from PyQt5.QtGui import QPixmap, QImage, QSyntaxHighlighter, QTextCharFormat, QColor, QFont
 from PIL import Image as PILImage
 from PIL import ImageDraw, ImageFont
 import math
@@ -52,6 +54,335 @@ import csv
 
 from . import Filters
 from .gui_components import RotatedTabBar, CollapsibleHelpPanel, make_text_icon, load_stylesheet
+
+
+class SmartsExpressionHighlighter(QSyntaxHighlighter):
+    """Syntax highlighter for SMARTS logic expressions.
+
+    Highlights:
+        - ``and``, ``or``, ``not`` keywords in green
+        - ``(`` and ``)`` parentheses in red
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # Format for logical keywords (and, or, not)
+        self._keyword_fmt = QTextCharFormat()
+        self._keyword_fmt.setForeground(QColor("#228B22"))  # forest green
+        self._keyword_fmt.setFontWeight(QFont.Bold)
+
+        # Format for parentheses
+        self._paren_fmt = QTextCharFormat()
+        self._paren_fmt.setForeground(QColor("#CC0000"))  # red
+        self._paren_fmt.setFontWeight(QFont.Bold)
+
+        # Pre-compile patterns
+        self._keyword_re = re.compile(r'\b(and|or|not)\b', re.IGNORECASE)
+        self._paren_re = re.compile(r'[()]')
+
+    def highlightBlock(self, text):
+        """Apply highlighting rules to a single block (line) of text.
+
+        Parentheses and keywords inside single-quoted SMARTS literals
+        are intentionally **not** highlighted.
+        """
+        # Build a set of character positions that fall inside single-quoted strings
+        quoted_positions = set()
+        in_quote = False
+        for i, ch in enumerate(text):
+            if ch == "'":
+                quoted_positions.add(i)  # the quote char itself is inside
+                in_quote = not in_quote
+            elif in_quote:
+                quoted_positions.add(i)
+
+        # Highlight keywords only when they are fully outside quotes
+        for match in self._keyword_re.finditer(text):
+            if not any(p in quoted_positions for p in range(match.start(), match.end())):
+                self.setFormat(match.start(), match.end() - match.start(), self._keyword_fmt)
+        # Highlight parentheses only when outside quotes
+        for match in self._paren_re.finditer(text):
+            if match.start() not in quoted_positions:
+                self.setFormat(match.start(), 1, self._paren_fmt)
+
+
+class SmartsDesignerDialog(QDialog):
+    """Non-blocking SMARTS pattern designer with live RDKit preview.
+
+    Opens as an independent top-level window.  Multiple instances can be
+    open simultaneously.  Call :meth:`show` (not ``exec_``) to display it
+    without blocking the rest of the application.
+    """
+
+    def __init__(self, parent=None, insert_callback=None):
+        super().__init__(parent)
+        self.setWindowTitle("SMARTS Designer")
+        # Qt.Window → independent top-level window even when a parent is set
+        self.setWindowFlags(Qt.Window)
+        # Qt destroys the underlying C++ object when the window is closed
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self._insert_callback = insert_callback
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(8)
+
+        # ── SMARTS input ──────────────────────────────────────────────────
+        input_row = QHBoxLayout()
+        input_row.addWidget(QLabel("SMARTS:"))
+        self.smarts_edit = QLineEdit()
+        self.smarts_edit.setFont(QFont("Consolas", 10))
+        self.smarts_edit.setPlaceholderText("e.g.  CC=C(C)C   or   [C,c]~[O,o]")
+        self.smarts_edit.textChanged.connect(self._update_preview)
+        input_row.addWidget(self.smarts_edit)
+        layout.addLayout(input_row)
+
+        # ── Options ───────────────────────────────────────────────────────
+        self.prep_check = QCheckBox(
+            "Apply prep_smarts_key  (normalise C/O aromaticity: c\u2194C, o\u2194O)"
+        )
+        self.prep_check.setChecked(True)
+        self.prep_check.stateChanged.connect(self._update_preview)
+        layout.addWidget(self.prep_check)
+
+        # ── Preview ───────────────────────────────────────────────────────
+        self.preview_label = QLabel("Enter a SMARTS pattern above to preview it.")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumSize(440, 300)
+        self.preview_label.setStyleSheet(
+            "border: 1px solid #aaa; background: white; padding: 4px;"
+        )
+        layout.addWidget(self.preview_label)
+
+        # ── Error / status ────────────────────────────────────────────────
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #cc0000;")
+        layout.addWidget(self.status_label)
+
+        # ── Documentation links ───────────────────────────────────────────
+        docs_label = QLabel(
+            '<a href="https://www.daylight.com/dayhtml/doc/theory/theory.smarts.html">'
+            "Daylight SMARTS theory</a>"
+            " &nbsp;|&nbsp; "
+            '<a href="https://www.rdkit.org/docs/RDKit_Book.html#smarts-support-and-extensions">'
+            "RDKit SMARTS extensions</a>"
+        )
+        docs_label.setOpenExternalLinks(True)
+        layout.addWidget(docs_label)
+
+        # ── Buttons ───────────────────────────────────────────────────────
+        btn_row = QHBoxLayout()
+
+        copy_btn = QPushButton("Copy to Clipboard")
+        copy_btn.setToolTip(
+            "Copy the quoted SMARTS expression ready to paste into the expression editor"
+        )
+        copy_btn.clicked.connect(self._copy_to_clipboard)
+        btn_row.addWidget(copy_btn)
+
+        if insert_callback is not None:
+            insert_btn = QPushButton("Insert into Expression")
+            insert_btn.setToolTip(
+                "Insert the SMARTS pattern at the current cursor position in the expression editor"
+            )
+            insert_btn.clicked.connect(self._insert_into_expression)
+            btn_row.addWidget(insert_btn)
+
+        btn_row.addStretch()
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.close)
+        btn_row.addWidget(close_btn)
+
+        layout.addLayout(btn_row)
+        self.resize(480, 520)
+
+    # ── Internal helpers ──────────────────────────────────────────────────
+
+    def _effective_smarts(self):
+        """Return ``(raw, processed)`` strings (both ``None`` when input is empty)."""
+        raw = self.smarts_edit.text().strip()
+        if not raw:
+            return None, None
+        if self.prep_check.isChecked():
+            from . import Filters as _F
+            processed = _F.prep_smarts_key(raw, replace=True, convert_to_rdkit=False)
+        else:
+            processed = raw
+        return raw, processed
+
+    def _update_preview(self):
+        """Re-render the SMARTS preview whenever the input or toggle changes."""
+        raw, processed = self._effective_smarts()
+        if not raw:
+            self.preview_label.setPixmap(QPixmap())
+            self.preview_label.setText("Enter a SMARTS pattern above to preview it.")
+            self.status_label.setText("")
+            return
+
+        mol = rdkit.Chem.MolFromSmarts(processed)
+        if mol is None:
+            self.preview_label.setPixmap(QPixmap())
+            self.preview_label.setText("")
+            self.status_label.setText(f"\u26a0  Invalid SMARTS: '{processed}'")
+            return
+
+        self.status_label.setText("")
+        try:
+            from rdkit.Chem import Draw
+            pil_img = Draw.MolToImage(mol, size=(440, 300))
+            buf = io.BytesIO()
+            pil_img.save(buf, format="PNG")
+            buf.seek(0)
+            qimg = QImage.fromData(buf.read())
+            pixmap = QPixmap.fromImage(qimg)
+            self.preview_label.setPixmap(pixmap)
+            self.preview_label.setText("")
+        except Exception as exc:
+            self.preview_label.setPixmap(QPixmap())
+            self.preview_label.setText("")
+            self.status_label.setText(f"Render error: {exc}")
+
+    def _quoted_expression(self):
+        """Return the expression string suitable for copying / inserting."""
+        raw, _ = self._effective_smarts()
+        if raw is None:
+            return None
+        if self.prep_check.isChecked():
+            return f"prep_smarts_key('{raw}')"
+        return f"'{raw}'"
+
+    def _copy_to_clipboard(self):
+        expr = self._quoted_expression()
+        if expr is None:
+            return
+        QApplication.clipboard().setText(expr)
+
+    def _insert_into_expression(self):
+        expr = self._quoted_expression()
+        if expr is None or self._insert_callback is None:
+            return
+        self._insert_callback(expr)
+
+
+class SmilesSpectraDetailDialog(QDialog):
+    """Non-blocking dialog that shows individual spectra for a clicked SMILES overview row.
+
+    Columns are ordered: SMILES field first, followed by the meta-info grouping keys
+    (highlighted in blue), then the remaining metadata columns.
+    Columns whose value is constant across all displayed rows are additionally
+    tinted light yellow so the user can spot invariant metadata at a glance.
+    """
+
+    # Colours used for header and cells
+    _HIGHLIGHT_BG = QColor("#cce5ff")   # light blue – grouping / SMILES columns
+    _CONSTANT_BG = QColor("#fff9c4")    # light yellow – constant-value columns
+    _HIGHLIGHT_HDR = QColor("#4a90d9")  # darker blue for highlighted headers
+    _HIGHLIGHT_HDR_FG = QColor("#ffffff")
+    _CONSTANT_HDR = QColor("#f9e84a")   # yellow header for constant cols
+
+    def __init__(self, df, highlight_cols, title, parent=None):
+        """
+        Parameters
+        ----------
+        df : polars.DataFrame
+            All spectra to display.  Internal ``__AnnoMe_*`` columns must already
+            be removed and columns must already be in the desired display order.
+        highlight_cols : set[str]
+            Column names to highlight (SMILES + meta grouping keys).
+        title : str
+            Window title.
+        """
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setWindowFlags(Qt.Window)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        self.resize(1000, 540)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        # Info bar
+        info_label = QLabel(f"<b>{len(df)}</b> spectra &nbsp;|&nbsp; <b>{len(df.columns)}</b> columns")
+        info_label.setTextFormat(Qt.RichText)
+        layout.addWidget(info_label)
+
+        # Build the table
+        columns = df.columns
+        n_rows, n_cols = len(df), len(columns)
+
+        # Detect constant columns (one unique non-null value across all rows)
+        constant_cols = set()
+        for col in columns:
+            series = df[col].drop_nulls()
+            if len(series) > 0 and series.n_unique() == 1:
+                constant_cols.add(col)
+
+        table = QTableWidget(n_rows, n_cols)
+        table.setHorizontalHeaderLabels(columns)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setAlternatingRowColors(False)  # we do our own colouring
+        table.setSortingEnabled(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        table.horizontalHeader().setStretchLastSection(False)
+        table.verticalHeader().setDefaultSectionSize(22)
+
+        # Colour the header items
+        hdr = table.horizontalHeader()
+        for col_idx, col_name in enumerate(columns):
+            hdr_item = QTableWidgetItem(col_name)
+            if col_name in highlight_cols:
+                hdr_item.setBackground(self._HIGHLIGHT_HDR)
+                hdr_item.setForeground(self._HIGHLIGHT_HDR_FG)
+                font = hdr_item.font()
+                font.setBold(True)
+                hdr_item.setFont(font)
+            elif col_name in constant_cols:
+                hdr_item.setBackground(self._CONSTANT_HDR)
+            table.setHorizontalHeaderItem(col_idx, hdr_item)
+
+        # Populate cells
+        table.setSortingEnabled(False)
+        rows_data = df.to_dicts()
+        for row_idx, row in enumerate(rows_data):
+            for col_idx, col_name in enumerate(columns):
+                val = row.get(col_name)
+                cell = QTableWidgetItem(str(val) if val is not None else "")
+                cell.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                if col_name in highlight_cols:
+                    cell.setBackground(self._HIGHLIGHT_BG)
+                elif col_name in constant_cols:
+                    cell.setBackground(self._CONSTANT_BG)
+                table.setItem(row_idx, col_idx, cell)
+
+        table.setSortingEnabled(True)
+        table.resizeColumnsToContents()
+
+        layout.addWidget(table)
+
+        # Legend
+        legend_layout = QHBoxLayout()
+        for colour, text in (
+            (self._HIGHLIGHT_BG, "Grouping / SMILES columns"),
+            (self._CONSTANT_BG, "Constant across shown rows"),
+        ):
+            swatch = QLabel("  ")
+            swatch.setStyleSheet(f"background:{colour.name()}; border:1px solid #888;")
+            swatch.setFixedSize(16, 16)
+            legend_layout.addWidget(swatch)
+            legend_layout.addWidget(QLabel(text))
+            legend_layout.addSpacing(16)
+        legend_layout.addStretch()
+        layout.addLayout(legend_layout)
+
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.setFixedWidth(100)
+        close_btn.clicked.connect(self.close)
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
 
 class CollapsibleSection(QWidget):
@@ -494,34 +825,34 @@ class MGFFilterGUI(QMainWindow):
         return "unknown"
 
     def get_predefined_filters(self):
-        """Get dictionary of predefined SMARTS filters."""
+        """Get dictionary of predefined SMARTS filters (new expression syntax)."""
         return OrderedDict(
             [
                 (
                     "Prenyl Flavonoid",
-                    "<<[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3 OR [C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3>> AND CC=C(C)CCC=C(C)C",
+                    "('[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3' or '[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3') and 'CC=C(C)CCC=C(C)C'",
                 ),
                 (
                     "Flavone",
-                    "<<[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3 OR [C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3>>",
+                    "'[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3' or '[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3'",
                 ),
                 (
                     "Isoflavone",
-                    "<<[O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3 OR [C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3>>",
+                    "'[O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3' or '[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3'",
                 ),
                 (
                     "Flavone or Isoflavone",
-                    "<<[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3 OR [C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3 OR [O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3 OR [C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3>>",
+                    "'[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3' or '[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3' or '[O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3' or '[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3'",
                 ),
                 (
                     "Prenyl Flavone or Isoflavone",
-                    "<<[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3 OR [C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3 OR [O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3 OR [C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3>> AND CC=C(C)CCC=C(C)C",
+                    "('[O,o]~[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3' or '[C,c]~1~[C,c]~[C,c](~[O,o]~[C,c]2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~1~2)~[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]3' or '[O,o]~[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3' or '[C,c]~1~[C,c]~2~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~2~[O,o]~[C,c]~[C,c]~1[C,c]~3~[C,c]~[C,c]~[C,c]~[C,c]~[C,c]~3') and 'CC=C(C)CCC=C(C)C'",
                 ),
-                ("Chalcone (saturated)", "[O,o]=[C,c](-[CH2]-[CH2]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2"),
-                ("Chalcone (unsaturated)", "[O,o]=[C,c](-[CH]=[CH]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2"),
-                ("Chromone", "O=C@1@C@C@O@C@2@C@C@C@C@C@12"),
-                ("Geranyl", "CC=C(C)CCC=C(C)C"),
-                ("Farnesyl", "[CH2][CH]=C([CH3])[CH2]([CH2][CH]=C([CH3])[CH2]([CH2][CH]=C([CH3])[CH3]))"),
+                ("Chalcone (saturated)", "'[O,o]=[C,c](-[CH2]-[CH2]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2'"),
+                ("Chalcone (unsaturated)", "'[O,o]=[C,c](-[CH]=[CH]-[C,c]@1@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@1)-[C,c]@2@[C,c]@[C,c]@[C,c]@[C,c]@[C,c]@2'"),
+                ("Chromone", "'O=C@1@C@C@O@C@2@C@C@C@C@C@12'"),
+                ("Geranyl", "'CC=C(C)CCC=C(C)C'"),
+                ("Farnesyl", "'[CH2][CH]=C([CH3])[CH2]([CH2][CH]=C([CH3])[CH2]([CH2][CH]=C([CH3])[CH3]))'"),
             ]
         )
 
@@ -931,6 +1262,16 @@ class MGFFilterGUI(QMainWindow):
             </ul>
             <p><b>Note:</b> This process may take some time for large datasets. A progress bar will show the status.</p>
             <p><b>Tip:</b> This step is optional but recommended for accurate filtering.</p>
+            <h3>SMILES Overview</h3>
+            <p>After canonicalization, an overview table summarizes how many spectra are associated with each unique SMILES.</p>
+            <p>The table groups unique SMILES by their spectrum count and shows how many SMILES share each count.</p>
+            <p><b>Grouping by meta-information:</b></p>
+            <ul>
+                <li>Enter one or more metadata field names as a comma-separated list</li>
+                <li>Click <b>Update Table</b> to refresh the aggregation</li>
+                <li>Each specified field is used as an additional grouping dimension</li>
+                <li>Leave the field empty to show a global (ungrouped) summary</li>
+            </ul>
         """)
         main_layout.addWidget(help_panel, 1)  # 25% width
 
@@ -950,7 +1291,40 @@ class MGFFilterGUI(QMainWindow):
         self.canon_status_label = QLabel("Status: Not applied")
         layout.addWidget(self.canon_status_label)
 
-        layout.addStretch()
+        # SMILES Overview group box
+        overview_group = QGroupBox("SMILES Overview")
+        overview_layout = QVBoxLayout()
+
+        # Meta-information grouping row
+        meta_row = QHBoxLayout()
+        meta_row.addWidget(QLabel("Group by meta-info keys (comma-separated):"))
+        self.smiles_overview_meta_input = QLineEdit()
+        self.smiles_overview_meta_input.setPlaceholderText("e.g. source_file, instrument_type")
+        meta_row.addWidget(self.smiles_overview_meta_input, 1)
+        update_overview_btn = QPushButton("Update Table")
+        update_overview_btn.clicked.connect(self.update_smiles_overview_table)
+        meta_row.addWidget(update_overview_btn)
+        overview_layout.addLayout(meta_row)
+
+        # Meta-info input: right-click context menu lists available keys
+        self.smiles_overview_meta_input.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.smiles_overview_meta_input.customContextMenuRequested.connect(self._show_meta_key_context_menu)
+
+        # Overview table
+        self.smiles_overview_table = QTableWidget()
+        self.smiles_overview_table.setColumnCount(2)
+        self.smiles_overview_table.setHorizontalHeaderLabels(["# SMILES", "# Spectra"])
+        self.smiles_overview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.smiles_overview_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.smiles_overview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.smiles_overview_table.setAlternatingRowColors(True)
+        self.smiles_overview_table.setSortingEnabled(True)
+        self.smiles_overview_table.setMinimumHeight(180)
+        self.smiles_overview_table.cellClicked.connect(self._on_smiles_overview_row_clicked)
+        overview_layout.addWidget(self.smiles_overview_table)
+
+        overview_group.setLayout(overview_layout)
+        layout.addWidget(overview_group)
 
         controls.setLayout(layout)
         main_layout.addWidget(controls, 3)  # 75% width
@@ -973,8 +1347,9 @@ class MGFFilterGUI(QMainWindow):
             <p><b>How to use:</b></p>
             <ol>
                 <li>Enter a filter name</li>
-                <li>Enter SMARTS pattern(s) using AND/OR logic</li>
-                <li>Use <b>&lt;&lt; ... &gt;&gt;</b> for OR groups, <b>AND</b> to separate groups</li>
+                <li>Enter a SMARTS expression using <b>and</b>, <b>or</b>, <b>not</b> operators and parentheses</li>
+                <li>Wrap each SMARTS pattern in single quotes: <b>'pattern'</b></li>
+                <li>Use <b>prep_smarts_key('pattern')</b> for automatic C/O aromatic replacement</li>
                 <li>Click "Add Filter" or press Enter</li>
                 <li>View statistics in the table</li>
                 <li>Click "View Structures" to see matched/non-matched compounds</li>
@@ -983,13 +1358,15 @@ class MGFFilterGUI(QMainWindow):
                 <li>Use "Load Filters from JSON" to import multiple filters at once</li>
             </ol>
             <p><b>Example 1:</b> Simple AND:<br>
-            <code>c1ccccc1 AND [OH]</code></p>
+            <code>'c1ccccc1' and '[OH]'</code></p>
             <p><b>Example 2:</b> OR group (flavone OR isoflavone):<br>
-            <code>&lt;&lt;flavone_smarts OR isoflavone_smarts&gt;&gt;</code></p>
+            <code>'flavone_smarts' or 'isoflavone_smarts'</code></p>
             <p><b>Example 3:</b> Combined (flavone OR isoflavone) AND prenyl:<br>
-            <code>&lt;&lt;flavone_smarts OR isoflavone_smarts&gt;&gt; AND CC=C(C)CCC=C(C)C</code></p>
-            <p><b>JSON Format:</b> {"filter_name": "smarts_pattern", ...}</p>
-            <p><b>Note:</b> Use AND (case-insensitive) to separate patterns that must all match, and &lt;&lt; pattern1 OR pattern2 &gt;&gt; for alternatives.</p>
+            <code>('flavone_smarts' or 'isoflavone_smarts') and prep_smarts_key('CC=C(C)C')</code></p>
+            <p><b>Example 4:</b> NOT operator:<br>
+            <code>'scaffold_smarts' and not 'exclude_smarts'</code></p>
+            <p><b>JSON Format:</b> {"filter_name": "expression_string", ...}</p>
+            <p><b>Note:</b> Operator precedence: <b>not</b> > <b>and</b> > <b>or</b>. Use parentheses to control grouping.</p>
             <p><b>Tip:</b> Use tools like <a href="https://smarts.plus">smarts.plus</a> to build and test SMARTS patterns.</p>
         """)
         main_layout.addWidget(help_panel, 1)  # 25% width
@@ -1005,11 +1382,15 @@ class MGFFilterGUI(QMainWindow):
         name_layout.addWidget(self.filter_name_input)
         layout.addLayout(name_layout)
 
-        # SMARTS input - second line
+        # SMARTS input - second line (multi-line with syntax highlighting)
         smarts_layout = QHBoxLayout()
-        smarts_layout.addWidget(QLabel("SMARTS (AND/OR logic):"))
-        self.smarts_input = QLineEdit()
-        self.smarts_input.returnPressed.connect(self.add_smarts_filter)
+        smarts_label = QLabel("SMARTS Expression:")
+        smarts_layout.addWidget(smarts_label, alignment=Qt.AlignTop)
+        self.smarts_input = QPlainTextEdit()
+        self.smarts_input.setFixedHeight(100)  # ~5 lines
+        self.smarts_input.setTabChangesFocus(True)
+        self.smarts_input.setFont(QFont("Consolas", 10))
+        self._smarts_highlighter = SmartsExpressionHighlighter(self.smarts_input.document())
         smarts_layout.addWidget(self.smarts_input)
         layout.addLayout(smarts_layout)
 
@@ -1022,6 +1403,18 @@ class MGFFilterGUI(QMainWindow):
         predefined_btn = QPushButton("Predefined Filters")
         predefined_btn.clicked.connect(self.show_predefined_filters_menu)
         buttons_layout.addWidget(predefined_btn)
+
+        insert_smarts_btn = QPushButton("Insert SMARTS Pattern")
+        insert_smarts_btn.setToolTip("Insert a predefined SMARTS pattern at the cursor position")
+        insert_smarts_btn.clicked.connect(self.show_insert_smarts_menu)
+        buttons_layout.addWidget(insert_smarts_btn)
+
+        smarts_designer_btn = QPushButton("SMARTS Designer")
+        smarts_designer_btn.setToolTip(
+            "Open a visual SMARTS designer window with live RDKit preview"
+        )
+        smarts_designer_btn.clicked.connect(self.open_smarts_designer)
+        buttons_layout.addWidget(smarts_designer_btn)
 
         load_json_btn = QPushButton("Load Filters from JSON")
         load_json_btn.clicked.connect(self.load_filters_from_json)
@@ -1097,6 +1490,60 @@ class MGFFilterGUI(QMainWindow):
         sender = self.sender()
         menu.exec_(sender.mapToGlobal(sender.rect().bottomLeft()))
 
+    def show_insert_smarts_menu(self):
+        """Show a context menu with predefined SMARTS patterns for insertion at cursor."""
+        menu = QMenu(self)
+
+        for filter_name, expr_str in self.predefined_filters.items():
+            # Extract individual SMARTS patterns from the expression
+            try:
+                patterns = Filters.extract_smarts_from_expression(expr_str)
+            except Exception:
+                continue
+            if len(patterns) == 1:
+                # Single pattern: add directly
+                smarts_str, label = patterns[0]
+                display = f"{filter_name}:  '{smarts_str}'"
+                action = menu.addAction(display)
+                action.triggered.connect(lambda checked, s=smarts_str: self.insert_smarts_text(s))
+            else:
+                # Multiple patterns: add as submenu
+                submenu = menu.addMenu(filter_name)
+                for smarts_str, label in patterns:
+                    short = smarts_str if len(smarts_str) <= 60 else smarts_str[:57] + "..."
+                    display = f"'{short}'"
+                    action = submenu.addAction(display)
+                    action.triggered.connect(lambda checked, s=smarts_str: self.insert_smarts_text(s))
+
+        sender = self.sender()
+        menu.exec_(sender.mapToGlobal(sender.rect().bottomLeft()))
+
+    def insert_smarts_text(self, smarts_string):
+        """Insert a single-quoted SMARTS pattern at the current cursor position."""
+        cursor = self.smarts_input.textCursor()
+        cursor.insertText(f"'{smarts_string}'")
+        self.smarts_input.setTextCursor(cursor)
+        self.smarts_input.setFocus()
+
+    def open_smarts_designer(self):
+        """Open a non-blocking SMARTS Designer window.
+
+        Multiple windows can be open simultaneously.  A Python-level
+        reference is kept so the dialog is not garbage-collected while open.
+        """
+        if not hasattr(self, "_smarts_designer_windows"):
+            self._smarts_designer_windows = []
+        dlg = SmartsDesignerDialog(
+            parent=None, insert_callback=self.insert_smarts_text
+        )
+        self._smarts_designer_windows.append(dlg)
+        # Remove the reference once the window is closed to allow GC
+        dlg.destroyed.connect(
+            lambda: self._smarts_designer_windows.remove(dlg)
+            if dlg in self._smarts_designer_windows else None
+        )
+        dlg.show()
+
     def show_filter_table_context_menu(self, position):
         """Show context menu for filter table."""
         # Check if a row is selected
@@ -1123,7 +1570,7 @@ class MGFFilterGUI(QMainWindow):
     def load_predefined_filter(self, filter_name, smarts_pattern):
         """Load a predefined filter into the input fields."""
         self.filter_name_input.setText(filter_name)
-        self.smarts_input.setText(smarts_pattern)
+        self.smarts_input.setPlainText(smarts_pattern)
         QMessageBox.information(self, "Filter Loaded", f"Predefined filter '{filter_name}' has been loaded.\n\nYou can modify the name or SMARTS pattern before adding it.")
 
     def init_section4(self, parent_widget=None):
@@ -1959,60 +2406,256 @@ class MGFFilterGUI(QMainWindow):
 
         self.canon_status_label.setText(f"Status: {status_msg}")
 
+        # Refresh the SMILES overview table after canonicalization
+        self.update_smiles_overview_table()
+
         QMessageBox.information(self, "Success", status_msg)
+
+    def update_smiles_overview_table(self):
+        """Update the SMILES overview table: aggregates SMILES by spectrum count and optional meta-info keys."""
+        if self.df_data is None or not self.mgf_files:
+            self.smiles_overview_table.setRowCount(0)
+            return
+
+        # Determine the SMILES field
+        smiles_field = None
+        for file_data in self.mgf_files.values():
+            if file_data.get("smiles_field"):
+                smiles_field = file_data["smiles_field"]
+                break
+
+        if not smiles_field or smiles_field not in self.df_data.columns:
+            self.smiles_overview_table.setRowCount(0)
+            return
+
+        # Parse meta-information keys from the text input
+        meta_keys_text = self.smiles_overview_meta_input.text().strip()
+        meta_keys = [k.strip() for k in meta_keys_text.split(",") if k.strip()] if meta_keys_text else []
+
+        valid_meta_keys = [k for k in meta_keys if k in self.df_data.columns]
+        invalid_meta_keys = [k for k in meta_keys if k not in self.df_data.columns]
+
+        if invalid_meta_keys:
+            QMessageBox.warning(
+                self,
+                "Unknown Keys",
+                f"The following meta-information keys were not found and will be ignored:\n{', '.join(invalid_meta_keys)}",
+            )
+
+        try:
+            # Filter out rows with null/empty SMILES
+            df_valid = self.df_data.filter(
+                pl.col(smiles_field).is_not_null() & (pl.col(smiles_field).cast(pl.Utf8) != "")
+            )
+
+            # Step 1: count spectra per (SMILES [+ meta keys])
+            group_by_smiles = [smiles_field] + valid_meta_keys
+            spectra_per_smiles = (
+                df_valid
+                .group_by(group_by_smiles)
+                .agg(pl.len().alias("n_spectra"))
+            )
+
+            # Step 2: count distinct SMILES per (meta keys [+] n_spectra)
+            group_by_agg = valid_meta_keys + ["n_spectra"]
+            result = (
+                spectra_per_smiles
+                .group_by(group_by_agg)
+                .agg(pl.len().alias("n_smiles"))
+                .sort(valid_meta_keys + ["n_spectra"])
+            )
+
+            # Build column headers: meta keys first, then # SMILES, then # Spectra
+            headers = valid_meta_keys + ["# SMILES", "# Spectra"]
+            self.smiles_overview_table.setColumnCount(len(headers))
+            self.smiles_overview_table.setHorizontalHeaderLabels(headers)
+
+            rows = result.to_dicts()
+            # Disable sorting during population to prevent mid-insert re-ordering
+            self.smiles_overview_table.setSortingEnabled(False)
+            self.smiles_overview_table.setRowCount(len(rows))
+
+            for row_idx, row in enumerate(rows):
+                col_idx = 0
+                # Store filter data so the click handler can reconstruct which spectra belong here
+                row_filter_data = {
+                    "smiles_field": smiles_field,
+                    "meta_keys": valid_meta_keys,
+                    "meta_values": {k: row.get(k) for k in valid_meta_keys},
+                    "n_spectra": int(row["n_spectra"]),
+                }
+                for key in valid_meta_keys:
+                    val = row.get(key, "")
+                    item = QTableWidgetItem(str(val) if val is not None else "")
+                    item.setTextAlignment(Qt.AlignCenter)
+                    if col_idx == 0:
+                        item.setData(Qt.UserRole, row_filter_data)
+                    self.smiles_overview_table.setItem(row_idx, col_idx, item)
+                    col_idx += 1
+                for val in (row["n_smiles"], row["n_spectra"]):
+                    # Use a numeric-sortable item so column sorts by value, not string
+                    item = QTableWidgetItem()
+                    item.setData(Qt.DisplayRole, int(val))
+                    item.setTextAlignment(Qt.AlignCenter)
+                    if col_idx == 0:  # no meta keys: store on first numeric column
+                        item.setData(Qt.UserRole, row_filter_data)
+                    self.smiles_overview_table.setItem(row_idx, col_idx, item)
+                    col_idx += 1
+
+            self.smiles_overview_table.setSortingEnabled(True)
+            self.smiles_overview_table.resizeColumnsToContents()
+
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to compute SMILES overview:\n{str(exc)}")
+
+    def _on_smiles_overview_row_clicked(self, row, _col):
+        """Open a detail dialog showing all spectra for the clicked summary row."""
+        if self.df_data is None:
+            return
+
+        # Retrieve row filter data from the first cell's UserRole
+        first_item = self.smiles_overview_table.item(row, 0)
+        if first_item is None:
+            return
+        row_data = first_item.data(Qt.UserRole)
+        if row_data is None:
+            # Try scanning all cells in the row (no meta keys → data on numeric cell)
+            for c in range(self.smiles_overview_table.columnCount()):
+                it = self.smiles_overview_table.item(row, c)
+                if it is not None:
+                    row_data = it.data(Qt.UserRole)
+                    if row_data is not None:
+                        break
+        if row_data is None:
+            return
+
+        smiles_field = row_data["smiles_field"]
+        meta_keys = row_data["meta_keys"]
+        meta_values = row_data["meta_values"]
+        n_spectra = row_data["n_spectra"]
+
+        try:
+            df = self.df_data
+
+            # Filter out rows with null/empty SMILES
+            df_valid = df.filter(
+                pl.col(smiles_field).is_not_null() & (pl.col(smiles_field).cast(pl.Utf8) != "")
+            )
+
+            # Apply meta-key filters
+            for key, val in meta_values.items():
+                if val is None:
+                    df_valid = df_valid.filter(pl.col(key).is_null())
+                else:
+                    df_valid = df_valid.filter(pl.col(key).cast(pl.Utf8) == str(val))
+
+            # Keep only SMILES that have exactly n_spectra spectra in this filtered group
+            group_by_smiles = [smiles_field] + meta_keys
+            counts = (
+                df_valid
+                .group_by(group_by_smiles)
+                .agg(pl.len().alias("__n_spectra_tmp"))
+                .filter(pl.col("__n_spectra_tmp") == n_spectra)
+                .select(smiles_field)
+            )
+            matching_smiles = counts.to_series().to_list()
+
+            df_result = df_valid.filter(pl.col(smiles_field).is_in(matching_smiles))
+
+            # Remove internal columns before display
+            display_cols = [c for c in df_result.columns if not c.startswith("__AnnoMe_")]
+
+            # Column ordering: SMILES first, then meta-info keys, then the rest
+            ordered = [smiles_field]
+            for k in meta_keys:
+                if k != smiles_field and k in display_cols:
+                    ordered.append(k)
+            for c in display_cols:
+                if c not in ordered:
+                    ordered.append(c)
+
+            df_display = df_result.select(ordered)
+
+        except Exception as exc:
+            QMessageBox.critical(self, "Error", f"Failed to load spectra:\n{str(exc)}")
+            return
+
+        # Build a short title describing the group
+        if meta_values:
+            group_desc = ", ".join(f"{k}={v}" for k, v in meta_values.items())
+        else:
+            group_desc = "(all groups)"
+        title = f"Spectra – {group_desc}  |  {n_spectra} spectra/SMILES  |  {len(df_display)} rows"
+
+        dlg = SmilesSpectraDetailDialog(
+            df=df_display,
+            highlight_cols=set(meta_keys) | {smiles_field},
+            title=title,
+            parent=self,
+        )
+        dlg.show()
+
+    def _show_meta_key_context_menu(self, pos):
+        """Show a context menu on the meta-info keys input listing all available metadata columns."""
+        if self.df_data is None:
+            return
+
+        # Collect all non-internal columns as candidate meta keys
+        available_keys = sorted(
+            col for col in self.df_data.columns if not col.startswith("__AnnoMe_")
+        )
+
+        if not available_keys:
+            return
+
+        menu = QMenu(self)
+        menu.setTitle("Add meta-info key")
+
+        # Parse keys already in the input so we can mark them
+        current_text = self.smiles_overview_meta_input.text()
+        already_added = {k.strip() for k in current_text.split(",") if k.strip()}
+
+        for key in available_keys:
+            action = menu.addAction(key)
+            if key in already_added:
+                action.setEnabled(False)  # visually indicate already present
+
+        chosen = menu.exec_(self.smiles_overview_meta_input.mapToGlobal(pos))
+        if chosen is None:
+            return
+
+        key_to_add = chosen.text()
+        existing = self.smiles_overview_meta_input.text().strip()
+        if existing:
+            self.smiles_overview_meta_input.setText(existing + ", " + key_to_add)
+        else:
+            self.smiles_overview_meta_input.setText(key_to_add)
 
     def add_smarts_filter(self):
         """Add or update a SMARTS filter."""
         filter_name = self.filter_name_input.text().strip()
-        smarts_string = self.smarts_input.text().strip()
+        # Normalize multi-line input: remove newlines, collapse leading
+        # whitespace from continuation lines into a single space
+        raw_text = self.smarts_input.toPlainText()
+        smarts_string = re.sub(r'\s*\n\s*', ' ', raw_text).strip()
 
         if not filter_name or not smarts_string:
-            QMessageBox.warning(self, "Warning", "Please provide both filter name and SMARTS string.")
+            QMessageBox.warning(self, "Warning", "Please provide both filter name and SMARTS expression.")
             return
 
-        # Parse AND-separated groups (case-insensitive)
-        and_groups = re.split(r"\s+AND\s+", smarts_string, flags=re.IGNORECASE)
-        and_groups = [s.strip() for s in and_groups if s.strip()]
-
-        # Parse each AND group for OR patterns (marked with << >>)
-        parsed_smarts = []
-        for and_group in and_groups:
-            # Check if this group has << >> markers
-            if "<<" in and_group and ">>" in and_group:
-                # Extract content within << >>
-                or_match = re.search(r"<<(.+?)>>", and_group, re.DOTALL)
-                if or_match:
-                    or_content = or_match.group(1)
-                    # Split by OR (case-insensitive)
-                    or_patterns = re.split(r"\s+OR\s+", or_content, flags=re.IGNORECASE)
-                    or_patterns = [p.strip() for p in or_patterns if p.strip()]
-                else:
-                    # If markers exist but regex doesn't match, treat as single pattern
-                    or_patterns = [and_group.strip()]
-            else:
-                # No OR patterns, treat as single pattern
-                or_patterns = [and_group.strip()]
-
-            parsed_smarts.append(or_patterns)
-
-        print(f"Parsed SMARTS for filter '{filter_name}':")
-        pprint(parsed_smarts)
-
-        # Validate all SMARTS patterns
+        # Validate the expression by compiling it
         try:
-            for or_group in parsed_smarts:
-                for smarts in or_group:
-                    mol = rdkit.Chem.MolFromSmarts(smarts)
-                    if not mol:
-                        raise ValueError(f"Invalid SMARTS: {smarts}")
+            Filters.compile_smarts_expression(smarts_string)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Invalid SMARTS string:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Invalid SMARTS expression:\n{str(e)}")
             return
+
+        print(f"SMARTS expression for filter '{filter_name}': {smarts_string}")
 
         # Check if updating existing filter
         is_update = filter_name in self.smarts_filters
 
-        self.smarts_filters[filter_name] = parsed_smarts
+        self.smarts_filters[filter_name] = smarts_string
 
         # Update or add to export list
         if not is_update:
@@ -2089,21 +2732,7 @@ class MGFFilterGUI(QMainWindow):
 
         if filter_name in self.smarts_filters:
             self.filter_name_input.setText(filter_name)
-
-            # Reconstruct the SMARTS string from parsed format
-            parsed_smarts = self.smarts_filters[filter_name]
-            smarts_parts = []
-
-            for or_group in parsed_smarts:
-                if len(or_group) > 1:
-                    # Has OR patterns
-                    or_string = "<<" + " OR ".join(or_group) + ">>"
-                    smarts_parts.append(or_string)
-                else:
-                    # Single pattern
-                    smarts_parts.append(or_group[0])
-
-            self.smarts_input.setText(" AND ".join(smarts_parts))
+            self.smarts_input.setPlainText(self.smarts_filters[filter_name])
 
     def delete_selected_filter(self):
         """Delete the selected filter."""
@@ -2218,41 +2847,36 @@ class MGFFilterGUI(QMainWindow):
         if filter_name not in self.smarts_filters:
             return
 
-        parsed_smarts = self.smarts_filters[filter_name]
+        expr_str = self.smarts_filters[filter_name]
 
         try:
             from rdkit.Chem import Draw
             from rdkit import Chem
 
-            # Collect all SMARTS patterns from the filter
-            smarts_list = []
-            labels = []
+            # Extract all SMARTS patterns from the expression
+            smarts_entries = Filters.extract_smarts_from_expression(expr_str)
 
-            for and_idx, or_group in enumerate(parsed_smarts):
-                for or_idx, smarts_pattern in enumerate(or_group):
-                    smarts_list.append(smarts_pattern)
-                    if len(or_group) > 1:
-                        # Multiple patterns in OR group
-                        labels.append(f"AND Group {and_idx + 1}, OR {or_idx + 1}")
-                    else:
-                        # Single pattern in AND group
-                        labels.append(f"AND Group {and_idx + 1}")
-
-            if not smarts_list:
+            if not smarts_entries:
                 self.smarts_viz_container.setText("No SMARTS patterns found")
                 return
 
             # Convert SMARTS to molecules
             mols = []
             valid_labels = []
-            for smarts, label in zip(smarts_list, labels):
+            for idx, (smarts_str, label_type) in enumerate(smarts_entries):
                 try:
-                    mol = Chem.MolFromSmarts(smarts)
+                    if label_type == "prep_smarts_key":
+                        processed = Filters.prep_smarts_key(smarts_str, replace=True, convert_to_rdkit=False)
+                        mol = Chem.MolFromSmarts(processed)
+                        label = f"prep_smarts_key #{idx + 1}"
+                    else:
+                        mol = Chem.MolFromSmarts(smarts_str)
+                        label = f"Pattern #{idx + 1}"
                     if mol:
                         mols.append(mol)
                         valid_labels.append(label)
                 except Exception as e:
-                    print(f"Failed to parse SMARTS '{smarts}': {e}")
+                    print(f"Failed to parse SMARTS '{smarts_str}': {e}")
                     continue
 
             if not mols:
@@ -2262,7 +2886,6 @@ class MGFFilterGUI(QMainWindow):
             # Render molecules to image
             mols_per_row = min(3, len(mols))
             mol_size = (400, 400)
-            n_rows = math.ceil(len(mols) / mols_per_row)
 
             img = Draw.MolsToGridImage(mols, molsPerRow=mols_per_row, subImgSize=mol_size, legends=valid_labels, returnPNG=False)
 
@@ -2288,79 +2911,30 @@ class MGFFilterGUI(QMainWindow):
             print(f"Error rendering SMARTS structures: {e}")
 
     @staticmethod
-    def _check_smarts_match_with_compiled(mol, compiled_patterns):
-        """Check if an RDKit mol matches pre-compiled SMARTS patterns.
-
-        Args:
-            mol: RDKit molecule object
-            compiled_patterns: List of lists of compiled RDKit pattern mols.
-                              Outer list = AND groups, inner list = OR alternatives.
-
-        Returns:
-            bool: True if all AND groups match (at least one OR pattern each).
-        """
-        # All AND groups must match (top level)
-        for or_group in compiled_patterns:
-            # At least one pattern in the OR group must match
-            or_match = False
-            for pattern_mol in or_group:
-                if pattern_mol is not None and mol.HasSubstructMatch(pattern_mol):
-                    or_match = True
-                    break
-
-            # If no pattern in this OR group matched, the whole filter fails
-            if not or_match:
-                return False
-
-        # All AND groups matched
-        return True
-
-    @staticmethod
-    def _compile_smarts_patterns(parsed_smarts):
-        """Pre-compile SMARTS patterns into RDKit mol objects.
-
-        Args:
-            parsed_smarts: List of OR groups, each a list of SMARTS strings.
-
-        Returns:
-            List of lists of compiled RDKit mol objects (same structure).
-        """
-        compiled = []
-        for or_group in parsed_smarts:
-            compiled_or = []
-            for smarts_pattern in or_group:
-                try:
-                    compiled_or.append(rdkit.Chem.MolFromSmarts(smarts_pattern))
-                except Exception:
-                    compiled_or.append(None)
-            compiled.append(compiled_or)
-        return compiled
-
-    @staticmethod
     def _process_smiles_chunk(chunk_info):
         """Worker function to process a chunk of SMILES with all filters sequentially.
 
-        SMARTS patterns are pre-compiled once per chunk to avoid redundant parsing.
+        SMARTS expressions are pre-compiled once per chunk to avoid redundant parsing.
         """
         smiles_chunk, all_filters = chunk_info
 
-        # Pre-compile all SMARTS patterns once for this chunk (major perf win)
+        # Pre-compile all SMARTS expressions once for this chunk
         compiled_filters = {}
-        for filter_name, parsed_smarts in all_filters.items():
-            compiled_filters[filter_name] = MGFFilterGUI._compile_smarts_patterns(parsed_smarts)
+        for filter_name, expr_str in all_filters.items():
+            compiled_filters[filter_name] = Filters.compile_smarts_expression(expr_str)
 
         # Results for each filter
         filter_results = {}
 
         # Apply each filter sequentially to this chunk
-        for filter_name, compiled_patterns in compiled_filters.items():
+        for filter_name, compiled_expr in compiled_filters.items():
             matched_smiles = []
             non_matched_smiles = []
 
             for smiles in smiles_chunk:
                 try:
                     mol = rdkit.Chem.MolFromSmiles(smiles)
-                    if mol and MGFFilterGUI._check_smarts_match_with_compiled(mol, compiled_patterns):
+                    if mol and Filters.evaluate_smarts_expression(compiled_expr, mol):
                         matched_smiles.append(smiles)
                     else:
                         non_matched_smiles.append(smiles)
@@ -3019,7 +3593,7 @@ class MGFFilterGUI(QMainWindow):
                 filters_dict = json.load(f)
 
             if not isinstance(filters_dict, dict):
-                QMessageBox.critical(self, "Error", "Invalid JSON format. Expected a dictionary with filter names as keys and SMARTS patterns as values.")
+                QMessageBox.critical(self, "Error", "Invalid JSON format. Expected a dictionary with filter names as keys and SMARTS expression strings as values.")
                 return
 
             # Load and apply each filter
@@ -3031,7 +3605,7 @@ class MGFFilterGUI(QMainWindow):
             progress.setWindowModality(Qt.WindowModal)
             progress.setMinimumDuration(0)
 
-            for idx, (filter_name, smarts_string) in enumerate(filters_dict.items()):
+            for idx, (filter_name, expr_str) in enumerate(filters_dict.items()):
                 if progress.wasCanceled():
                     break
 
@@ -3040,50 +3614,21 @@ class MGFFilterGUI(QMainWindow):
                 QApplication.processEvents()
 
                 try:
-                    # Validate filter name and SMARTS string
+                    # Validate filter name and expression string
                     if not filter_name or not isinstance(filter_name, str):
                         raise ValueError("Invalid filter name")
 
-                    if not smarts_string or not isinstance(smarts_string, str):
-                        raise ValueError("Invalid SMARTS pattern")
+                    if not expr_str or not isinstance(expr_str, str):
+                        raise ValueError("Invalid SMARTS expression")
 
-                    # Parse AND-separated groups (case-insensitive)
-                    and_groups = re.split(r"\s+AND\s+", smarts_string, flags=re.IGNORECASE)
-                    and_groups = [s.strip() for s in and_groups if s.strip()]
-
-                    # Parse each AND group for OR patterns (marked with << >>)
-                    parsed_smarts = []
-                    for and_group in and_groups:
-                        # Check if this group has << >> markers
-                        if "<<" in and_group and ">>" in and_group:
-                            # Extract content within << >>
-                            or_match = re.search(r"<<(.+?)>>", and_group, re.DOTALL)
-                            if or_match:
-                                or_content = or_match.group(1)
-                                # Split by OR (case-insensitive)
-                                or_patterns = re.split(r"\s+OR\s+", or_content, flags=re.IGNORECASE)
-                                or_patterns = [p.strip() for p in or_patterns if p.strip()]
-                            else:
-                                # If markers exist but regex doesn't match, treat as single pattern
-                                or_patterns = [and_group.strip()]
-                        else:
-                            # No OR patterns, treat as single pattern
-                            or_patterns = [and_group.strip()]
-
-                        parsed_smarts.append(or_patterns)
-
-                    # Validate all SMARTS patterns
-                    for or_group in parsed_smarts:
-                        for smarts in or_group:
-                            mol = rdkit.Chem.MolFromSmarts(smarts)
-                            if not mol:
-                                raise ValueError(f"Invalid SMARTS: {smarts}")
+                    # Validate by compiling the expression
+                    Filters.compile_smarts_expression(expr_str)
 
                     # Check if updating existing filter
                     is_update = filter_name in self.smarts_filters
 
-                    # Store the filter
-                    self.smarts_filters[filter_name] = parsed_smarts
+                    # Store the filter expression string
+                    self.smarts_filters[filter_name] = expr_str
 
                     # Update or add to export list
                     if not is_update:
@@ -3135,22 +3680,8 @@ class MGFFilterGUI(QMainWindow):
             return
 
         try:
-            # Reconstruct SMARTS strings from parsed format
-            filters_dict = {}
-
-            for filter_name, parsed_smarts in self.smarts_filters.items():
-                smarts_parts = []
-
-                for or_group in parsed_smarts:
-                    if len(or_group) > 1:
-                        # Has OR patterns
-                        or_string = "<<" + " OR ".join(or_group) + ">>"
-                        smarts_parts.append(or_string)
-                    else:
-                        # Single pattern
-                        smarts_parts.append(or_group[0])
-
-                filters_dict[filter_name] = " AND ".join(smarts_parts)
+            # Expression strings are stored directly — no reconstruction needed
+            filters_dict = dict(self.smarts_filters)
 
             # Save to JSON file
             with open(file_path, "w", encoding="utf-8") as f:

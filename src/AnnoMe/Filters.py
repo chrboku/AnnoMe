@@ -1747,6 +1747,278 @@ def prep_smarts_key(smart, replace=True, convert_to_rdkit=True):
         return rdkit.Chem.MolFromSmarts(smart)
 
 
+def tokenize_smarts_expression(expr_str):
+    """
+    Tokenizes a SMARTS logic expression string into tokens.
+
+    Supported token types:
+        - ('SMARTS', smarts_string): A single-quoted SMARTS pattern literal
+        - ('PREP_SMARTS', smarts_string): A prep_smarts_key('...') function call
+        - ('AND',): Boolean AND operator
+        - ('OR',): Boolean OR operator
+        - ('NOT',): Boolean NOT operator
+        - ('LPAREN',): Left parenthesis for grouping
+        - ('RPAREN',): Right parenthesis for grouping
+
+    Args:
+        expr_str (str): The expression string to tokenize, e.g.
+            ``"('smart1' or 'smart2') and prep_smarts_key('smart3')"``
+
+    Returns:
+        list: A list of token tuples.
+
+    Raises:
+        ValueError: If the expression contains invalid syntax.
+    """
+    tokens = []
+    i = 0
+    n = len(expr_str)
+
+    while i < n:
+        # Skip whitespace
+        if expr_str[i].isspace():
+            i += 1
+            continue
+
+        # Single-quoted SMARTS literal
+        if expr_str[i] == "'":
+            j = expr_str.find("'", i + 1)
+            if j == -1:
+                raise ValueError(f"Unterminated single-quoted string starting at position {i}")
+            smarts = expr_str[i + 1 : j]
+            tokens.append(("SMARTS", smarts))
+            i = j + 1
+            continue
+
+        # Parentheses (only grouping — prep_smarts_key handled below)
+        if expr_str[i] == "(":
+            tokens.append(("LPAREN",))
+            i += 1
+            continue
+        if expr_str[i] == ")":
+            tokens.append(("RPAREN",))
+            i += 1
+            continue
+
+        # Keywords and function names
+        if expr_str[i].isalpha() or expr_str[i] == "_":
+            j = i
+            while j < n and (expr_str[j].isalnum() or expr_str[j] == "_"):
+                j += 1
+            word = expr_str[i:j]
+            word_lower = word.lower()
+
+            if word_lower == "and":
+                tokens.append(("AND",))
+            elif word_lower == "or":
+                tokens.append(("OR",))
+            elif word_lower == "not":
+                tokens.append(("NOT",))
+            elif word == "prep_smarts_key":
+                # Parse prep_smarts_key('...')
+                k = j
+                while k < n and expr_str[k].isspace():
+                    k += 1
+                if k >= n or expr_str[k] != "(":
+                    raise ValueError(f"Expected '(' after prep_smarts_key at position {k}")
+                k += 1
+                while k < n and expr_str[k].isspace():
+                    k += 1
+                if k >= n or expr_str[k] != "'":
+                    raise ValueError(f"Expected single-quoted SMARTS after prep_smarts_key( at position {k}")
+                q_start = k + 1
+                q_end = expr_str.find("'", q_start)
+                if q_end == -1:
+                    raise ValueError(f"Unterminated string in prep_smarts_key at position {q_start}")
+                smarts = expr_str[q_start:q_end]
+                k = q_end + 1
+                while k < n and expr_str[k].isspace():
+                    k += 1
+                if k >= n or expr_str[k] != ")":
+                    raise ValueError(f"Expected ')' after prep_smarts_key('...') at position {k}")
+                k += 1
+                tokens.append(("PREP_SMARTS", smarts))
+                i = k
+                continue
+            else:
+                raise ValueError(f"Unknown keyword '{word}' at position {i}")
+
+            i = j
+            continue
+
+        raise ValueError(f"Unexpected character '{expr_str[i]}' at position {i}")
+
+    return tokens
+
+
+def _parse_smarts_or_expr(tokens, pos):
+    """Parse an OR expression (lowest precedence)."""
+    left, pos = _parse_smarts_and_expr(tokens, pos)
+    while pos < len(tokens) and tokens[pos][0] == "OR":
+        pos += 1  # consume OR
+        right, pos = _parse_smarts_and_expr(tokens, pos)
+        left = ("or", left, right)
+    return left, pos
+
+
+def _parse_smarts_and_expr(tokens, pos):
+    """Parse an AND expression (medium precedence)."""
+    left, pos = _parse_smarts_not_expr(tokens, pos)
+    while pos < len(tokens) and tokens[pos][0] == "AND":
+        pos += 1  # consume AND
+        right, pos = _parse_smarts_not_expr(tokens, pos)
+        left = ("and", left, right)
+    return left, pos
+
+
+def _parse_smarts_not_expr(tokens, pos):
+    """Parse a NOT expression (highest precedence)."""
+    if pos < len(tokens) and tokens[pos][0] == "NOT":
+        pos += 1  # consume NOT
+        child, pos = _parse_smarts_not_expr(tokens, pos)
+        return ("not", child), pos
+    return _parse_smarts_atom(tokens, pos)
+
+
+def _parse_smarts_atom(tokens, pos):
+    """Parse an atom: parenthesized expression or SMARTS literal."""
+    if pos >= len(tokens):
+        raise ValueError("Unexpected end of expression")
+
+    tok = tokens[pos]
+
+    if tok[0] == "LPAREN":
+        pos += 1  # consume (
+        node, pos = _parse_smarts_or_expr(tokens, pos)
+        if pos >= len(tokens) or tokens[pos][0] != "RPAREN":
+            raise ValueError("Missing closing parenthesis")
+        pos += 1  # consume )
+        return node, pos
+
+    if tok[0] == "SMARTS":
+        return ("smarts", tok[1], None), pos + 1
+
+    if tok[0] == "PREP_SMARTS":
+        return ("prep_smarts", tok[1], None), pos + 1
+
+    raise ValueError(f"Unexpected token: {tok}")
+
+
+def _compile_smarts_ast(node):
+    """Pre-compile RDKit Mol objects in the AST nodes."""
+    if node[0] == "smarts":
+        mol = rdkit.Chem.MolFromSmarts(node[1])
+        if mol is None:
+            raise ValueError(f"Invalid SMARTS pattern: '{node[1]}'")
+        return ("smarts", node[1], mol)
+
+    if node[0] == "prep_smarts":
+        processed = prep_smarts_key(node[1], replace=True, convert_to_rdkit=False)
+        mol = rdkit.Chem.MolFromSmarts(processed)
+        if mol is None:
+            raise ValueError(f"Invalid SMARTS after prep_smarts_key: '{node[1]}' -> '{processed}'")
+        return ("smarts", processed, mol)
+
+    if node[0] == "and":
+        return ("and", _compile_smarts_ast(node[1]), _compile_smarts_ast(node[2]))
+
+    if node[0] == "or":
+        return ("or", _compile_smarts_ast(node[1]), _compile_smarts_ast(node[2]))
+
+    if node[0] == "not":
+        return ("not", _compile_smarts_ast(node[1]))
+
+    raise ValueError(f"Unknown AST node type: {node[0]}")
+
+
+def compile_smarts_expression(expr_str):
+    """
+    Compile a SMARTS logic expression string into a pre-compiled AST.
+
+    The expression supports:
+        - Single-quoted SMARTS literals: ``'CC=C(C)C'``
+        - ``prep_smarts_key('...')`` function calls for automatic C/O replacement
+        - Boolean operators: ``and``, ``or``, ``not`` (case-insensitive)
+        - Parentheses for grouping: ``('A' or 'B') and 'C'``
+
+    Operator precedence (highest to lowest): ``not`` > ``and`` > ``or``
+
+    Args:
+        expr_str (str): The SMARTS logic expression string.
+
+    Returns:
+        tuple: A compiled AST with pre-compiled RDKit Mol objects.
+
+    Raises:
+        ValueError: If the expression is invalid.
+
+    Examples::
+
+        compile_smarts_expression("'CC=C(C)C'")
+        compile_smarts_expression("('smart1' or 'smart2') and 'smart3'")
+        compile_smarts_expression("('smart1' or not 'smart2') and prep_smarts_key('smart3')")
+    """
+    tokens = tokenize_smarts_expression(expr_str)
+    if not tokens:
+        raise ValueError("Empty expression")
+    ast_node, pos = _parse_smarts_or_expr(tokens, 0)
+    if pos != len(tokens):
+        raise ValueError(f"Unexpected tokens after position {pos}: {tokens[pos:]}")
+    return _compile_smarts_ast(ast_node)
+
+
+def evaluate_smarts_expression(compiled_expr, mol):
+    """
+    Evaluate a compiled SMARTS expression against an RDKit molecule.
+
+    Args:
+        compiled_expr (tuple): A compiled AST from :func:`compile_smarts_expression`.
+        mol (rdkit.Chem.rdchem.Mol): The RDKit molecule to test.
+
+    Returns:
+        bool: True if the molecule matches the expression, False otherwise.
+    """
+    if mol is None:
+        return False
+
+    node_type = compiled_expr[0]
+
+    if node_type == "smarts":
+        return mol.HasSubstructMatch(compiled_expr[2])
+
+    if node_type == "and":
+        return evaluate_smarts_expression(compiled_expr[1], mol) and evaluate_smarts_expression(compiled_expr[2], mol)
+
+    if node_type == "or":
+        return evaluate_smarts_expression(compiled_expr[1], mol) or evaluate_smarts_expression(compiled_expr[2], mol)
+
+    if node_type == "not":
+        return not evaluate_smarts_expression(compiled_expr[1], mol)
+
+    raise ValueError(f"Unknown AST node type: {node_type}")
+
+
+def extract_smarts_from_expression(expr_str):
+    """
+    Extract all SMARTS pattern strings from a SMARTS logic expression.
+
+    Args:
+        expr_str (str): The SMARTS logic expression string.
+
+    Returns:
+        list of tuple: Each tuple is ``(smarts_string, label)`` where label is
+            ``'SMARTS'`` for raw patterns or ``'prep_smarts_key'`` for function calls.
+    """
+    tokens = tokenize_smarts_expression(expr_str)
+    result = []
+    for tok in tokens:
+        if tok[0] == "SMARTS":
+            result.append((tok[1], "SMARTS"))
+        elif tok[0] == "PREP_SMARTS":
+            result.append((tok[1], "prep_smarts_key"))
+    return result
+
+
 def generate_and_save_image(chunk_idx, matching_compounds_list, spectra, name_field, smiles_field, chunk_size, output_folder, database_name, typ):
     chunk_compounds = matching_compounds_list[chunk_idx : chunk_idx + chunk_size]
     try:
@@ -1789,7 +2061,9 @@ def process_database(
         smiles_field (str): Field name for SMILES strings in the MGF blocks.
         name_field (str): Field name for compound names in the MGF blocks.
         sf_field (str): Field name for sum formulas in the MGF blocks.
-        smart_checks (list): List of SMARTS strings to check against the SMILES strings.
+        smart_checks (dict): Dictionary mapping check names to SMARTS logic expression strings
+            (e.g. ``"('smart1' or 'smart2') and prep_smarts_key('smart3')"``).
+            See :func:`compile_smarts_expression` for the expression syntax.
         standardize_block_functions (dict): Dictionary of functions to standardize specific fields in the MGF blocks.
         output_folder (str): Path to the folder where the output files will be saved.
         include_compound_plots (bool, optional): If True, generates compound structure plots. Defaults to None.
@@ -1908,13 +2182,17 @@ def process_database(
     # process each check, and export matching compounds and spectra
     all_non_matching_smiles = set(unique_smiles_strings)
     chunk_size = 500
-    for check_name, subs in smart_checks.items():
+    for check_name, expr_str in smart_checks.items():
         found_results[check_name] = {}
 
         print("\n--------------------------------------------------------------------------")
         print(f"   # Checking for substructure '{check_name}'")
 
-        matching_smiles, non_matching_smiles, errored_smiles = filter_smiles(unique_smiles_strings, lambda x: substructure_fn(x, subs))
+        compiled_expr = compile_smarts_expression(expr_str)
+        matching_smiles, non_matching_smiles, errored_smiles = filter_smiles(
+            unique_smiles_strings,
+            lambda x, _c=compiled_expr: evaluate_smarts_expression(_c, rdkit.Chem.MolFromSmiles(x)),
+        )
         found_results[check_name]["matching_smiles"] = matching_smiles
 
         if len(matching_smiles) > 0:

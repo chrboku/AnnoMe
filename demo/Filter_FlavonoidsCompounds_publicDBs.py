@@ -84,9 +84,9 @@ input_data = {
 
 # Visualize SMARTS with https://smarts.plus/view/1cf72609-6995-4b25-8a16-42eeeb8c09df
 checks = OrderedDict([
-    ("flavonoids", [flavone_smart]),
-    ("isoflavonoids", [isoflavone_smart]),
-    ("iso_and_flavonoids", [flavone_smart + isoflavone_smart]),
+    ("flavonoids", " or ".join([f"'{s}'" for s in flavone_smart])),
+    ("isoflavonoids", " or ".join([f"'{s}'" for s in isoflavone_smart])),
+    ("iso_and_flavonoids", " or ".join([f"'{s}'" for s in flavone_smart + isoflavone_smart])),
 ])
 include_details = False
 
