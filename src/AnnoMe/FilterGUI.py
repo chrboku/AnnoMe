@@ -77,8 +77,8 @@ class SmartsExpressionHighlighter(QSyntaxHighlighter):
         self._paren_fmt.setFontWeight(QFont.Bold)
 
         # Pre-compile patterns
-        self._keyword_re = re.compile(r'\b(and|or|not)\b', re.IGNORECASE)
-        self._paren_re = re.compile(r'[()]')
+        self._keyword_re = re.compile(r"\b(and|or|not)\b", re.IGNORECASE)
+        self._paren_re = re.compile(r"[()]")
 
     def highlightBlock(self, text):
         """Apply highlighting rules to a single block (line) of text.
@@ -137,9 +137,7 @@ class SmartsDesignerDialog(QDialog):
         layout.addLayout(input_row)
 
         # ── Options ───────────────────────────────────────────────────────
-        self.prep_check = QCheckBox(
-            "Apply prep_smarts_key  (normalise C/O aromaticity: c\u2194C, o\u2194O)"
-        )
+        self.prep_check = QCheckBox("Apply prep_smarts_key  (normalise C/O aromaticity: c\u2194C, o\u2194O)")
         self.prep_check.setChecked(True)
         self.prep_check.stateChanged.connect(self._update_preview)
         layout.addWidget(self.prep_check)
@@ -148,9 +146,7 @@ class SmartsDesignerDialog(QDialog):
         self.preview_label = QLabel("Enter a SMARTS pattern above to preview it.")
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setMinimumSize(440, 300)
-        self.preview_label.setStyleSheet(
-            "border: 1px solid #aaa; background: white; padding: 4px;"
-        )
+        self.preview_label.setStyleSheet("border: 1px solid #aaa; background: white; padding: 4px;")
         layout.addWidget(self.preview_label)
 
         # ── Error / status ────────────────────────────────────────────────
@@ -173,17 +169,13 @@ class SmartsDesignerDialog(QDialog):
         btn_row = QHBoxLayout()
 
         copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.setToolTip(
-            "Copy the quoted SMARTS expression ready to paste into the expression editor"
-        )
+        copy_btn.setToolTip("Copy the quoted SMARTS expression ready to paste into the expression editor")
         copy_btn.clicked.connect(self._copy_to_clipboard)
         btn_row.addWidget(copy_btn)
 
         if insert_callback is not None:
             insert_btn = QPushButton("Insert into Expression")
-            insert_btn.setToolTip(
-                "Insert the SMARTS pattern at the current cursor position in the expression editor"
-            )
+            insert_btn.setToolTip("Insert the SMARTS pattern at the current cursor position in the expression editor")
             insert_btn.clicked.connect(self._insert_into_expression)
             btn_row.addWidget(insert_btn)
 
@@ -205,6 +197,7 @@ class SmartsDesignerDialog(QDialog):
             return None, None
         if self.prep_check.isChecked():
             from . import Filters as _F
+
             processed = _F.prep_smarts_key(raw, replace=True, convert_to_rdkit=False)
         else:
             processed = raw
@@ -229,6 +222,7 @@ class SmartsDesignerDialog(QDialog):
         self.status_label.setText("")
         try:
             from rdkit.Chem import Draw
+
             pil_img = Draw.MolToImage(mol, size=(440, 300))
             buf = io.BytesIO()
             pil_img.save(buf, format="PNG")
@@ -274,11 +268,11 @@ class SmilesSpectraDetailDialog(QDialog):
     """
 
     # Colours used for header and cells
-    _HIGHLIGHT_BG = QColor("#cce5ff")   # light blue – grouping / SMILES columns
-    _CONSTANT_BG = QColor("#fff9c4")    # light yellow – constant-value columns
+    _HIGHLIGHT_BG = QColor("#cce5ff")  # light blue – grouping / SMILES columns
+    _CONSTANT_BG = QColor("#fff9c4")  # light yellow – constant-value columns
     _HIGHLIGHT_HDR = QColor("#4a90d9")  # darker blue for highlighted headers
     _HIGHLIGHT_HDR_FG = QColor("#ffffff")
-    _CONSTANT_HDR = QColor("#f9e84a")   # yellow header for constant cols
+    _CONSTANT_HDR = QColor("#f9e84a")  # yellow header for constant cols
 
     def __init__(self, df, highlight_cols, title, parent=None):
         """
@@ -1410,9 +1404,7 @@ class MGFFilterGUI(QMainWindow):
         buttons_layout.addWidget(insert_smarts_btn)
 
         smarts_designer_btn = QPushButton("SMARTS Designer")
-        smarts_designer_btn.setToolTip(
-            "Open a visual SMARTS designer window with live RDKit preview"
-        )
+        smarts_designer_btn.setToolTip("Open a visual SMARTS designer window with live RDKit preview")
         smarts_designer_btn.clicked.connect(self.open_smarts_designer)
         buttons_layout.addWidget(smarts_designer_btn)
 
@@ -1533,15 +1525,10 @@ class MGFFilterGUI(QMainWindow):
         """
         if not hasattr(self, "_smarts_designer_windows"):
             self._smarts_designer_windows = []
-        dlg = SmartsDesignerDialog(
-            parent=None, insert_callback=self.insert_smarts_text
-        )
+        dlg = SmartsDesignerDialog(parent=None, insert_callback=self.insert_smarts_text)
         self._smarts_designer_windows.append(dlg)
         # Remove the reference once the window is closed to allow GC
-        dlg.destroyed.connect(
-            lambda: self._smarts_designer_windows.remove(dlg)
-            if dlg in self._smarts_designer_windows else None
-        )
+        dlg.destroyed.connect(lambda: self._smarts_designer_windows.remove(dlg) if dlg in self._smarts_designer_windows else None)
         dlg.show()
 
     def show_filter_table_context_menu(self, position):
@@ -2444,26 +2431,15 @@ class MGFFilterGUI(QMainWindow):
 
         try:
             # Filter out rows with null/empty SMILES
-            df_valid = self.df_data.filter(
-                pl.col(smiles_field).is_not_null() & (pl.col(smiles_field).cast(pl.Utf8) != "")
-            )
+            df_valid = self.df_data.filter(pl.col(smiles_field).is_not_null() & (pl.col(smiles_field).cast(pl.Utf8) != ""))
 
             # Step 1: count spectra per (SMILES [+ meta keys])
             group_by_smiles = [smiles_field] + valid_meta_keys
-            spectra_per_smiles = (
-                df_valid
-                .group_by(group_by_smiles)
-                .agg(pl.len().alias("n_spectra"))
-            )
+            spectra_per_smiles = df_valid.group_by(group_by_smiles).agg(pl.len().alias("n_spectra"))
 
             # Step 2: count distinct SMILES per (meta keys [+] n_spectra)
             group_by_agg = valid_meta_keys + ["n_spectra"]
-            result = (
-                spectra_per_smiles
-                .group_by(group_by_agg)
-                .agg(pl.len().alias("n_smiles"))
-                .sort(valid_meta_keys + ["n_spectra"])
-            )
+            result = spectra_per_smiles.group_by(group_by_agg).agg(pl.len().alias("n_smiles")).sort(valid_meta_keys + ["n_spectra"])
 
             # Build column headers: meta keys first, then # SMILES, then # Spectra
             headers = valid_meta_keys + ["# SMILES", "# Spectra"]
@@ -2538,9 +2514,7 @@ class MGFFilterGUI(QMainWindow):
             df = self.df_data
 
             # Filter out rows with null/empty SMILES
-            df_valid = df.filter(
-                pl.col(smiles_field).is_not_null() & (pl.col(smiles_field).cast(pl.Utf8) != "")
-            )
+            df_valid = df.filter(pl.col(smiles_field).is_not_null() & (pl.col(smiles_field).cast(pl.Utf8) != ""))
 
             # Apply meta-key filters
             for key, val in meta_values.items():
@@ -2551,13 +2525,7 @@ class MGFFilterGUI(QMainWindow):
 
             # Keep only SMILES that have exactly n_spectra spectra in this filtered group
             group_by_smiles = [smiles_field] + meta_keys
-            counts = (
-                df_valid
-                .group_by(group_by_smiles)
-                .agg(pl.len().alias("__n_spectra_tmp"))
-                .filter(pl.col("__n_spectra_tmp") == n_spectra)
-                .select(smiles_field)
-            )
+            counts = df_valid.group_by(group_by_smiles).agg(pl.len().alias("__n_spectra_tmp")).filter(pl.col("__n_spectra_tmp") == n_spectra).select(smiles_field)
             matching_smiles = counts.to_series().to_list()
 
             df_result = df_valid.filter(pl.col(smiles_field).is_in(matching_smiles))
@@ -2601,9 +2569,7 @@ class MGFFilterGUI(QMainWindow):
             return
 
         # Collect all non-internal columns as candidate meta keys
-        available_keys = sorted(
-            col for col in self.df_data.columns if not col.startswith("__AnnoMe_")
-        )
+        available_keys = sorted(col for col in self.df_data.columns if not col.startswith("__AnnoMe_"))
 
         if not available_keys:
             return
@@ -2637,7 +2603,7 @@ class MGFFilterGUI(QMainWindow):
         # Normalize multi-line input: remove newlines, collapse leading
         # whitespace from continuation lines into a single space
         raw_text = self.smarts_input.toPlainText()
-        smarts_string = re.sub(r'\s*\n\s*', ' ', raw_text).strip()
+        smarts_string = re.sub(r"\s*\n\s*", " ", raw_text).strip()
 
         if not filter_name or not smarts_string:
             QMessageBox.warning(self, "Warning", "Please provide both filter name and SMARTS expression.")
