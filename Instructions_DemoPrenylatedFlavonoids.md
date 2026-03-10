@@ -111,13 +111,15 @@ Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory;
 
 Alternatively, use the button `Load Configuration` to load a predefined set of classifiers from the file `demo/GUI_PrenylatedCompounds_ClassificationModels.json`. Then click the button `Train and Classify` to start the training and prediction process. 
 
+Additionally, if the output folder already contains trained classifiers, the user can re-use these and just classify new MGF files with the button `Classify with Trained Models`. 
+
 Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory; SSD; Windows 11) this step took around 40 minutes to complete (with two of the two subsets being calculated in parallel). 
 
 ![Classification GUI - step 4](./help/classificationgui_step4.png)
 
 16. Next, the true/false positive/negative rates can be inspected. For this click the tab of the fifth step on the left side of the classification window. A table will show these results, aggregated by meta-data subset, classification configuration, input-file, and type class. Furthermore, results of individual metabolic features can be inspected in the sixth tab. 
 
-Additionally, if the output folder already contains trained classifiers, the user can re-use these and just classify new MGF files with the button `Classify with Trained Models`. 
+The user has the possibility to visualize the chemical structures that were correctly and incorrectly classified via a right-click in a specific row. A popup window will then depict these structures. 
 
 ![Classification GUI - step 5](./help/classificationgui_step5.png)
 
