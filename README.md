@@ -16,7 +16,7 @@ Using training data consisting of annotated and labeled MS/MS spectra of compoun
 
 1. Install the uv toolkit. For installation instructions please refer to [https://github.com/astral-sh/uv#installation](https://github.com/astral-sh/uv#installation).
 
-2. Obtain a copy of AnnMe. This can be done via `git` or a versioned release of AnnoMe. 
+2. Obtain a copy of AnnoMe. This can be done via `git` or a versioned release of AnnoMe. 
 
 Git: 
 - Install `git`. For installation instructions please refer to [https://github.com/git-guides/install-git](https://github.com/git-guides/install-git). 

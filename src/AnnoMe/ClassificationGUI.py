@@ -47,6 +47,7 @@ from PyQt5.QtWidgets import (
     QStyle,
     QProgressBar,
     QFrame,
+    QGridLayout,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QThread, QTimer, QRect
 from PyQt5.QtGui import QPixmap, QImage, QColor, QBrush, QPainter
@@ -116,7 +117,79 @@ def _always_true_filter(row):
     return True
 
 
-def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifier_set_config, output_dir):
+def _deduplicate_smiles(df, mode):
+    """Deduplicate rows in *df* so that each SMILES code appears at most once
+    per dataset category.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        The (already subset-filtered) embeddings DataFrame.  Must contain
+        a ``smiles`` column and a ``type`` column whose values are among
+        ``"train - relevant"``, ``"train - other"``,
+        ``"validation - relevant"``, ``"validation - other"``, and
+        ``"inference"``.
+    mode : str
+        One of:
+
+        * ``"ignore"``  – return *df* unchanged.
+        * ``"unique_in_training"`` – within the training sets
+          (``"train - relevant"`` and ``"train - other"``), keep at most
+          one randomly-selected row per SMILES code.  Validation /
+          inference rows are untouched.
+        * ``"unique_in_training_and_validation"`` – across **all four**
+          training and validation sets (``"train - relevant"``,
+          ``"train - other"``, ``"validation - relevant"``,
+          ``"validation - other"``), keep at most one randomly-selected
+          row per SMILES code.  Inference rows are untouched.
+
+    Returns
+    -------
+    pd.DataFrame
+        A copy of *df* with duplicate-SMILES rows removed (if applicable),
+        index reset.
+    """
+    if mode == "ignore":
+        return df
+
+    if "smiles" not in df.columns:
+        print("Warning: 'smiles' column not found in DataFrame – skipping SMILES deduplication.")
+        return df
+
+    train_types = {"train - relevant", "train - other"}
+    validation_types = {"validation - relevant", "validation - other"}
+
+    if mode == "unique_in_training":
+        target_types = train_types
+    elif mode == "unique_in_training_and_validation":
+        target_types = train_types | validation_types
+    else:
+        print(f"Warning: unknown SMILES-uniqueness mode '{mode}' – skipping deduplication.")
+        return df
+
+    # Separate rows that are subject to deduplication from those that are not
+    mask_target = df["type"].isin(target_types)
+    df_target = df[mask_target].copy()
+    df_rest = df[~mask_target].copy()
+
+    original_count = len(df_target)
+
+    # For each SMILES, randomly keep exactly one row
+    df_deduped = (
+        df_target
+        .sample(frac=1)              # shuffle so the kept row is random
+        .drop_duplicates(subset="smiles", keep="first")
+    )
+
+    removed_count = original_count - len(df_deduped)
+    print(f"SMILES deduplication (mode={mode}): removed {removed_count} duplicate "
+          f"spectra out of {original_count} targeted rows "
+          f"({len(df_deduped)} remaining).")
+
+    return pd.concat([df_deduped, df_rest], ignore_index=True)
+
+
+def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifier_set_config, output_dir, smiles_uniqueness="ignore"):
     """Execute a single (subset, classifier_set) training job.
 
     Designed to be called via ``joblib.Parallel`` in a separate process.
@@ -138,6 +211,10 @@ def _parallel_train_job(df_filtered, subset_name, classifier_set_name, classifie
 
         # Each worker process needs its own random seed
         set_random_seeds(42)
+
+        # Apply SMILES deduplication if requested
+        if smiles_uniqueness != "ignore":
+            df_filtered = _deduplicate_smiles(df_filtered, smiles_uniqueness)
 
         # Build a trivial subset dict – data is already pre-filtered
         subsets = {subset_name: _always_true_filter}
@@ -284,13 +361,14 @@ class TrainingWorker(QThread):
     progress = pyqtSignal(str)
     log = pyqtSignal(str)  # Emits log messages
 
-    def __init__(self, df_subset, subsets, output_dir, classifiers_to_compare=None, n_jobs=-1):
+    def __init__(self, df_subset, subsets, output_dir, classifiers_to_compare=None, n_jobs=-1, smiles_uniqueness="ignore"):
         super().__init__()
         self.df_subset = df_subset
         self.subsets = subsets
         self.output_dir = output_dir
         self.classifiers_to_compare = classifiers_to_compare
         self.n_jobs = n_jobs
+        self.smiles_uniqueness = smiles_uniqueness
 
     def run(self):
         try:
@@ -340,6 +418,7 @@ class TrainingWorker(QThread):
                     csname,
                     csconfig,
                     self.output_dir,
+                    smiles_uniqueness=self.smiles_uniqueness,
                 )
                 for df_filt, sname, csname, csconfig in jobs
             )
@@ -597,6 +676,347 @@ class SpectrumViewer(QDialog):
         layout.addWidget(close_btn)
 
         self.setLayout(layout)
+
+
+class StructureOverviewDialog(QDialog):
+    """Popup showing a 2×2 confusion-matrix of SMILES-rendered structures.
+
+    Each quadrant (TP / FN / FP / TN) displays an N×M page of RDKit molecule
+    images.  Navigation buttons allow paging through all structures in each
+    quadrant independently.  Row and column counts are controlled by spinboxes
+    at the top of the dialog; changing either resets all quadrants to page 1.
+    """
+
+    _DEFAULT_ROWS = 2
+    _DEFAULT_COLS = 4
+
+    def __init__(self, long_table: pd.DataFrame, title: str = "Structure Overview", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumSize(1200, 900)
+        self.resize(1400, 1000)
+
+        # ── Grid dimensions (mutable) ────────────────────────────────────
+        self._grid_rows = self._DEFAULT_ROWS
+        self._grid_cols = self._DEFAULT_COLS
+
+        # ── Categorise rows into TP / FN / FP / TN ──────────────────────
+        RELEVANT_TYPES = {"train - relevant", "validation - relevant"}
+        OTHER_TYPES = {"train - other", "validation - other"}
+
+        def _get_entries(df_subset):
+            """Return list of (smiles, pepmass_str) for each row with a valid SMILES."""
+            if "smiles" not in df_subset.columns:
+                return []
+            entries = []
+            for _, row in df_subset.iterrows():
+                smi = str(row["smiles"]) if pd.notna(row["smiles"]) else ""
+                if smi in ("", "NA", "na", "N/A", "nan"):
+                    continue
+                pepmass = ""
+                for col in ("precursor_mz", "pepmass"):
+                    if col in df_subset.columns and pd.notna(row.get(col, None)):
+                        try:
+                            pepmass = f"{float(row[col]):.4f}"
+                        except (ValueError, TypeError):
+                            pepmass = str(row[col])
+                        break
+                entries.append((smi, pepmass))
+            return entries
+
+        df = long_table.copy()
+        cr_col = "classification:relevant"
+        if cr_col not in df.columns:
+            df[cr_col] = ""
+
+        df_gt_pos = df[df["type"].isin(RELEVANT_TYPES)]
+        df_gt_neg = df[df["type"].isin(OTHER_TYPES)]
+
+        self._smiles_tp = _get_entries(df_gt_pos[df_gt_pos[cr_col] == "relevant"])
+        self._smiles_fn = _get_entries(df_gt_pos[df_gt_pos[cr_col] != "relevant"])
+        self._smiles_fp = _get_entries(df_gt_neg[df_gt_neg[cr_col] == "relevant"])
+        self._smiles_tn = _get_entries(df_gt_neg[df_gt_neg[cr_col] != "relevant"])
+
+        self._pages = {"tp": 0, "fn": 0, "fp": 0, "tn": 0}
+
+        # Check RDKit availability once
+        try:
+            from rdkit import Chem  # noqa: F401
+            self._rdkit_available = True
+        except ImportError:
+            self._rdkit_available = False
+
+        # ── Build UI ─────────────────────────────────────────────────────
+        main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(8, 8, 8, 8)
+
+        title_lbl = QLabel(f"<b>{title}</b>")
+        title_lbl.setAlignment(Qt.AlignCenter)
+        main_layout.addWidget(title_lbl)
+
+        # ── Grid-size controls ───────────────────────────────────────────
+        ctrl_bar = QWidget()
+        ctrl_layout = QHBoxLayout()
+        ctrl_layout.setContentsMargins(0, 2, 0, 2)
+        ctrl_layout.addStretch()
+        ctrl_layout.addWidget(QLabel("Rows per page:"))
+        self._rows_spin = QSpinBox()
+        self._rows_spin.setRange(1, 5)
+        self._rows_spin.setValue(self._DEFAULT_ROWS)
+        self._rows_spin.setFixedWidth(55)
+        ctrl_layout.addWidget(self._rows_spin)
+        ctrl_layout.addSpacing(16)
+        ctrl_layout.addWidget(QLabel("Columns per page:"))
+        self._cols_spin = QSpinBox()
+        self._cols_spin.setRange(1, 5)
+        self._cols_spin.setValue(self._DEFAULT_COLS)
+        self._cols_spin.setFixedWidth(55)
+        ctrl_layout.addWidget(self._cols_spin)
+        ctrl_layout.addStretch()
+        ctrl_bar.setLayout(ctrl_layout)
+        main_layout.addWidget(ctrl_bar)
+
+        # Connect spinboxes – update grid dims, reset pages and re-render all quads
+        self._rows_spin.valueChanged.connect(self._on_grid_size_changed)
+        self._cols_spin.valueChanged.connect(self._on_grid_size_changed)
+
+        # ── 2×2 confusion-matrix grid with row / col headers ─────────────
+        grid_widget = QWidget()
+        grid_layout = QGridLayout()
+        grid_layout.setSpacing(8)
+
+        # Column headers (predicted)
+        pred_rel_lbl = QLabel("<b>Predicted: Relevant</b>")
+        pred_rel_lbl.setAlignment(Qt.AlignCenter)
+        pred_oth_lbl = QLabel("<b>Predicted: Other</b>")
+        pred_oth_lbl.setAlignment(Qt.AlignCenter)
+        grid_layout.addWidget(pred_rel_lbl, 0, 1)
+        grid_layout.addWidget(pred_oth_lbl, 0, 2)
+
+        # Row headers (ground truth)
+        gt_rel_lbl = QLabel("<b>GT: Relevant</b>")
+        gt_rel_lbl.setAlignment(Qt.AlignCenter)
+        gt_oth_lbl = QLabel("<b>GT: Other</b>")
+        gt_oth_lbl.setAlignment(Qt.AlignCenter)
+        grid_layout.addWidget(gt_rel_lbl, 1, 0)
+        grid_layout.addWidget(gt_oth_lbl, 2, 0)
+
+        # Quadrant definition: (key, group-box title, grid row, grid col, bg QColor)
+        quads = [
+            ("tp", "TP – True Positives",  1, 1, QColor(200, 230, 180)),
+            ("fn", "FN – False Negatives", 1, 2, QColor(255, 200, 200)),
+            ("fp", "FP – False Positives", 2, 1, QColor(255, 200, 200)),
+            ("tn", "TN – True Negatives",  2, 2, QColor(200, 230, 180)),
+        ]
+
+        self._quad_widgets: dict = {}
+        for key, label, row, col, bg in quads:
+            panel, mol_grid_container, nav_widget = self._make_quad_panel(key, label, bg)
+            self._quad_widgets[key] = {
+                "mol_grid": mol_grid_container,
+                "nav":      nav_widget,
+            }
+            grid_layout.addWidget(panel, row, col)
+
+        grid_widget.setLayout(grid_layout)
+        main_layout.addWidget(grid_widget, 1)
+
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        main_layout.addWidget(close_btn)
+
+        self.setLayout(main_layout)
+
+        # Initial render
+        for key in ("tp", "fn", "fp", "tn"):
+            self._render_page(key)
+
+    # ── Internal helpers ─────────────────────────────────────────────────
+
+    @property
+    def _page_size(self) -> int:
+        return self._grid_rows * self._grid_cols
+
+    def _on_grid_size_changed(self):
+        """Called when either spinner changes; updates dims, resets to page 1."""
+        self._grid_rows = self._rows_spin.value()
+        self._grid_cols = self._cols_spin.value()
+        for key in ("tp", "fn", "fp", "tn"):
+            self._pages[key] = 0
+            self._render_page(key)
+
+    def _make_quad_panel(self, key: str, label_text: str, bg_color: QColor):
+        r, g, b = bg_color.red(), bg_color.green(), bg_color.blue()
+        panel = QGroupBox(label_text)
+        panel.setStyleSheet(
+            f"QGroupBox {{ background-color: rgb({r},{g},{b}); border: 1px solid #888; "
+            f"border-radius: 4px; margin-top: 6px; }}"
+            f"QGroupBox::title {{ subcontrol-origin: margin; padding: 0 4px; }}"
+        )
+        panel_layout = QVBoxLayout()
+        panel_layout.setContentsMargins(4, 14, 4, 4)
+
+        # Scroll area holding the molecule grid
+        mol_scroll = QScrollArea()
+        mol_scroll.setWidgetResizable(True)
+        mol_grid_container = QWidget()
+        mol_grid_container.setObjectName(f"mol_grid_{key}")
+        mol_grid_layout = QGridLayout()
+        mol_grid_layout.setSpacing(4)
+        mol_grid_container.setLayout(mol_grid_layout)
+        mol_scroll.setWidget(mol_grid_container)
+        panel_layout.addWidget(mol_scroll, 1)
+
+        # Navigation bar
+        nav_widget = QWidget()
+        nav_layout = QHBoxLayout()
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        prev_btn = QPushButton("◀ Prev")
+        next_btn = QPushButton("Next ▶")
+        page_lbl = QLabel("")
+        page_lbl.setAlignment(Qt.AlignCenter)
+        page_lbl.setObjectName(f"page_lbl_{key}")
+        prev_btn.clicked.connect(lambda _, k=key: self._change_page(k, -1))
+        next_btn.clicked.connect(lambda _, k=key: self._change_page(k, +1))
+        nav_layout.addWidget(prev_btn)
+        nav_layout.addWidget(page_lbl, 1)
+        nav_layout.addWidget(next_btn)
+        nav_widget.setLayout(nav_layout)
+        panel_layout.addWidget(nav_widget)
+
+        panel.setLayout(panel_layout)
+        return panel, mol_grid_container, nav_widget
+
+    def _smiles_for_key(self, key: str):
+        return {"tp": self._smiles_tp, "fn": self._smiles_fn,
+                "fp": self._smiles_fp, "tn": self._smiles_tn}[key]
+
+    def _change_page(self, key: str, delta: int):
+        entries = self._smiles_for_key(key)
+        n_pages = max(1, math.ceil(len(entries) / self._page_size))
+        self._pages[key] = max(0, min(self._pages[key] + delta, n_pages - 1))
+        self._render_page(key)
+
+    def _render_page(self, key: str):
+        """Populate the molecule grid for one quadrant using the current grid dims."""
+        rows = self._grid_rows
+        cols = self._grid_cols
+        page_size = rows * cols
+
+        entries = self._smiles_for_key(key)
+        page = self._pages[key]
+        n_total = len(entries)
+        n_pages = max(1, math.ceil(n_total / page_size))
+        # Clamp page index in case page_size grew and current page is now out of range
+        page = max(0, min(page, n_pages - 1))
+        self._pages[key] = page
+
+        mol_grid_container = self._quad_widgets[key]["mol_grid"]
+        nav_widget = self._quad_widgets[key]["nav"]
+
+        # Update page label
+        page_lbl = nav_widget.findChild(QLabel, f"page_lbl_{key}")
+        if page_lbl is not None:
+            if n_total == 0:
+                page_lbl.setText("No structures")
+            else:
+                start = page * page_size + 1
+                end = min((page + 1) * page_size, n_total)
+                page_lbl.setText(f"Page {page + 1}/{n_pages}  ({start}–{end} of {n_total})")
+
+        # Clear old grid content
+        old_layout = mol_grid_container.layout()
+        while old_layout.count():
+            child = old_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+
+        if n_total == 0:
+            lbl = QLabel("No structures")
+            lbl.setAlignment(Qt.AlignCenter)
+            old_layout.addWidget(lbl, 0, 0, rows, cols)
+            return
+
+        page_entries = entries[page * page_size: (page + 1) * page_size]
+        for idx, entry in enumerate(page_entries):
+            old_layout.addWidget(self._make_mol_cell(entry, rows, cols), idx // cols, idx % cols)
+
+        # Fill remaining cells with blank placeholders to keep the full grid shape
+        cell_w, cell_h = self._cell_size(rows, cols)
+        for idx in range(len(page_entries), page_size):
+            placeholder = QLabel()
+            placeholder.setFixedSize(cell_w, cell_h)
+            old_layout.addWidget(placeholder, idx // cols, idx % cols)
+
+    @staticmethod
+    def _cell_size(rows: int, cols: int):
+        """Return (cell_width, cell_height) in pixels for the given grid dimensions."""
+        # Each quadrant occupies roughly half the dialog width / height minus margins.
+        # We cap at 200×220 (the original 3×3 size) and scale down as more cells fit.
+        cell_w = max(80, min(200, 620 // cols))
+        cell_h = max(80, min(220, 540 // rows))
+        return cell_w, cell_h
+
+    def _make_mol_cell(self, entry: tuple, rows: int, cols: int) -> QFrame:
+        """Return a framed cell with a rendered molecule image.
+
+        Shows the precursor m/z (pepmass) beneath the structure when available,
+        or falls back to a truncated SMILES.  Full SMILES is always in the tooltip.
+        """
+        smiles, pepmass = entry
+        cell_w, cell_h = self._cell_size(rows, cols)
+        img_w = cell_w - 10
+        img_h = cell_h - 42  # reserve 42 px for the label below
+
+        cell = QFrame()
+        cell.setFrameShape(QFrame.StyledPanel)
+        cell.setFixedSize(cell_w, cell_h)
+        cell_layout = QVBoxLayout()
+        cell_layout.setContentsMargins(2, 2, 2, 2)
+        cell_layout.setSpacing(2)
+
+        img_lbl = QLabel()
+        img_lbl.setFixedSize(img_w, img_h)
+        img_lbl.setAlignment(Qt.AlignCenter)
+
+        info_lbl = QLabel()
+        info_lbl.setWordWrap(True)
+        info_lbl.setMaximumHeight(35)
+        info_lbl.setStyleSheet("font-size: 8px; color: #333;")
+        if pepmass:
+            info_lbl.setText(f"m/z {pepmass}")
+        else:
+            max_chars = max(10, img_w // 6)
+            short_smi = smiles if len(smiles) <= max_chars else smiles[:max_chars - 3] + "…"
+            info_lbl.setText(short_smi)
+        info_lbl.setToolTip(smiles)
+
+        if self._rdkit_available:
+            try:
+                from rdkit import Chem
+                from rdkit.Chem import Draw
+                mol = Chem.MolFromSmiles(smiles)
+                if mol is not None:
+                    pil_img = Draw.MolToImage(mol, size=(img_w, img_h))
+                    buf = io.BytesIO()
+                    pil_img.save(buf, format="PNG")
+                    buf.seek(0)
+                    qimg = QImage.fromData(buf.read())
+                    img_lbl.setPixmap(QPixmap.fromImage(qimg))
+                else:
+                    img_lbl.setText("⚠ Invalid\nSMILES")
+                    img_lbl.setAlignment(Qt.AlignCenter)
+            except Exception as exc:
+                img_lbl.setText(f"Error:\n{exc}")
+                img_lbl.setAlignment(Qt.AlignCenter)
+        else:
+            img_lbl.setText("RDKit\nnot available")
+            img_lbl.setAlignment(Qt.AlignCenter)
+
+        cell_layout.addWidget(img_lbl)
+        cell_layout.addWidget(info_lbl)
+        cell.setLayout(cell_layout)
+        return cell
 
 
 class EmbeddingOverviewWorker(QThread):
@@ -1719,6 +2139,27 @@ classifiers_to_compare = {
         parallel_layout.addStretch()
         layout.addLayout(parallel_layout)
 
+        # SMILES uniqueness control
+        smiles_unique_layout = QHBoxLayout()
+        smiles_unique_layout.addWidget(QLabel("SMILES Uniqueness:"))
+        self.smiles_uniqueness_combo = QComboBox()
+        self.smiles_uniqueness_combo.addItems(["Ignore", "Unique in training", "Unique in training and validation"])
+        self.smiles_uniqueness_combo.setCurrentIndex(0)
+        self.smiles_uniqueness_combo.setToolTip(
+            "Control duplicate SMILES filtering before training.\n\n"
+            "Ignore: No deduplication – use all spectra as-is.\n\n"
+            "Unique in training: Within the training sets "
+            "(train-relevant and train-other), keep at most one "
+            "randomly selected spectrum per SMILES code.\n\n"
+            "Unique in training and validation: Across all four "
+            "training and validation sets (train-relevant, train-other, "
+            "validation-relevant, validation-other), keep at most one "
+            "randomly selected spectrum per SMILES code."
+        )
+        smiles_unique_layout.addWidget(self.smiles_uniqueness_combo)
+        smiles_unique_layout.addStretch()
+        layout.addLayout(smiles_unique_layout)
+
         # Output directory selection
         output_layout = QHBoxLayout()
         output_layout.addWidget(QLabel("Output Directory:"))
@@ -1785,10 +2226,11 @@ classifiers_to_compare = {
 
     def init_section5(self):
         """Initialize the results inspection section."""
-        main_layout = QVBoxLayout()
+        content = QWidget()
+        main_layout = QHBoxLayout()
         main_layout.setContentsMargins(6, 6, 6, 6)
 
-        # Help panel at the top
+        # Help panel on the left (25 %) – matches layout of other sections
         help_panel = CollapsibleHelpPanel("""
             <h3>Inspect Results (Step 5)</h3>
             <p>This section shows an overview of the classification results for all loaded MGF files,
@@ -1857,7 +2299,13 @@ classifiers_to_compare = {
             </ul>
             <p>Select rows to restrict the histogram on the right to only those entries.</p>
         """)
-        main_layout.addWidget(help_panel)
+        main_layout.addWidget(help_panel, 1)  # 25% width
+
+        # Controls on the right (75%)
+        controls = QWidget()
+        controls_layout = QVBoxLayout()
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(4)
 
         # Export buttons
         button_layout = QHBoxLayout()
@@ -1866,7 +2314,7 @@ classifiers_to_compare = {
         button_layout.addWidget(export_results_btn)
 
         button_layout.addStretch()
-        main_layout.addLayout(button_layout)
+        controls_layout.addLayout(button_layout)
 
         # Horizontal splitter: left panel (metrics + results table) / right histogram
         self.results_splitter = QSplitter(Qt.Horizontal)
@@ -1909,6 +2357,8 @@ classifiers_to_compare = {
         )
         self.metrics_table.horizontalHeader().setStretchLastSection(False)
         self.metrics_table.setMaximumHeight(220)
+        self.metrics_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.metrics_table.customContextMenuRequested.connect(self._on_metrics_table_context_menu)
         left_layout.addWidget(self.metrics_table)
 
         # ---- separator ----
@@ -1926,6 +2376,8 @@ classifiers_to_compare = {
         self.results_table.setSortingEnabled(True)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.results_table.itemSelectionChanged.connect(self.on_results_table_selection_changed)
+        self.results_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.results_table.customContextMenuRequested.connect(self._on_results_table_context_menu)
         left_layout.addWidget(self.results_table, 1)
 
         left_panel.setLayout(left_layout)
@@ -1972,9 +2424,17 @@ classifiers_to_compare = {
         self.results_splitter.setStretchFactor(0, 1)
         self.results_splitter.setStretchFactor(1, 1)
 
-        main_layout.addWidget(self.results_splitter, 1)
+        controls_layout.addWidget(self.results_splitter, 1)
 
-        self.section5.setLayout(main_layout)
+        controls.setLayout(controls_layout)
+        main_layout.addWidget(controls, 3)  # 75% width
+
+        content.setLayout(main_layout)
+
+        section_layout = QVBoxLayout()
+        section_layout.setContentsMargins(0, 0, 0, 0)
+        section_layout.addWidget(content, 1)
+        self.section5.setLayout(section_layout)
 
     def init_section6(self):
         """Initialize the individual spectra inspection section."""
@@ -3095,6 +3555,7 @@ classifiers_to_compare = {
                 "output_directory": self.output_dir_input.text(),
                 "subsets": self.subsets,
                 "classifier_configuration": self.classifiers_config_text.toPlainText(),
+                "smiles_uniqueness": self._get_smiles_uniqueness_mode(),
             }
 
             # Save MGF file paths and types
@@ -3223,6 +3684,12 @@ classifiers_to_compare = {
             # Step 6: Load classifier configuration
             if "classifier_configuration" in config_data:
                 self.classifiers_config_text.setPlainText(config_data["classifier_configuration"])
+
+            # Step 7: Restore SMILES uniqueness setting
+            if "smiles_uniqueness" in config_data:
+                mode_map = {"ignore": 0, "unique_in_training": 1, "unique_in_training_and_validation": 2}
+                idx = mode_map.get(config_data["smiles_uniqueness"], 0)
+                self.smiles_uniqueness_combo.setCurrentIndex(idx)
 
             # Navigate to training section
             self.go_to_section(self.section4)
@@ -3493,12 +3960,14 @@ classifiers_to_compare = {
 
         # Start worker thread with all subsets (parallel via joblib inside)
         n_jobs = self.n_jobs_spinbox.value()
+        smiles_uniqueness = self._get_smiles_uniqueness_mode()
         self.training_worker = TrainingWorker(
             self.df_embeddings,
             subsets_dict,
             output_dir,
             classifiers_to_compare=self.classifiers_config,
             n_jobs=n_jobs,
+            smiles_uniqueness=smiles_uniqueness,
         )
         self.training_worker.progress.connect(self.on_training_progress)
         self.training_worker.finished.connect(self.on_training_finished)
@@ -3514,6 +3983,11 @@ classifiers_to_compare = {
 
         self.train_btn.setEnabled(False)
         self.classify_trained_btn.setEnabled(False)
+
+    def _get_smiles_uniqueness_mode(self):
+        """Map the SMILES-uniqueness combo box selection to an internal mode string."""
+        idx = self.smiles_uniqueness_combo.currentIndex()
+        return ["ignore", "unique_in_training", "unique_in_training_and_validation"][idx]
 
     def on_training_progress(self, message):
         """Update progress dialog with message."""
@@ -3998,6 +4472,109 @@ classifiers_to_compare = {
         filtered = self._results_combined_summary[self._results_combined_summary.apply(lambda r: (r["combination"], r["source"]) in selected_keys, axis=1)].reset_index(drop=True)
 
         self.update_results_histogram(filtered if not filtered.empty else self._results_combined_summary)
+
+    # ── Context-menu handlers for the Step-5 tables ──────────────────────
+
+    def _on_results_table_context_menu(self, pos):
+        """Show a context menu for a right-clicked row in the classification results table."""
+        item = self.results_table.itemAt(pos)
+        if item is None:
+            return
+        row = item.row()
+
+        classifier_item = self.results_table.item(row, 0)
+        subset_item     = self.results_table.item(row, 1)
+        source_item     = self.results_table.item(row, 2)
+        if not (classifier_item and subset_item and source_item):
+            return
+
+        combination = f"{classifier_item.text()} // {subset_item.text()}"
+        source = source_item.text()
+
+        menu = QMenu(self)
+        act = QAction("Structure overview", self)
+        act.triggered.connect(lambda: self._open_structure_overview(combination, source=source))
+        menu.addAction(act)
+        menu.exec_(self.results_table.viewport().mapToGlobal(pos))
+
+    def _on_metrics_table_context_menu(self, pos):
+        """Show a context menu for a right-clicked row in the ML metrics table."""
+        item = self.metrics_table.itemAt(pos)
+        if item is None:
+            return
+        row = item.row()
+
+        classifier_item = self.metrics_table.item(row, 0)
+        subset_item     = self.metrics_table.item(row, 1)
+        split_item      = self.metrics_table.item(row, 2)
+        if not (classifier_item and subset_item and split_item):
+            return
+
+        combination = f"{classifier_item.text()} // {subset_item.text()}"
+        split = split_item.text()  # "Train" or "Validation"
+
+        menu = QMenu(self)
+        act = QAction("Structure overview", self)
+        act.triggered.connect(lambda: self._open_structure_overview(combination, split=split))
+        menu.addAction(act)
+        menu.exec_(self.metrics_table.viewport().mapToGlobal(pos))
+
+    def _open_structure_overview(self, combination: str, source: str = None, split: str = None):
+        """Retrieve the relevant long_table slice and open a StructureOverviewDialog.
+
+        Parameters
+        ----------
+        combination:
+            Key in ``self.subset_results`` (``"classifier // subset"`` format).
+        source:
+            When provided, restrict the long_table to rows for this MGF file only
+            (used when launched from the per-file results table).
+        split:
+            When provided (``"Train"`` or ``"Validation"``), restrict the long_table
+            to rows matching that split's ground-truth types (used when launched from
+            the ML metrics table).
+        """
+        if combination not in self.subset_results:
+            QMessageBox.warning(self, "Structure Overview", f"No results found for:\n{combination}")
+            return
+
+        long_table = self.subset_results[combination].get("long_table")
+        if long_table is None or long_table.empty:
+            QMessageBox.warning(self, "Structure Overview", "No data available for this entry.")
+            return
+
+        df = long_table.copy()
+
+        # Filter by source file when launched from the results table
+        if source is not None and "source" in df.columns:
+            df = df[df["source"] == source]
+
+        # Filter by split when launched from the metrics table
+        if split is not None and "type" in df.columns:
+            if split.lower().startswith("train"):
+                keep_types = {"train - relevant", "train - other"}
+            else:
+                keep_types = {"validation - relevant", "validation - other"}
+            df = df[df["type"].isin(keep_types)]
+
+        if df.empty:
+            QMessageBox.information(
+                self, "Structure Overview",
+                "No labelled (train/validation) spectra found for this selection.\n"
+                "A structure overview is only available for train / validation data."
+            )
+            return
+
+        title_parts = [combination]
+        if source:
+            title_parts.append(os.path.basename(source))
+        if split:
+            title_parts.append(split)
+        title = "Structure Overview – " + " | ".join(title_parts)
+
+        dlg = StructureOverviewDialog(df, title=title, parent=self)
+        dlg.setModal(False)
+        dlg.show()
 
     # Section 5 methods
 

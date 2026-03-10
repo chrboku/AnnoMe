@@ -855,7 +855,7 @@ def get_and_print_metrics(gt, pred, labels, print_pre = "", col_correct = Fore.G
     metric_data = []
     for i, row_label in enumerate(labels):
         for j, col_label in enumerate(labels):
-            print(f"   - [{print_pre}] {col_correct if i == j else col_wrong}Confusion matrix {row_label} ({conf_matrix_sum[i, 0]}/{total}) -> {col_label} ({conf_matrix[i, j]}): {conf_matrix_percent[i, j]:.3f}%{Style.RESET_ALL}")
+            print(f"   {bullet_point_character} [{print_pre}] {col_correct if i == j else col_wrong}Confusion matrix {row_label} ({conf_matrix_sum[i, 0]}/{total}) -> {col_label} ({conf_matrix[i, j]}): {conf_matrix_percent[i, j]:.3f}%{Style.RESET_ALL}")
             metric_data.append({                
                 "metric": f"Confusion matrix count: {row_label} -> {col_label}",
                 "value": conf_matrix[i, j],
@@ -1090,7 +1090,8 @@ def generate_embeddings(datasets, data_to_add=None, model_file_name=None, n_jobs
                         if key in spectrum.metadata_dict():
                             value = spectrum.metadata_dict().get(key)
                             try:
-                                value = value.lower()
+                                if key != "smiles":
+                                    value = value.lower()
                             except:
                                 pass
                             if value is not None:
@@ -2262,7 +2263,7 @@ def generate_prediction_overview(df, df_predicted, output_dir, file_prefix = "",
             p9.ggplot(aggregated_df, p9.aes(x="prediction_count"))
             + p9.geom_vline(xintercept=min_prediction_threshold, linetype="dashed", color="Firebrick")
             + p9.geom_bar()            
-            + p9.facet_wrap("type", scales="free_y")
+            + p9.facet_wrap("type", scales="free")
             + p9.coord_flip()
             + p9theme()
             + p9.theme(axis_text_x=p9.element_text(angle=0, hjust=1), panel_grid_major_y = p9.element_blank()) 
@@ -2486,7 +2487,7 @@ def generate_ml_metrics_overview(df_metrics, output_dir):
     p_confusion_matrix = (
         p9.ggplot(confusion_matrix_percent_data, p9.aes(x="value", fill="metric"))
         + p9.geom_histogram(bins=30, color="black", alpha=0.7)
-        + p9.facet_grid("from", "metric", scales="free_y")
+        + p9.facet_grid("from", "metric", scales="free")
         + p9theme()
         + p9.guides(fill=False)
         + p9.labs(
