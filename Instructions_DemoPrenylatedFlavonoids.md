@@ -20,7 +20,7 @@ Note: Make sure to check that you are not on a metered connection. The total siz
 ## Filter MSMS spectra for Prenylated Flavonoids
 
 4. Start the substructure filtering GUI with the command`uv run annome_filtergui`or double-click the file `annome_filtergui.bat` (Windows) or `annome_filtergui.sh` (Linux, Mac).
-```
+
 This will open the window for filtering MGF files by the presence or absence of specific substructures. 
 
 ![Filtering GUI - step 1](./help/FilterGUI_step1.png)
