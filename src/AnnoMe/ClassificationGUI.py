@@ -175,16 +175,10 @@ def _deduplicate_smiles(df, mode):
     original_count = len(df_target)
 
     # For each SMILES, randomly keep exactly one row
-    df_deduped = (
-        df_target
-        .sample(frac=1)              # shuffle so the kept row is random
-        .drop_duplicates(subset="smiles", keep="first")
-    )
+    df_deduped = df_target.sample(frac=1).drop_duplicates(subset="smiles", keep="first")  # shuffle so the kept row is random
 
     removed_count = original_count - len(df_deduped)
-    print(f"SMILES deduplication (mode={mode}): removed {removed_count} duplicate "
-          f"spectra out of {original_count} targeted rows "
-          f"({len(df_deduped)} remaining).")
+    print(f"SMILES deduplication (mode={mode}): removed {removed_count} duplicate spectra out of {original_count} targeted rows ({len(df_deduped)} remaining).")
 
     return pd.concat([df_deduped, df_rest], ignore_index=True)
 
@@ -742,6 +736,7 @@ class StructureOverviewDialog(QDialog):
         # Check RDKit availability once
         try:
             from rdkit import Chem  # noqa: F401
+
             self._rdkit_available = True
         except ImportError:
             self._rdkit_available = False
@@ -803,10 +798,10 @@ class StructureOverviewDialog(QDialog):
 
         # Quadrant definition: (key, group-box title, grid row, grid col, bg QColor)
         quads = [
-            ("tp", "TP – True Positives",  1, 1, QColor(200, 230, 180)),
+            ("tp", "TP – True Positives", 1, 1, QColor(200, 230, 180)),
             ("fn", "FN – False Negatives", 1, 2, QColor(255, 200, 200)),
             ("fp", "FP – False Positives", 2, 1, QColor(255, 200, 200)),
-            ("tn", "TN – True Negatives",  2, 2, QColor(200, 230, 180)),
+            ("tn", "TN – True Negatives", 2, 2, QColor(200, 230, 180)),
         ]
 
         self._quad_widgets: dict = {}
@@ -814,7 +809,7 @@ class StructureOverviewDialog(QDialog):
             panel, mol_grid_container, nav_widget = self._make_quad_panel(key, label, bg)
             self._quad_widgets[key] = {
                 "mol_grid": mol_grid_container,
-                "nav":      nav_widget,
+                "nav": nav_widget,
             }
             grid_layout.addWidget(panel, row, col)
 
@@ -849,9 +844,7 @@ class StructureOverviewDialog(QDialog):
         r, g, b = bg_color.red(), bg_color.green(), bg_color.blue()
         panel = QGroupBox(label_text)
         panel.setStyleSheet(
-            f"QGroupBox {{ background-color: rgb({r},{g},{b}); border: 1px solid #888; "
-            f"border-radius: 4px; margin-top: 6px; }}"
-            f"QGroupBox::title {{ subcontrol-origin: margin; padding: 0 4px; }}"
+            f"QGroupBox {{ background-color: rgb({r},{g},{b}); border: 1px solid #888; border-radius: 4px; margin-top: 6px; }}QGroupBox::title {{ subcontrol-origin: margin; padding: 0 4px; }}"
         )
         panel_layout = QVBoxLayout()
         panel_layout.setContentsMargins(4, 14, 4, 4)
@@ -888,8 +881,7 @@ class StructureOverviewDialog(QDialog):
         return panel, mol_grid_container, nav_widget
 
     def _smiles_for_key(self, key: str):
-        return {"tp": self._smiles_tp, "fn": self._smiles_fn,
-                "fp": self._smiles_fp, "tn": self._smiles_tn}[key]
+        return {"tp": self._smiles_tp, "fn": self._smiles_fn, "fp": self._smiles_fp, "tn": self._smiles_tn}[key]
 
     def _change_page(self, key: str, delta: int):
         entries = self._smiles_for_key(key)
@@ -937,7 +929,7 @@ class StructureOverviewDialog(QDialog):
             old_layout.addWidget(lbl, 0, 0, rows, cols)
             return
 
-        page_entries = entries[page * page_size: (page + 1) * page_size]
+        page_entries = entries[page * page_size : (page + 1) * page_size]
         for idx, entry in enumerate(page_entries):
             old_layout.addWidget(self._make_mol_cell(entry, rows, cols), idx // cols, idx % cols)
 
@@ -987,7 +979,7 @@ class StructureOverviewDialog(QDialog):
             info_lbl.setText(f"m/z {pepmass}")
         else:
             max_chars = max(10, img_w // 6)
-            short_smi = smiles if len(smiles) <= max_chars else smiles[:max_chars - 3] + "…"
+            short_smi = smiles if len(smiles) <= max_chars else smiles[: max_chars - 3] + "…"
             info_lbl.setText(short_smi)
         info_lbl.setToolTip(smiles)
 
@@ -995,6 +987,7 @@ class StructureOverviewDialog(QDialog):
             try:
                 from rdkit import Chem
                 from rdkit.Chem import Draw
+
                 mol = Chem.MolFromSmiles(smiles)
                 if mol is not None:
                     pil_img = Draw.MolToImage(mol, size=(img_w, img_h))
@@ -4483,8 +4476,8 @@ classifiers_to_compare = {
         row = item.row()
 
         classifier_item = self.results_table.item(row, 0)
-        subset_item     = self.results_table.item(row, 1)
-        source_item     = self.results_table.item(row, 2)
+        subset_item = self.results_table.item(row, 1)
+        source_item = self.results_table.item(row, 2)
         if not (classifier_item and subset_item and source_item):
             return
 
@@ -4505,8 +4498,8 @@ classifiers_to_compare = {
         row = item.row()
 
         classifier_item = self.metrics_table.item(row, 0)
-        subset_item     = self.metrics_table.item(row, 1)
-        split_item      = self.metrics_table.item(row, 2)
+        subset_item = self.metrics_table.item(row, 1)
+        split_item = self.metrics_table.item(row, 2)
         if not (classifier_item and subset_item and split_item):
             return
 
@@ -4558,11 +4551,7 @@ classifiers_to_compare = {
             df = df[df["type"].isin(keep_types)]
 
         if df.empty:
-            QMessageBox.information(
-                self, "Structure Overview",
-                "No labelled (train/validation) spectra found for this selection.\n"
-                "A structure overview is only available for train / validation data."
-            )
+            QMessageBox.information(self, "Structure Overview", "No labelled (train/validation) spectra found for this selection.\nA structure overview is only available for train / validation data.")
             return
 
         title_parts = [combination]
