@@ -57,7 +57,7 @@ Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory;
 
 7. Next, activate the third step by clicking the respective tab on the left side of the window. This will allow filtering all loaded MS/MS spectra by substructure matches using SMARTS strings. The necessary filters can be loaded with the button `Load Filters from JSON`. Select the file `demo/GUI_PrenylatedCompounds_SMARTSFilterStrings.json` from the AnnoMe main folder. Loading and applying all filters will take some time (approximately 1 hour on a standard laptop). After the filters have been loaded successfully, the table will show the number of matches and mismatches for each filter. 
 
-Alternatively, new filters can be specified by the user. Each filter must have a `Filter name` and a `SMARTS string`. For the latter the user can use a simple boolean logic to test for the presence of different substructures at the same time. This logic only supports OR and AND, and must be in this form `<<SMARTS_1 OR SMARTS_2>> AND SMARTS_3`.
+Alternatively, new filters can be specified by the user. Each filter must have a `Filter name` and a `SMARTS string`. For the latter the user can use a simple boolean logic to test for the presence of different substructures at the same time. This logic only supports OR and AND, and must be in this form `'(SMARTS_1' or 'SMARTS_2') and 'SMARTS_3' and not 'SMARTS_4'`.
 
 Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory; SSD; Windows 11) this step took less than 15 minutes. 
 
@@ -87,7 +87,7 @@ uv run annome_classificationgui
 ```
 This will show the window for loading the MGF files, assign them to the class `relevant` or `other` to be used for `training`, `testing`, or `inference`. 
 
-12. Next, load the mgf files. Click the button `Import configuration` and select the file `demo/gui_PrenylatedCompounds_ClassificationFiles.json`. 
+12. Next, load the mgf files. Click the button `Import configuration` and select the file `demo/GUI_PrenylatedCompounds_ClassificationProject.json`. In the pop-up dialog, select only the MGF files (Step 1.) to be loaded. 
 
 Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory; SSD; Windows 11) this step took less than 2 minutes. 
 
@@ -105,11 +105,11 @@ Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory;
 
 ![Classification GUI - step 3](./help/classificationgui_step3.png)
 
-15. To subselect the data based on meta-information such as collision energy, fragmentation method, or polarity, set a filter name, and define a python lambda function in the section `Define Custom Subset`. To help get an overview of the meta-information, clicking an entry in the table will show the unique keys in the particular file for the selected meta-data field as well as the number of spectra having the respective value. To load pre-existing filters for the demo, click the button `Import Subsets` and select the file `demo/GUI_PrenylatedCompounds_ClassificationSubsets.json`. This will load and apply a total of 8 filters, for the positive and negative modes, for the fragmentation method (currently always hcd), and the fragmentation energy (20; 40; 70; and stepped collision energy). Once loaded, the table will show the number of MS/MS spectra matching the filter for the different categories. Note: loading and filtering can take some minutes. 
+15. To subselect the data based on meta-information such as collision energy, fragmentation method, or polarity, set a filter name, and define a python lambda function in the section `Define Custom Subset`. To help get an overview of the meta-information, clicking an entry in the table will show the unique keys in the particular file for the selected meta-data field as well as the number of spectra having the respective value. To load pre-existing filters for the demo, click the button `Import Subsets` and select the file `demo/GUI_PrenylatedCompounds_ClassificationProject.json`. In the pop-up dialog, select only the Subsets (Step 3.) to be loaded. This will load and apply a total of 8 filters, for the positive and negative modes, for the fragmentation method (currently always hcd), and the fragmentation energy (20; 40; 70; and stepped collision energy). Once loaded, the table will show the number of MS/MS spectra matching the filter for the different categories. Note: loading and filtering can take some minutes. 
 
 15. Click on the fourth tab. This allows to define different classification models to be used. Each meta-data subset from the previous step will be used for each model in this step, making a total of n x m (n.. number of subsets, m.. number of classifiers to train) training and predicting instances. A default set of classifiers and their code for initialization can be loaded via the button `Load Default`. It will containt the default filter, a more complex filter that is deactivated, and code to compare different classifiers. 
 
-Alternatively, use the button `Load Configuration` to load a predefined set of classifiers from the file `demo/GUI_PrenylatedCompounds_ClassificationModels.json`. Then click the button `Train and Classify` to start the training and prediction process. 
+Alternatively, use the button `Load Configuration` to load a predefined set of classifiers from the file `demo/GUI_PrenylatedCompounds_ClassificationProject.json`. In the pop-up dialog, select only the classifier configuration (Step 4.) to be loaded. Then click the button `Train and Classify` to start the training and prediction process. 
 
 Additionally, if the output folder already contains trained classifiers, the user can re-use these and just classify new MGF files with the button `Classify with Trained Models`. 
 

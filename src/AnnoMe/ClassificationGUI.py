@@ -1438,6 +1438,155 @@ class PercentageBarDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+class ExportConfigDialog(QDialog):
+    """Dialog that lets the user choose which parts of the project to export."""
+
+    def __init__(self, mgf_files, output_dir, subsets, classifier_config_text, default_checks=None, hidden_checks=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Export Configuration")
+        self.setMinimumWidth(540)
+
+        if default_checks is None:
+            default_checks = {"mgf_files": True, "output_directory": True, "subsets": True, "classifier_configuration": True}
+        self._hidden_checks = set(hidden_checks or [])
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>Select what to include in the exported configuration file:</b>"))
+        layout.addSpacing(8)
+
+        # MGF files
+        n_files = len(mgf_files)
+        if n_files > 0:
+            type_summary = {}
+            for fn, data in mgf_files.items():
+                t = data.get("type", "unknown")
+                type_summary[t] = type_summary.get(t, 0) + 1
+            type_str = ", ".join(f"{v} {k}" for k, v in sorted(type_summary.items()))
+            mgf_label = f"Step 1.: MGF Files  \u2013  {n_files} file(s): {type_str}"
+        else:
+            mgf_label = "Step 1.: MGF Files  \u2013  no files loaded"
+        self.cb_mgf = QCheckBox(mgf_label)
+        self.cb_mgf.setChecked(default_checks.get("mgf_files", True) and n_files > 0)
+        self.cb_mgf.setEnabled(n_files > 0)
+        layout.addWidget(self.cb_mgf)
+
+        # Subsets
+        n_subsets = len(subsets)
+        if n_subsets > 0:
+            names = [s.get("name", "?") for s in subsets[:3]]
+            names_str = ", ".join(names) + ("..." if n_subsets > 3 else "")
+            subsets_label = f"Step 3.: Subset Filters  \u2013  {n_subsets} subset(s): {names_str}"
+        else:
+            subsets_label = "Step 3.: Subset Filters  \u2013  no subsets defined"
+        self.cb_subsets = QCheckBox(subsets_label)
+        self.cb_subsets.setChecked(default_checks.get("subsets", True) and n_subsets > 0)
+        self.cb_subsets.setEnabled(n_subsets > 0)
+        layout.addWidget(self.cb_subsets)
+
+        # Classifier configuration
+        cls_text = (classifier_config_text or "").strip()
+        if cls_text:
+            first_line = cls_text.split("\n")[0]
+            preview = first_line[:70] + ("..." if len(first_line) > 70 else "")
+            cls_label = f"Step 4.: Classifier Configuration  \u2013  custom config ({preview})"
+        else:
+            cls_label = "Step 4.: Classifier Configuration  \u2013  (empty, default will be used)"
+        self.cb_classifier = QCheckBox(cls_label)
+        self.cb_classifier.setChecked(default_checks.get("classifier_configuration", True))
+        layout.addWidget(self.cb_classifier)
+
+        layout.addSpacing(12)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selection(self):
+        cls_checked = True if "classifier_configuration" in self._hidden_checks else self.cb_classifier.isChecked()
+        return {
+            "mgf_files": True if "mgf_files" in self._hidden_checks else self.cb_mgf.isChecked(),
+            "output_directory": cls_checked,
+            "subsets": True if "subsets" in self._hidden_checks else self.cb_subsets.isChecked(),
+            "classifier_configuration": cls_checked,
+        }
+
+
+class ImportConfigDialog(QDialog):
+    """Dialog that lets the user choose which parts of a configuration file to import."""
+
+    def __init__(self, config_data, default_checks=None, hidden_checks=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Import Configuration")
+        self.setMinimumWidth(540)
+
+        if default_checks is None:
+            default_checks = {"mgf_files": True, "output_directory": True, "subsets": True, "classifier_configuration": True}
+        self._hidden_checks = set(hidden_checks or [])
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel("<b>Select what to import from the configuration file:</b>"))
+        layout.addSpacing(8)
+
+        # MGF files
+        mgf_data = config_data.get("mgf_files", [])
+        n_files = len(mgf_data)
+        if n_files > 0:
+            type_summary = {}
+            for f in mgf_data:
+                t = f.get("type", "unknown")
+                type_summary[t] = type_summary.get(t, 0) + 1
+            type_str = ", ".join(f"{v} {k}" for k, v in sorted(type_summary.items()))
+            mgf_label = f"Step 1.: MGF Files  \u2013  {n_files} file(s): {type_str}"
+        else:
+            mgf_label = "Step 1.: MGF Files  \u2013  not present in file"
+        self.cb_mgf = QCheckBox(mgf_label)
+        self.cb_mgf.setChecked(default_checks.get("mgf_files", True) and n_files > 0)
+        self.cb_mgf.setEnabled(n_files > 0)
+        layout.addWidget(self.cb_mgf)
+
+        # Subsets
+        subsets_data = config_data.get("subsets", [])
+        n_subsets = len(subsets_data)
+        if n_subsets > 0:
+            names = [s.get("name", "?") for s in subsets_data[:3]]
+            names_str = ", ".join(names) + ("..." if n_subsets > 3 else "")
+            subsets_label = f"Step 3.: Subset Filters  \u2013  {n_subsets} subset(s): {names_str}"
+        else:
+            subsets_label = "Step 3.: Subset Filters  \u2013  not present in file"
+        self.cb_subsets = QCheckBox(subsets_label)
+        self.cb_subsets.setChecked(default_checks.get("subsets", True) and n_subsets > 0)
+        self.cb_subsets.setEnabled(n_subsets > 0)
+        layout.addWidget(self.cb_subsets)
+
+        # Classifier configuration
+        cls_text = config_data.get("classifier_configuration", "")
+        if cls_text:
+            first_line = cls_text.strip().split("\n")[0]
+            preview = first_line[:70] + ("..." if len(first_line) > 70 else "")
+            cls_label = f"Step 4.: Classifier Configuration  \u2013  custom config present ({preview})"
+        else:
+            cls_label = "Step 4.: Classifier Configuration  \u2013  not present in file"
+        self.cb_classifier = QCheckBox(cls_label)
+        self.cb_classifier.setChecked(default_checks.get("classifier_configuration", True) and bool(cls_text))
+        self.cb_classifier.setEnabled(bool(cls_text))
+        layout.addWidget(self.cb_classifier)
+
+        layout.addSpacing(12)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    def get_selection(self):
+        cls_checked = True if "classifier_configuration" in self._hidden_checks else self.cb_classifier.isChecked()
+        return {
+            "mgf_files": True if "mgf_files" in self._hidden_checks else self.cb_mgf.isChecked(),
+            "output_directory": cls_checked,
+            "subsets": True if "subsets" in self._hidden_checks else self.cb_subsets.isChecked(),
+            "classifier_configuration": cls_checked,
+        }
+
+
 class ClassificationGUI(QMainWindow):
     """Main GUI for AnnoMe Classification."""
 
@@ -1459,6 +1608,7 @@ class ClassificationGUI(QMainWindow):
         self.subset_filter_functions = {}  # subset_name -> filter_function
         self.classifiers_config = None  # ML classifiers configuration
         self.pending_config_data = None  # For load_full_configuration workflow
+        self.pending_import_flags = None  # Which sections to apply after async embedding generation
         self._editing_subset_index = None  # Track which subset is being edited
         self._auto_start_training = auto_start_training  # Automatically start training after config load
         self._results_combined_summary = None  # Full combined_summary for the results histogram
@@ -1499,7 +1649,6 @@ class ClassificationGUI(QMainWindow):
         file_menu = menubar.addMenu("File")
 
         load_config_action = QAction("Load Configuration", self)
-        load_config_action.triggered.connect(self.load_full_configuration)
         load_config_action.triggered.connect(lambda: self.load_full_configuration())
         file_menu.addAction(load_config_action)
 
@@ -2713,111 +2862,12 @@ classifiers_to_compare = {
             QMessageBox.information(self, "Success", f"Removed {len(filenames_to_remove)} file(s)")
 
     def export_file_configuration(self):
-        """Export MGF file configuration to JSON."""
-        if not self.mgf_files:
-            QMessageBox.warning(self, "Warning", "No MGF files loaded to export")
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export File Configuration", "file_configuration.json", "JSON Files (*.json);;All Files (*)")
-
-        if not file_path:
-            return
-
-        try:
-            # Create export data (only path and type, not the full entries)
-            export_data = {"files": [{"filename": filename, "path": data["path"], "type": data["type"]} for filename, data in self.mgf_files.items()]}
-
-            with open(file_path, "w") as f:
-                json.dump(export_data, f, indent=2)
-
-            QMessageBox.information(self, "Success", f"Configuration exported to:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to export configuration:\n{str(e)}")
+        """Export configuration – Step 1 shortcut (MGF files pre-selected)."""
+        self._do_export_config(default_checks={"mgf_files": True, "output_directory": False, "subsets": False, "classifier_configuration": False})
 
     def import_file_configuration(self):
-        """Import MGF file configuration from JSON."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Import File Configuration", "", "JSON Files (*.json);;All Files (*)")
-
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "r") as f:
-                import_data = json.load(f)
-
-            if "files" not in import_data:
-                QMessageBox.warning(self, "Error", "Invalid configuration file format")
-                return
-
-            # Load the MGF files
-            progress = QProgressDialog("Loading MGF files...", "Cancel", 0, len(import_data["files"]), self)
-            progress.setWindowModality(Qt.WindowModal)
-
-            loaded_count = 0
-            failed_files = []
-
-            for i, file_info in enumerate(import_data["files"]):
-                if progress.wasCanceled():
-                    break
-
-                progress.setValue(i)
-                progress.setLabelText(f"Loading {file_info['filename']}...")
-                QApplication.processEvents()
-
-                mgf_path = file_info["path"]
-                file_type = file_info["type"]
-
-                # Check if file exists
-                if not os.path.exists(mgf_path):
-                    failed_files.append(f"{file_info['filename']} (file not found)")
-                    continue
-
-                try:
-                    # Parse MGF file
-                    entries = parse_mgf_file(mgf_path, check_required_keys=False)
-
-                    # Count unique SMILES
-                    smiles_set = set()
-                    for entry in entries:
-                        smiles = entry.get("smiles", "")
-                        if smiles:
-                            smiles_set.add(smiles)
-
-                    # Collect all meta keys
-                    for entry in entries:
-                        meta_keys = {k for k in entry.keys() if k not in ["peaks"]}
-                        self.all_meta_keys.update(meta_keys)
-
-                    filename = file_info["filename"]
-                    self.mgf_files[filename] = {
-                        "path": mgf_path,
-                        "entries": entries,
-                        "num_entries": len(entries),
-                        "num_parsed": len(entries),
-                        "num_with_embeddings": None,
-                        "unique_smiles": len(smiles_set),
-                        "type": file_type,
-                    }
-                    loaded_count += 1
-
-                except Exception as e:
-                    failed_files.append(f"{file_info['filename']} ({str(e)})")
-
-            progress.setValue(len(import_data["files"]))
-            self.update_file_table()
-
-            # Show summary
-            summary = f"Loaded {loaded_count} file(s)"
-            if failed_files:
-                summary += f"\n\nFailed to load {len(failed_files)} file(s):\n"
-                summary += "\n".join(failed_files[:5])
-                if len(failed_files) > 5:
-                    summary += f"\n... and {len(failed_files) - 5} more"
-
-            QMessageBox.information(self, "Import Complete", summary)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to import configuration:\n{str(e)}")
+        """Import configuration – Step 1 shortcut (MGF files pre-selected)."""
+        self._do_import_config(default_checks={"mgf_files": True, "output_directory": False, "subsets": False, "classifier_configuration": False})
 
     # Section 2 methods
     def refresh_metadata_overview(self):
@@ -3119,109 +3169,12 @@ classifiers_to_compare = {
         self.update_subset_table()
 
     def export_subsets(self):
-        """Export subsets to JSON."""
-        if not self.subsets:
-            QMessageBox.warning(self, "Warning", "No subsets defined to export")
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(self, "Export Subsets", "subsets.json", "JSON Files (*.json);;All Files (*)")
-
-        if not file_path:
-            return
-
-        try:
-            # Export subsets (names and expressions, counts will be recalculated on import)
-            export_data = {"subsets": [{"name": s.get("name", "Unnamed"), "expression": s["expression"]} for s in self.subsets]}
-
-            with open(file_path, "w") as f:
-                json.dump(export_data, f, indent=2)
-
-            QMessageBox.information(self, "Success", f"Subsets exported to:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to export subsets:\n{str(e)}")
+        """Export configuration – Step 3 shortcut (subset filters pre-selected)."""
+        self._do_export_config(default_checks={"mgf_files": False, "output_directory": False, "subsets": True, "classifier_configuration": False})
 
     def import_subsets(self):
-        """Import subsets from JSON."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Import Subsets", "", "JSON Files (*.json);;All Files (*)")
-
-        if not file_path:
-            return
-
-        if self.df_embeddings is None:
-            QMessageBox.warning(self, "Warning", "Please generate embeddings first (Section 2)")
-            return
-
-        try:
-            with open(file_path, "r") as f:
-                import_data = json.load(f)
-
-            # Support both old "filters" and new "subsets" format for backward compatibility
-            if "subsets" in import_data:
-                subset_list = import_data["subsets"]
-            elif "filters" in import_data:
-                subset_list = import_data["filters"]
-            else:
-                QMessageBox.warning(self, "Error", "Invalid subset file format")
-                return
-
-            # Import subsets and recalculate counts using embeddings dataframe
-            imported_count = 0
-            failed_subsets = []
-
-            # Get metadata columns from embeddings
-            exclude_cols = {"source", "name", "smiles", "inchikey", "ionmode", "precursor_mz", "adduct", "label", "num_peaks", "embeddings", "predicted_class"}
-
-            # Get file types from mgf_files (mapping source to type)
-            file_type_map = {filename: data["type"] for filename, data in self.mgf_files.items()}
-
-            for subset_info in subset_list:
-                subset_name = subset_info.get("name", "Imported Subset")
-                subset_expr = subset_info["expression"]
-
-                # Test the subset with metadata from embeddings
-                test_meta = {col: "test_value" for col in self.df_embeddings.columns if col not in exclude_cols}
-                try:
-                    compiled = compile(subset_expr, "<string>", "eval")
-                    eval(compiled, {"meta": test_meta, "abs": abs, "float": float, "int": int, "str": str})
-                except Exception as e:
-                    failed_subsets.append(f"{subset_name}: {subset_expr} ({str(e)})")
-                    continue
-
-                # Count matches for each type using the embeddings dataframe
-                type_counts = defaultdict(int)
-
-                for idx, row in self.df_embeddings.iterrows():
-                    source = row.get("source", "")
-                    file_type = file_type_map.get(source, "unknown")
-
-                    # Create meta dict from row (exclude special columns)
-                    meta = {col: row[col] for col in self.df_embeddings.columns if col not in exclude_cols}
-
-                    try:
-                        compiled = compile(subset_expr, "<string>", "eval")
-                        if eval(compiled, {"meta": meta, "abs": abs, "float": float, "int": int, "str": str}):
-                            type_counts[file_type] += 1
-                    except:
-                        pass
-
-                # Add to subsets list with recalculated counts
-                self.subsets.append({"name": subset_name, "expression": subset_expr, "counts": type_counts})
-                imported_count += 1
-
-            self.update_subset_table()
-
-            # Show summary
-            summary = f"Imported {imported_count} subset(s)"
-            if failed_subsets:
-                summary += f"\n\nFailed to import {len(failed_subsets)} subset(s):\n"
-                summary += "\n".join(failed_subsets[:3])
-                if len(failed_subsets) > 3:
-                    summary += f"\n... and {len(failed_subsets) - 3} more"
-
-            QMessageBox.information(self, "Import Complete", summary)
-
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to import subsets:\n{str(e)}")
+        """Import configuration – Step 3 shortcut (subset filters pre-selected)."""
+        self._do_import_config(default_checks={"mgf_files": False, "output_directory": False, "subsets": True, "classifier_configuration": False})
 
     # Section 3 methods
     def browse_output_dir(self):
@@ -3494,160 +3447,273 @@ classifiers_to_compare = {
                 default_config = f.read()
         self.classifiers_config_text.setPlainText(default_config)
 
-    def save_classifier_configuration(self):
-        """Save the classifier configuration and threshold to JSON file."""
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Classifier Configuration", "", "JSON Files (*.json);;All Files (*)")
+    # ---------------------------------------------------------------------- #
+    # Unified export / import                                                 #
+    # ---------------------------------------------------------------------- #
 
+    def _apply_subsets_from_config(self, subsets_data):
+        """Append subsets from *subsets_data* and recalculate counts from current embeddings."""
+        for subset_info in subsets_data:
+            subset_name = subset_info.get("name", "Unnamed")
+            subset_expr = subset_info["expression"]
+            type_counts = self._count_subset_matches(subset_expr)
+            self.subsets.append({"name": subset_name, "expression": subset_expr, "counts": type_counts})
+        self.update_subset_table()
+
+    def _do_export_config(self, default_checks=None, hidden_checks=None):
+        """Show an export-selection dialog, then save the chosen parts as a project-format JSON."""
+        dlg = ExportConfigDialog(
+            mgf_files=self.mgf_files,
+            output_dir=self.output_dir_input.text(),
+            subsets=self.subsets,
+            classifier_config_text=self.classifiers_config_text.toPlainText(),
+            default_checks=default_checks,
+            hidden_checks=hidden_checks,
+            parent=self,
+        )
+        if dlg.exec_() != QDialog.Accepted:
+            return
+
+        selection = dlg.get_selection()
+        if not any(selection.values()):
+            QMessageBox.warning(self, "Warning", "Nothing selected to export.")
+            return
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Configuration", "configuration.json", "JSON Files (*.json);;All Files (*)"
+        )
         if not file_path:
             return
 
         try:
-            config_data = {"classifier_configuration": self.classifiers_config_text.toPlainText()}
+            config_data = {}
+
+            if selection["mgf_files"] and self.mgf_files:
+                config_data["mgf_files"] = [
+                    {"path": data["path"], "type": data["type"]}
+                    for data in self.mgf_files.values()
+                ]
+
+            if selection["output_directory"]:
+                config_data["output_directory"] = self.output_dir_input.text()
+
+            if selection["subsets"] and self.subsets:
+                config_data["subsets"] = [
+                    {"name": s.get("name", "Unnamed"), "expression": s["expression"]}
+                    for s in self.subsets
+                ]
+
+            if selection["classifier_configuration"]:
+                config_data["classifier_configuration"] = self.classifiers_config_text.toPlainText()
+                config_data["smiles_uniqueness"] = self._get_smiles_uniqueness_mode()
 
             with open(file_path, "w") as f:
                 json.dump(config_data, f, indent=4)
 
-            QMessageBox.information(self, "Success", f"Configuration saved to:\n{file_path}")
+            QMessageBox.information(self, "Success", f"Configuration exported to:\n{file_path}")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Failed to export configuration:\n{str(e)}")
 
-    def load_classifier_configuration(self):
-        """Load classifier configuration and threshold from JSON file."""
-        file_path, _ = QFileDialog.getOpenFileName(self, "Load Classifier Configuration", "", "JSON Files (*.json);;All Files (*)")
+    def _do_import_config(self, file_path=None, default_checks=None, skip_dialog=False, hidden_checks=None):
+        """Show a file-open dialog (unless *file_path* is given), then an import-selection
+        dialog (unless *skip_dialog* is True), and apply the chosen parts.
 
-        if not file_path:
-            return
-
-        try:
-            with open(file_path, "r") as f:
-                config_data = json.load(f)
-
-            # Load classifier configuration text
-            if "classifier_configuration" in config_data:
-                self.classifiers_config_text.setPlainText(config_data["classifier_configuration"])
-
-            QMessageBox.information(self, "Success", f"Configuration loaded from:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to load configuration:\n{str(e)}")
-
-    def save_full_configuration(self):
-        """Save complete workflow configuration (MGF files, output dir, subsets, classifier config)."""
-        if not self.mgf_files:
-            QMessageBox.warning(self, "Warning", "No MGF files loaded. Nothing to save.")
-            return
-
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Full Configuration", "", "JSON Files (*.json);;All Files (*)")
-
-        if not file_path:
-            return
-
-        try:
-            # Collect all configuration data
-            config_data = {
-                "mgf_files": [],
-                "output_directory": self.output_dir_input.text(),
-                "subsets": self.subsets,
-                "classifier_configuration": self.classifiers_config_text.toPlainText(),
-                "smiles_uniqueness": self._get_smiles_uniqueness_mode(),
-            }
-
-            # Save MGF file paths and types
-            for filename, data in self.mgf_files.items():
-                config_data["mgf_files"].append({"path": data["path"], "type": data["type"]})
-
-            with open(file_path, "w") as f:
-                json.dump(config_data, f, indent=4)
-
-            QMessageBox.information(self, "Success", f"Full configuration saved to:\n{file_path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to save configuration:\n{str(e)}")
-
-    def load_full_configuration(self, file_path=None):
-        """Load complete workflow configuration and automatically execute workflow steps.
-
-        Parameters
-        ----------
-        file_path : str, optional
-            Path to the configuration JSON file. When *None* (default) a file-open
-            dialog is shown so the user can pick the file interactively.
+        Parts that don't require asynchronous embedding generation (output directory,
+        classifier configuration) are applied immediately.  When MGF files are selected,
+        the files are loaded and embedding generation is triggered; the remaining parts
+        (subsets) are applied afterwards via :meth:`continue_loading_configuration`.
         """
         if file_path is None:
-            file_path, _ = QFileDialog.getOpenFileName(self, "Load Full Configuration", "", "JSON Files (*.json);;All Files (*)")
-
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "Import Configuration", "", "JSON Files (*.json);;All Files (*)"
+            )
         if not file_path:
             return
 
         try:
             with open(file_path, "r") as f:
                 config_data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to read configuration file:\n{str(e)}")
+            return
 
-            # Clear existing data
+        if skip_dialog:
+            selection = {
+                "mgf_files": bool(config_data.get("mgf_files")),
+                "output_directory": bool(config_data.get("output_directory")),
+                "subsets": bool(config_data.get("subsets")),
+                "classifier_configuration": "classifier_configuration" in config_data,
+            }
+        else:
+            dlg = ImportConfigDialog(config_data, default_checks=default_checks, hidden_checks=hidden_checks, parent=self)
+            if dlg.exec_() != QDialog.Accepted:
+                return
+            selection = dlg.get_selection()
+
+        if not any(selection.values()):
+            QMessageBox.warning(self, "Warning", "Nothing selected to import.")
+            return
+
+        # Ask up-front whether to auto-run all steps, but only when the user chose to
+        # import all 4 parts (mgf files, output directory, subsets, classifier config).
+        auto_run = False
+        if not skip_dialog and all(selection.values()) and config_data.get("mgf_files"):
+            answer = QMessageBox.question(
+                self,
+                "Run Processing Steps Automatically?",
+                "Do you want to automatically run all processing steps up to Step 4?\n\n"
+                "• Yes – generate embeddings, apply subsets and navigate to Step 4\n"
+                "• No  – load the files into the file list; run each step manually when ready",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            auto_run = answer == QMessageBox.Yes
+        elif skip_dialog:
+            auto_run = True
+
+        # Apply synchronous parts immediately --------------------------------
+        if selection["output_directory"] and config_data.get("output_directory"):
+            self.output_dir_input.setText(config_data["output_directory"])
+
+        if selection["classifier_configuration"] and "classifier_configuration" in config_data:
+            self.classifiers_config_text.setPlainText(config_data["classifier_configuration"])
+
+        if selection["classifier_configuration"] and "smiles_uniqueness" in config_data:
+            mode_map = {"ignore": 0, "unique_in_training": 1, "unique_in_training_and_validation": 2}
+            self.smiles_uniqueness_combo.setCurrentIndex(mode_map.get(config_data["smiles_uniqueness"], 0))
+
+        # Async path: load MGF files then trigger embedding generation --------
+        if selection["mgf_files"] and config_data.get("mgf_files"):
             self.mgf_files.clear()
             self.subsets.clear()
             self.df_embeddings = None
             self.pending_config_data = config_data
-            # Don't clear expected hash yet - we'll set it from config data below
+            self.pending_import_flags = selection
 
-            # Step 1: Load MGF files
-            if "mgf_files" in config_data:
-                progress = QProgressDialog("Loading MGF files...", "Cancel", 0, len(config_data["mgf_files"]), self)
-                progress.setWindowModality(Qt.WindowModal)
+            mgf_list = config_data["mgf_files"]
+            progress = QProgressDialog("Loading MGF files...", "Cancel", 0, len(mgf_list), self)
+            progress.setWindowModality(Qt.WindowModal)
 
-                for i, file_info in enumerate(config_data["mgf_files"]):
-                    if progress.wasCanceled():
-                        break
+            for i, file_info in enumerate(mgf_list):
+                if progress.wasCanceled():
+                    break
+                progress.setValue(i)
+                mgf_path = file_info["path"]
+                progress.setLabelText(f"Loading {os.path.basename(mgf_path)}...")
+                QApplication.processEvents()
+                try:
+                    entries = parse_mgf_file(mgf_path, check_required_keys=False)
+                    smiles_set = {e.get("smiles", "") for e in entries if e.get("smiles", "")}
+                    for entry in entries:
+                        self.all_meta_keys.update(k for k in entry.keys() if k != "peaks")
+                    filename = os.path.basename(mgf_path)
+                    self.mgf_files[filename] = {
+                        "path": mgf_path,
+                        "entries": entries,
+                        "num_entries": len(entries),
+                        "num_parsed": len(entries),
+                        "num_with_embeddings": None,
+                        "unique_smiles": len(smiles_set),
+                        "type": file_info.get("type", "inference"),
+                    }
+                except Exception as e:
+                    QMessageBox.warning(self, "Error", f"Failed to load {os.path.basename(mgf_path)}:\n{str(e)}")
 
-                    progress.setValue(i)
-                    file_path_mgf = file_info["path"]
-                    progress.setLabelText(f"Loading {os.path.basename(file_path_mgf)}...")
-                    QApplication.processEvents()
+            progress.setValue(len(mgf_list))
+            self.update_file_table()
 
-                    try:
-                        # Parse MGF file
-                        entries = parse_mgf_file(file_path_mgf, check_required_keys=False)
+            if not self.mgf_files:
+                self.pending_config_data = None
+                self.pending_import_flags = None
+                return
 
-                        # Count unique SMILES
-                        smiles_set = set()
-                        for entry in entries:
-                            smiles = entry.get("smiles", "")
-                            if smiles:
-                                smiles_set.add(smiles)
-
-                        # Collect all meta keys
-                        for entry in entries:
-                            meta_keys = {k for k in entry.keys() if k not in ["peaks"]}
-                            self.all_meta_keys.update(meta_keys)
-
-                        filename = os.path.basename(file_path_mgf)
-                        self.mgf_files[filename] = {
-                            "path": file_path_mgf,
-                            "entries": entries,
-                            "num_entries": len(entries),
-                            "num_parsed": len(entries),
-                            "num_with_embeddings": None,
-                            "unique_smiles": len(smiles_set),
-                            "type": file_info.get("type", "inference"),
-                        }
-                    except Exception as e:
-                        QMessageBox.warning(self, "Error", f"Failed to load {file_path_mgf}:\n{str(e)}")
-
-                progress.setValue(len(config_data["mgf_files"]))
-                self.update_file_table()
-
-            # Step 2: Set output directory
-            if "output_directory" in config_data:
-                self.output_dir_input.setText(config_data["output_directory"])
-
-            # Step 3: Generate embeddings
-            if self.mgf_files:
+            if auto_run:
                 self.go_to_section(self.section2)
                 self.generate_embeddings_clicked()
             else:
-                self.pending_config_data = None
+                # Apply remaining parts directly without auto-processing.
+                if selection["subsets"] and config_data.get("subsets"):
+                    for subset_info in config_data["subsets"]:
+                        self.subsets.append({
+                            "name": subset_info.get("name", "Unnamed"),
+                            "expression": subset_info["expression"],
+                            "counts": defaultdict(int),  # empty until embeddings are available
+                        })
+                    self.update_subset_table()
 
-        except Exception as e:
-            self.pending_config_data = None
-            QMessageBox.critical(self, "Error", f"Failed to load full configuration:\n{str(e)}")
+                self.pending_config_data = None
+                self.pending_import_flags = None
+
+                parts = [f"{len(self.mgf_files)} MGF file(s) loaded into the file list"]
+                if selection["output_directory"] and config_data.get("output_directory"):
+                    parts.append(f"output directory set to: {config_data['output_directory']}")
+                if selection["subsets"] and config_data.get("subsets"):
+                    parts.append(f"{len(config_data['subsets'])} subset(s) loaded (counts will update after generating embeddings)")
+                if selection["classifier_configuration"] and "classifier_configuration" in config_data:
+                    parts.append("classifier configuration loaded")
+                QMessageBox.information(self, "Configuration Loaded", "Loaded without auto-processing:\n\u2022 " + "\n\u2022 ".join(parts))
+            return
+
+        # Subsets-only path (no MGF reload, but embeddings required) ----------
+        if selection["subsets"] and config_data.get("subsets"):
+            if self.df_embeddings is None:
+                QMessageBox.warning(
+                    self, "Warning",
+                    "Cannot import subsets: embeddings have not been generated yet.\n"
+                    "Please load MGF files and generate embeddings first.",
+                )
+                return
+            self._apply_subsets_from_config(config_data["subsets"])
+            parts = []
+            if selection["output_directory"] and config_data.get("output_directory"):
+                parts.append("output directory")
+            parts.append(f"{len(config_data['subsets'])} subset(s)")
+            if selection["classifier_configuration"] and "classifier_configuration" in config_data:
+                parts.append("classifier configuration")
+            QMessageBox.information(self, "Success", f"Imported: {', '.join(parts)}.")
+            return
+
+        # Synchronous-only path (output dir and/or classifier config) ---------
+        parts = []
+        if selection["output_directory"] and config_data.get("output_directory"):
+            parts.append("output directory")
+        if selection["classifier_configuration"] and "classifier_configuration" in config_data:
+            parts.append("classifier configuration")
+        if parts:
+            QMessageBox.information(self, "Success", f"Imported: {', '.join(parts)}.")
+
+    def save_classifier_configuration(self):
+        """Save classifier configuration (delegates to unified export dialog)."""
+        self._do_export_config(
+            default_checks={"mgf_files": False, "output_directory": True, "subsets": False, "classifier_configuration": True},
+        )
+
+    def load_classifier_configuration(self):
+        """Load classifier configuration (delegates to unified import dialog)."""
+        self._do_import_config(
+            default_checks={"mgf_files": False, "output_directory": True, "subsets": False, "classifier_configuration": True},
+        )
+
+    def save_full_configuration(self):
+        """Save project configuration (delegates to unified export dialog)."""
+        self._do_export_config(default_checks={"mgf_files": True, "output_directory": True, "subsets": True, "classifier_configuration": True})
+
+    def load_full_configuration(self, file_path=None):
+        """Load project configuration.
+
+        Parameters
+        ----------
+        file_path : str, optional
+            When provided (e.g. from the command line) the file is loaded
+            without showing any dialogs.  When *None* (default) the unified
+            import dialog is shown.
+        """
+        if file_path is not None:
+            self._do_import_config(file_path=file_path, skip_dialog=True)
+        else:
+            self._do_import_config(
+                default_checks={"mgf_files": True, "output_directory": True, "subsets": True, "classifier_configuration": True}
+            )
 
     def continue_loading_configuration(self):
         """Continue loading configuration after embeddings are generated."""
@@ -3656,47 +3722,47 @@ classifiers_to_compare = {
 
         try:
             config_data = self.pending_config_data
+            flags = self.pending_import_flags or {
+                "mgf_files": True, "output_directory": True,
+                "subsets": True, "classifier_configuration": True,
+            }
 
-            # Step 4: Refresh metadata overview
+            # Refresh metadata overview
             self.refresh_metadata_overview()
 
-            # Step 5: Load subsets and recalculate counts
-            if "subsets" in config_data:
-                for subset_info in config_data["subsets"]:
-                    subset_name = subset_info.get("name", "Unnamed")
-                    subset_expr = subset_info["expression"]
+            # Load subsets and recalculate counts
+            if flags.get("subsets") and "subsets" in config_data:
+                self._apply_subsets_from_config(config_data["subsets"])
 
-                    # Count matches for each type using the embeddings dataframe
-                    type_counts = self._count_subset_matches(subset_expr)
-
-                    # Add to subsets list with recalculated counts
-                    self.subsets.append({"name": subset_name, "expression": subset_expr, "counts": type_counts})
-
-                self.update_subset_table()
-
-            # Step 6: Load classifier configuration
-            if "classifier_configuration" in config_data:
+            # Classifier configuration and SMILES uniqueness (may have been applied
+            # already in _do_import_config, but setPlainText / setCurrentIndex are
+            # idempotent so repeating is safe)
+            if flags.get("classifier_configuration") and "classifier_configuration" in config_data:
                 self.classifiers_config_text.setPlainText(config_data["classifier_configuration"])
 
-            # Step 7: Restore SMILES uniqueness setting
-            if "smiles_uniqueness" in config_data:
+            if flags.get("classifier_configuration") and "smiles_uniqueness" in config_data:
                 mode_map = {"ignore": 0, "unique_in_training": 1, "unique_in_training_and_validation": 2}
-                idx = mode_map.get(config_data["smiles_uniqueness"], 0)
-                self.smiles_uniqueness_combo.setCurrentIndex(idx)
+                self.smiles_uniqueness_combo.setCurrentIndex(mode_map.get(config_data["smiles_uniqueness"], 0))
 
             # Navigate to training section
             self.go_to_section(self.section4)
+
+            summary_parts = [
+                f"Loaded {len(self.mgf_files)} MGF file(s)",
+                f"Generated embeddings ({len(self.df_embeddings)} entries)",
+            ]
+            if flags.get("subsets") and "subsets" in config_data:
+                summary_parts.append(f"Loaded {len(self.subsets)} subset(s)")
+            if flags.get("classifier_configuration") and "classifier_configuration" in config_data:
+                summary_parts.append("Loaded classifier configuration")
 
             _ready_msg = QMessageBox(self)
             _ready_msg.setIcon(QMessageBox.Information)
             _ready_msg.setWindowTitle("Success")
             _ready_msg.setText(
-                f"Configuration loaded and workflow executed:\n"
-                f"- Loaded {len(self.mgf_files)} MGF files\n"
-                f"- Generated embeddings ({len(self.df_embeddings)} entries)\n"
-                f"- Loaded {len(self.subsets)} subsets\n"
-                f"- Loaded classifier configuration\n\n"
-                f"Ready to train classifiers!"
+                "Configuration loaded and workflow executed:\n- "
+                + "\n- ".join(summary_parts)
+                + "\n\nReady to train classifiers!"
             )
             _ready_ok = _ready_msg.addButton(QMessageBox.Ok)
             self._exec_with_autoclose(_ready_msg, _ready_ok)
@@ -3710,6 +3776,7 @@ classifiers_to_compare = {
             QMessageBox.critical(self, "Error", f"Failed to complete configuration loading:\n{str(e)}")
         finally:
             self.pending_config_data = None
+            self.pending_import_flags = None
 
     # ---------------------------------------------------------------------- #
     # Utility helpers                                                          #
