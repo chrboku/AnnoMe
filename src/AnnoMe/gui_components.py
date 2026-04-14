@@ -41,6 +41,9 @@ class RotatedTabBar(QTabBar):
         # Parallel list of full tab names; short names are derived as "1.", "2." …
         self._full_labels: list[str] = []
         self._short_labels: list[str] = []
+        # Prevent Qt from expanding tabs to fill the available height so that
+        # tabs stack from the top rather than being centred / evenly distributed.
+        self.setExpanding(False)
 
     # -- public API ----------------------------------------------------------
 
@@ -97,7 +100,13 @@ class RotatedTabBar(QTabBar):
         elif self._collapsed:
             w = self._COLLAPSED_WIDTH
         else:
-            w = self._EXPANDED_WIDTH
+            # Compute width from the widest label so the sidebar is exactly
+            # as wide as the text rather than using a fixed constant.
+            if self._full_labels:
+                max_text_w = max(fm.horizontalAdvance(lbl) for lbl in self._full_labels)
+                w = max_text_w + self._ICON_SIZE + self._ICON_TEXT_GAP + 2 * self._H_PADDING
+            else:
+                w = self._EXPANDED_WIDTH
 
         return QSize(w, h)
 

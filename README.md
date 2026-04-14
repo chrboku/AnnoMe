@@ -46,6 +46,12 @@ uv run annome_filtergui
 uv run annome_classificationgui
 ```
 
+## Computing Resources
+Depending on the number of MSMS spectra to be processed, more computing resources are required. The limiting step is the generation of the MS2DeepScore embeddings, which took 4 hours on a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory; SSD; Windows 11). 
+The same dataset could not be processed on a less powerful MacBook Air (M4; 16GB main memory; MacOS Tahoe 26.4.1; only passive cooling).
+
+Please note that the generation of the embeddings is the most time-consuming step. Thus it is recommended to generate these embeddings once (e.g., over night or a weekend). Once these have been calculated, the embeddings are cached on disk, which significantly reduces the duration of this step from hours to few minutes. 
+
 ## Disclaimer
 
 THE SOFTWARE IS PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

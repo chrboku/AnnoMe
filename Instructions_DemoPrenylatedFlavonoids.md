@@ -73,7 +73,7 @@ Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory;
 
 Note: On a standard laptop (Intel Core Ultra 5 125U, 12 cores; 16GB main memory; SSD; Windows 11) this step took less than 2 minutes. 
 
-![Filtering GUI - step 1](./help/FilterGUI_step4.png)
+![Filtering GUI - step 4](./help/FilterGUI_step4.png)
 
 10. Close the filtering GUI. 
 

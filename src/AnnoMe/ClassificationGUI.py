@@ -5679,6 +5679,7 @@ def main():
     qt_argv = [sys.argv[0]] + qt_args
 
     app = QApplication(qt_argv)
+    app.setStyleSheet(load_stylesheet())
     window = ClassificationGUI(
         config_path=args.loadConfig,
         auto_start_training=args.startTraining,

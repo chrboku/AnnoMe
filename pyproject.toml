@@ -36,6 +36,11 @@ dependencies = [
     "pyarrow>=23.0.1",
 ]
 
+[tool.uv]
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'arm64'"
+]
+
 [project.scripts]
 annome_downloadresources = "AnnoMe.DownloadResources:main"
 annome_filtergui = "AnnoMe.FilterGUI:main"
